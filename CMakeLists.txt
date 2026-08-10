@@ -21,7 +21,7 @@ add_executable(luftfugl
 )
 
 if(LUFTFUGL_DEBUG)
-    target_sources(luftfugl PRIVATE src/debug.c)
+    target_sources(luftfugl PRIVATE src/debug.c src/config.c)
     target_compile_definitions(luftfugl PRIVATE LUFTFUGL_DEBUG=1)
 endif()
 

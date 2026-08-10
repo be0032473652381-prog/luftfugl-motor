@@ -1,5 +1,5 @@
 #include "debug.h"
-void dbg_init(void) {} void dbg_enter(void) {} void dbg_exit(void) {} bool dbg_active(void) { return false; }
+void dbg_init(void) { cfg_reset(); } void dbg_enter(void) {} void dbg_exit(void) {} bool dbg_active(void) { return false; }
 void dbg_poll(void) {} void dbg_handle_key(char c) { (void)c; } void dbg_render(void) {} void dbg_render_header(void) {} void dbg_abort(void) {}
 void dbg_status_dump(void) {} void dbg_stream_toggle(void) {} void dbg_stream_set_rate(uint16_t hz) { (void)hz; } void dbg_timing_stats(void) {} void dbg_timing_reset(void) {}
 void dbg_adc_read_once(void) {} void dbg_adc_monitor_toggle(void) {} void dbg_adc_capture_toggle(void) {} void dbg_band_table(void) {} void dbg_band_margin(void) {}
