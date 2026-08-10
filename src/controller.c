@@ -21,6 +21,7 @@ static direction_t last_direction;
 static volatile request_kind_t mailbox;
 static volatile position_t mailbox_arg;
 static uint32_t deadline_ms, brake_until_ms;
+static bool stopped_unknown;
 #ifdef LUFTFUGL_DEBUG
 static volatile bool debug_pending;
 static volatile dbg_request_t debug_mailbox;
@@ -59,6 +60,9 @@ static uint8_t speed_for(position_t tgt, uint8_t remaining)
 
 static void enter_fault(event_kind_t event)
 {
+#ifdef LUFTFUGL_DEBUG
+    encoder_sim_enable(false); motor_set_inhibit(false);
+#endif
     motor_brake();
     motor_disable();
 #ifdef LUFTFUGL_DEBUG
@@ -75,8 +79,10 @@ static void enter_fault(event_kind_t event)
 
 static void begin_home(uint32_t now)
 {
+    stopped_unknown = false;
     motor_brake();
     if (encoder_confirmed() == POS_MIN) {
+    stopped_unknown = false;
         position = POS_MIN;
         last_valid = POS_MIN;
         target = POS_MIN;
@@ -97,6 +103,7 @@ static void begin_home(uint32_t now)
 
 static void begin_move(position_t tgt, uint32_t now)
 {
+    stopped_unknown = false;
     uint8_t steps = distance(tgt, position);
     target = tgt;
     last_direction = tgt > position ? DIR_FWD : DIR_REV;
@@ -144,6 +151,7 @@ void controller_init(void)
     mailbox = REQ_NONE;
     deadline_ms = 0;
     brake_until_ms = 0;
+    stopped_unknown = false;
 #ifdef LUFTFUGL_DEBUG
     debug_pending = false; memset((void *)&tick_stats, 0, sizeof tick_stats); memset((void *)history, 0, sizeof history); history_head = history_used = 0; memset((void *)&counters, 0, sizeof counters); memset((void *)&last_fault, 0, sizeof last_fault);
 #endif
@@ -171,8 +179,8 @@ move_result_t controller_request(request_kind_t kind, position_t arg)
 #ifdef LUFTFUGL_DEBUG
 bool controller_debug_request(const dbg_request_t *req)
 {
-    if (debug_pending) return false;
-    if (req->op != DBG_OP_EXIT && req->op != DBG_OP_FAULT_CLEAR && !dbg_motor_armed()) return false;
+    if (debug_pending && req->op != DBG_OP_EXIT && !(req->op == DBG_OP_SIM_ENABLE && !req->flag)) return false;
+    if (req->op != DBG_OP_EXIT && req->op != DBG_OP_FAULT_CLEAR && req->op != DBG_OP_SIM_ENABLE && !dbg_motor_armed()) return false;
     debug_mailbox = *req;
     debug_pending = true;
     return true;
@@ -193,12 +201,19 @@ void controller_tick(void)
         debug_pending = false;
         switch (req.op) {
         case DBG_OP_ENTER: if (state == ST_IDLE) { state = ST_DEBUG; motor_brake(); } break;
-        case DBG_OP_EXIT: motor_brake(); deadline_ms = 0; state = ST_IDLE; break;
+        case DBG_OP_EXIT: encoder_sim_enable(false); motor_set_inhibit(false); motor_enable(); motor_brake(); deadline_ms = 0; state = ST_IDLE; break;
         case DBG_OP_DRIVE: if (state == ST_DEBUG) { motor_drive(req.dir, req.duty); deadline_ms = now + req.ms; } break;
         case DBG_OP_BRAKE: motor_brake(); deadline_ms = 0; break;
         case DBG_OP_COAST: if (state == ST_DEBUG) motor_coast(); break;
         case DBG_OP_STANDBY: if (state == ST_DEBUG) { if (req.flag) motor_enable(); else motor_disable(); } break;
         case DBG_OP_FAULT_CLEAR: if (state == ST_FAULT) { state = ST_IDLE; position = POS_UNKNOWN; last_valid = POS_UNKNOWN; last_direction = DIR_REV; motor_enable(); motor_brake(); } break;
+        case DBG_OP_SIM_ENABLE: if (req.flag) { state = ST_IDLE; deadline_ms = 0; motor_set_inhibit(true); encoder_sim_set(DEBUG_SIM_DEFAULT_ADC); encoder_sim_enable(true); } else { encoder_sim_enable(false); motor_set_inhibit(false); motor_enable(); motor_brake(); } break;
+        case DBG_OP_GPIO_SET:
+            if (req.duty == DEBUG_GPIO_OP_AIN1) { motor_set_inhibit(true); motor_drive(DIR_FWD, PWM_WRAP); }
+            else if (req.duty == DEBUG_GPIO_OP_AIN2) { motor_set_inhibit(true); motor_drive(DIR_REV, PWM_WRAP); }
+            else if (req.duty == DEBUG_GPIO_OP_STBY) { motor_set_inhibit(false); motor_disable(); motor_enable(); }
+            else { motor_set_inhibit(false); motor_disable(); }
+            break;
         default: break;
         }
     }
@@ -209,7 +224,7 @@ void controller_tick(void)
         position_t arg = mailbox_arg;
         mailbox = REQ_NONE;
         if (request == REQ_STOP) {
-            motor_brake(); deadline_ms = 0; target = POS_UNKNOWN;
+            motor_brake(); deadline_ms = 0; target = POS_UNKNOWN; stopped_unknown = position == POS_UNKNOWN;
             if (state != ST_FAULT) state = ST_IDLE;
             if (position == POS_UNKNOWN) console_push_event(EV_STOPPED_UNKNOWN, 0);
         } else if (request == REQ_HOME) {
@@ -221,8 +236,8 @@ void controller_tick(void)
 
     if (encoder_take_change(&changed)) {
         position = changed;
-        if (valid(changed)) last_valid = changed;
-        else if (state == ST_MOVING || state == ST_APPROACH) enter_recover(now);
+        if (valid(changed)) { last_valid = changed; stopped_unknown = false; }
+        else if (state == ST_MOVING || state == ST_APPROACH || (state == ST_IDLE && !stopped_unknown)) enter_recover(now);
     }
 
     if (state == ST_BOOT) {

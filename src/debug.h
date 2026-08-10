@@ -13,4 +13,7 @@ void dbg_cal_positions(void); void dbg_cal_step_time(void); void dbg_cal_travel_
 void dbg_cfg_list(void); bool dbg_cfg_set(const char *key, int32_t value); void dbg_cfg_reset(void); void dbg_cfg_export(void);
 void dbg_fault_show(void); void dbg_history_dump(void); void dbg_counters_show(void); void dbg_counters_reset(void); void dbg_fault_clear(void);
 bool dbg_selftest_static(void); bool dbg_selftest_motion(void);
+void dbg_bench_pins(void); void dbg_bench_gpio_walk(void); void dbg_bench_pwm_report(void); void dbg_bench_tick_health(void); void dbg_bench_reset_reason(void); void dbg_bench_protocol_list(void); void dbg_bench_echo_toggle(void);
+void dbg_sim_toggle(void); void dbg_sim_set_value(uint16_t adc); void dbg_sim_set_band(position_t pos); void dbg_sim_travel(position_t from, position_t to, uint16_t ms_per_band); void dbg_sim_park(void); void dbg_sim_drift(position_t limit); void dbg_sim_sweep(void);
+void dbg_what_can_run(void);
 #endif

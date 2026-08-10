@@ -8,6 +8,10 @@ static uint16_t stable_ms;
 static volatile uint16_t raw_value, average_value;
 static volatile position_t instant_position, confirmed_position;
 static volatile bool confirmed_changed;
+#ifdef LUFTFUGL_DEBUG
+static volatile bool sim_active;
+static volatile uint16_t sim_value;
+#endif
 
 static position_t classify(uint16_t value)
 {
@@ -36,10 +40,16 @@ void encoder_init(void)
     confirmed_position = instant_position;
     stable_ms = CFG_DEBOUNCE_MS;
     confirmed_changed = false;
+#ifdef LUFTFUGL_DEBUG
+    sim_active = false; sim_value = DEBUG_SIM_DEFAULT_ADC;
+#endif
 }
 
 void encoder_tick(void)
 {
+#ifdef LUFTFUGL_DEBUG
+    if (encoder_sim_active()) raw_value = encoder_sim_value(); else
+#endif
     raw_value = adc_read();
     sample_sum -= samples[sample_index];
     samples[sample_index] = raw_value;
@@ -70,3 +80,9 @@ bool encoder_take_change(position_t *out)
     confirmed_changed = false;
     return true;
 }
+#ifdef LUFTFUGL_DEBUG
+void encoder_sim_enable(bool on) { sim_active = on; }
+bool encoder_sim_active(void) { return sim_active; }
+void encoder_sim_set(uint16_t adc) { sim_value = adc > ADC_MAX_VALUE ? ADC_MAX_VALUE : adc; }
+uint16_t encoder_sim_value(void) { return sim_value; }
+#endif
