@@ -816,3 +816,377 @@ Debug monitor output is human-facing. The rule is:
 
 That last rule matters because the two share one UART. A host script watching
 for `ARR:` should never be tripped by a debug menu.
+
+---
+
+## 14. Revision 2 — Menu UX and Dry-Run Testing
+
+This section supersedes the menu tree in §3 and adds two menus. Everything else
+in §1–§13 stands.
+
+Two goals: make the monitor legible without a copy of this document open, and
+make as much of the firmware testable as possible with **only the RP2040 board**
+— no driver, no motor, no encoder ladder.
+
+### 14.1 Interaction Rules
+
+These apply to every menu and are not optional.
+
+**Echo typed characters.** The production console deliberately does not echo.
+Debug mode does, because an operator typing blind into a terminal cannot tell a
+frozen board from a silent one. `dbg_enter()` turns echo on, `dbg_exit()` turns
+it off. Backspace erases.
+
+**Every menu line shows current state, not just a label.** A menu that reads
+`d  set pulse duty` is worse than one that reads `d  pulse duty ......... 60`.
+The operator should never have to open another menu to find out what a value
+currently is.
+
+**Every prompt states its range and its unit.**
+`duty (0-255, current 60): ` — not `duty: `.
+
+**Every rejection says why.** Not `invalid`, but
+`rejected: 30 is below DUTY_MIN (45), motor would stall`.
+
+**The header re-renders on every screen** and carries live state:
+
+```
+=== luftfugl debug 1.0 ============================
+ state IDLE   pos 3   adc 1311 (band 3, margin 22%)
+ armed NO     coupled NO     sim OFF     faults 0
+===================================================
+```
+
+**`?` shows contextual help** for the current menu — what each item does and
+what it requires — not a generic key list.
+
+**`w` answers "what can I run right now?"** on any menu. It lists the tests
+currently available given the interlock state and what is connected, and for
+each unavailable one, names the single thing blocking it:
+
+```
+AVAILABLE NOW
+  2/a  adc reading            ready
+  7/s  static self-test       ready
+  8/*  bench tests            ready
+  9/*  simulation             ready
+BLOCKED
+  3/*  manual drive           needs UNCOUPLED (menu 3, key A)
+  4/s  step time              needs COUPLED and a known position
+  7/m  motion self-test       needs COUPLED and a known position
+```
+
+This is the most useful single addition in this revision. It replaces reading
+the specification to find out why a key did nothing.
+
+### 14.2 Revised Menu Tree
+
+```
+root
+├── 1  status & telemetry
+├── 2  encoder & adc
+├── 3  motor manual              [UNCOUPLED]
+├── 4  calibration               [COUPLED for motion tests]
+├── 5  configuration
+├── 6  faults & history
+├── 7  self-test
+├── 8  bench tests               ← new, no driver or motor needed
+│    ├── p  pin state readout
+│    ├── g  gpio walk            [UNCOUPLED]
+│    ├── f  pwm configuration report
+│    ├── t  tick & watchdog health
+│    ├── r  reset reason
+│    ├── o  protocol string listing
+│    └── e  echo toggle
+└── 9  simulation                ← new, no hardware at all
+     ├── e  enable / disable simulation
+     ├── v  set adc value
+     ├── b  jump to position band
+     ├── t  travel sequence
+     ├── p  park between reeds
+     ├── l  drift past a limit
+     └── s  sweep band boundaries
+```
+
+---
+
+### 14.3 Menu 8 — Bench Tests
+
+Everything here works with a bare board. Only `g` touches the control pins.
+
+```c
+void dbg_bench_pins(void);
+void dbg_bench_gpio_walk(void);
+void dbg_bench_pwm_report(void);
+void dbg_bench_tick_health(void);
+void dbg_bench_reset_reason(void);
+void dbg_bench_protocol_list(void);
+void dbg_bench_echo_toggle(void);
+```
+
+#### `p` — Pin state readout
+
+Live levels on every pin this subsystem owns, refreshed at 5 Hz until any key.
+Lets you verify wiring with a multimeter without moving anything.
+
+```
+PIN STATE (any key to stop)
+  GP2  AIN1   0
+  GP3  AIN2   0
+  GP14 PWMA   pwm, level 0 / 255
+  GP15 STBY   0   <- driver in standby
+  GP26 SENSE  adc 1311
+```
+
+#### `g` — GPIO walk
+
+Drives AIN1, AIN2 and STBY high for 1 s each in turn, then returns all low.
+Confirms continuity from MCU pin to driver input with a meter or LED.
+
+Requires `UNCOUPLED`, because if a driver *is* attached this toggles its
+direction inputs. PWMA is held at 0 throughout so no drive can occur even then.
+
+```
+GPIO WALK  (UNCOUPLED confirmed, PWMA held 0)
+  AIN1 high ... low
+  AIN2 high ... low
+  STBY high ... low
+  done
+```
+
+#### `f` — PWM configuration report
+
+Reads back the live PWM registers and reports the frequency the hardware is
+actually producing, computed from `clk_sys`, the divider and the wrap. This is
+the check that would otherwise need a scope.
+
+```
+PWM CONFIG
+  slice        7, channel A (GP14)
+  clk_sys      125000000 Hz
+  clkdiv       97.6875  (raw 0x61B, 8.4 fixed point)
+  wrap         255
+  frequency    4998.4 Hz
+  spec         5000 Hz, tolerance 1%   PASS
+```
+
+If the divider was rounded wrongly, or `clk_sys` is not what the build assumed,
+this line is where it shows up.
+
+#### `t` — Tick and watchdog health
+
+```
+TICK HEALTH
+  measured rate   1000.0 Hz over 2.00 s     PASS (1000 +/- 20)
+  duration        min 11 us  max 34 us  mean 14 us
+  overruns        0
+  watchdog        enabled, 100 ms, pause_on_debug true
+  time to expiry  87 ms at last kick
+```
+
+#### `r` — Reset reason
+
+Reports whether the last boot followed a watchdog reset, a power-on, or a debug
+reset, plus uptime. Answers "did it silently reset while I was away", which is
+otherwise invisible on a board with no LED.
+
+#### `o` — Protocol string listing
+
+Prints the production command and response strings as a **reference table**, so
+they can be checked against `agent.md` §7–§8 without a rebuild. It lists them;
+it does not emit them as responses, and every line is indented under a header so
+nothing can be mistaken for live protocol output.
+
+```
+PROTOCOL STRINGS (listing only, not emitted)
+  commands   pos | move N | stop | status | home
+  ok         OK: moving to N
+             OK: already at N
+             OK: stopped
+             OK: homing
+  errors     ERR: invalid target
+             ERR: at end-stop
+             ...
+```
+
+#### `e` — Echo toggle
+
+Turns character echo off for operators on a terminal that echoes locally.
+
+---
+
+### 14.4 Menu 9 — Simulation
+
+**This is the menu that makes the safety logic testable with nothing
+connected.**
+
+Simulation replaces the ADC sample at the source. `encoder_tick()` still runs
+the real rolling average, the real classifier and the real debounce; the
+controller still runs its real state machine, timeouts and limit checks. Only
+the twelve bits coming out of the ADC are substituted.
+
+That means a simulated run exercises the actual shipping code paths —
+`recover_direction()`, the arrival split, timeout escalation, `PASS`/`ARR`
+ordering — rather than a parallel test harness that could diverge from them.
+
+```c
+#ifdef LUFTFUGL_DEBUG
+void     encoder_sim_enable(bool on);
+bool     encoder_sim_active(void);
+void     encoder_sim_set(uint16_t adc);
+uint16_t encoder_sim_value(void);
+#endif
+```
+
+`encoder_tick()` gains one branch at the top: when `encoder_sim_active()`, the
+sample is `encoder_sim_value()` instead of `adc_read()`. Nothing else changes.
+
+#### Simulation forces the motor off
+
+Entering simulation is only permitted with the driver hardware inhibited:
+
+```c
+void motor_set_inhibit(bool on);   // true: motor_enable() no-ops, STBY forced low
+bool motor_inhibited(void);
+```
+
+`DBG_OP_SIM_ENABLE` calls `motor_set_inhibit(true)` before enabling simulation,
+and `motor_set_inhibit(false)` on exit. While inhibited, `motor_enable()` is a
+no-op and STBY stays low, so the controller can request drive all it likes and
+the hardware cannot respond.
+
+This is a new motor API, added deliberately. It is the mechanism that makes
+simulation safe even with a driver and motor fully wired: the controller runs
+its real logic against simulated position while the H-bridge is held in
+standby. Simulation and real motion are mutually exclusive by construction, not
+by convention. `dbg_exit()` always clears both.
+
+The header shows `sim ON` in reverse video for as long as it is active. There
+is no way to be in simulation and not know it.
+
+#### `e` — Enable / disable
+
+```
+SIM ENABLE
+  motor inhibited (STBY forced low)
+  adc source: simulated, starting at 372 (position 1)
+  sim ON
+```
+
+#### `v` — Set ADC value
+
+`v` then a raw value 0–4095. Prints the resulting classification and margin.
+
+#### `b` — Jump to a position band
+
+`b` then 1–5, or `0` for the open band. Sets the injected value to that band's
+nominal from the table, so you do not have to remember that position 4 is 2047.
+
+#### `t` — Travel sequence
+
+`t`, then from, to, and milliseconds per band. Ramps the injected value through
+the intervening bands at that rate and prints what the controller emits.
+
+This is a full closed-loop test of a move with no motor:
+
+```
+SIM TRAVEL 1 -> 5, 300 ms/band
+  > move 5
+  OK: moving to 5
+  PASS:2   at 312 ms
+  PASS:3   at 604 ms
+  PASS:4   at 901 ms
+  ARR:5    at 1214 ms
+  final state IDLE, pos 5
+  RESULT: PASS  (4 events, expected 4, order correct)
+```
+
+Set the rate below the debounce window and arrivals should start being missed —
+which is exactly the failure mode `DUTY_APPROACH` exists to prevent, now
+demonstrable on the bench.
+
+#### `p` — Park between reeds
+
+Injects the open-band value and reports what the controller does. Expect
+`RECOVER`, then a fault after `TIMEOUT_RECOVER_MS` since no motion follows.
+
+#### `l` — Drift past a limit
+
+**The single most valuable test in the debug monitor.**
+
+`l` then `1` or `5`. Sets the confirmed position to that limit, then injects the
+open band — simulating the mechanism drifting just past reed 1 or reed 5 — and
+reports which direction `recover_direction()` chose.
+
+```
+SIM DRIFT PAST LIMIT 5
+  established pos 5 (adc 2815)
+  injected open band (adc 4095)
+  state RECOVER
+  recovery direction: REV
+  EXPECTED: REV (inward, away from the upper limit)
+  RESULT: PASS
+```
+
+Run it for both limits. A `FAIL` here means the firmware would drive the
+mechanism further past the limit and tear the harness — and you have found it
+on a bare board rather than with a motor attached.
+
+#### `s` — Sweep band boundaries
+
+Injects every value from 0 to 4095 and reports each classification transition,
+then compares against the configured table.
+
+```
+SIM SWEEP
+  0..555      -> 1
+  556..1023   -> 2
+  1024..1678  -> 3
+  1679..2431  -> 4
+  2432..3455  -> 5
+  3456..4095  -> ?
+  RESULT: PASS, 6 regions, matches config, no gaps or overlaps
+```
+
+Empirical proof that the classifier matches the table — the arithmetic error in
+the original band specification would have failed this immediately.
+
+---
+
+### 14.5 Dry-Run Test Sequence
+
+With only the board and a USB serial connection, this covers most of the
+firmware. Run it before any hardware is attached.
+
+| Step | Menu | Verifies |
+|------|------|----------|
+| 1 | `8/t` | Tick at 1 kHz, no overruns, watchdog live |
+| 2 | `8/f` | PWM at 4998.4 Hz, divider arithmetic correct |
+| 3 | `7/s` | All eight static checks pass |
+| 4 | `9/s` | Band table empirically correct |
+| 5 | `9/t` 1→5 | Move, `PASS` ordering, arrival |
+| 6 | `9/t` 5→1 | Reverse move |
+| 7 | `9/l` 1 | Recovery goes forward at the lower limit |
+| 8 | `9/l` 5 | Recovery goes reverse at the upper limit |
+| 9 | `9/p` | Recovery timeout escalates to fault |
+| 10 | `6/f`, `6/h` | Fault snapshot and history ring populated |
+| 11 | `8/p` | Pin states, STBY low throughout |
+
+Steps 7 and 8 are the ones that matter. Everything else can be re-tested later
+with hardware; those two validate the logic that protects the harness, and they
+are far easier to run now than with a motor bolted to a mechanism that has no
+end-stops.
+
+### 14.6 Constraints
+
+- Simulation exists only under `LUFTFUGL_DEBUG`. In a production build
+  `encoder_sim_active()` does not exist and `encoder_tick()` has no branch.
+- Simulation always inhibits the motor. There is no override.
+- `dbg_exit()`, any abort, and entry to `ST_FAULT` all clear simulation and
+  release the inhibit.
+- Simulated values feed the same filter and debounce as real samples. No test
+  may bypass them — a test that skipped the filter would not be testing the
+  firmware.
+- Every simulated sequence reports `RESULT: PASS` or `RESULT: FAIL` with the
+  expectation stated, so results do not depend on the operator interpreting the
+  output correctly.
