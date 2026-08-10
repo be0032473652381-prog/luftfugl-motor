@@ -106,6 +106,7 @@ void console_drain_events(void) {
         case EV_FAULT_HOME: snprintf(output, sizeof output, "ERR: fault home timeout"); break;
         case EV_FAULT_RECOVER: snprintf(output, sizeof output, "ERR: fault recover timeout"); break;
         case EV_HOMING: snprintf(output, sizeof output, "OK: homing"); break;
+        case EV_STOPPED_UNKNOWN: snprintf(output, sizeof output, "POS:?"); break;
         default: continue;
         } write_line(output);
     }

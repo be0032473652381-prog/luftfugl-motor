@@ -63,7 +63,7 @@ typedef enum {
 } move_result_t;
 typedef enum {
     EV_PASS = 0, EV_ARRIVE, EV_TIMEOUT, EV_FAULT_HOME, EV_FAULT_RECOVER,
-    EV_HOMING
+    EV_HOMING, EV_STOPPED_UNKNOWN
 } event_kind_t;
 
 #ifdef LUFTFUGL_DEBUG
