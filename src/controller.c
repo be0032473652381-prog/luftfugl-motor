@@ -52,6 +52,16 @@ static void enter_fault(event_kind_t event)
 static void begin_home(uint32_t now)
 {
     motor_brake();
+    if (encoder_confirmed() == POS_MIN) {
+        position = POS_MIN;
+        last_valid = POS_MIN;
+        target = POS_MIN;
+        deadline_ms = 0;
+        brake_until_ms = now + CFG_BRAKE_HOLD_MS;
+        state = ST_IDLE;
+        console_push_event(EV_ARRIVE, POS_MIN);
+        return;
+    }
     motor_enable();
     target = POS_MIN;
     last_direction = DIR_REV;
