@@ -24,11 +24,11 @@ int main(void)
     console_init();
     if (watchdog_reset) console_watchdog_reset();
     motor_init();
-    encoder_init();
-    controller_init();
 #ifdef LUFTFUGL_DEBUG
     dbg_init();
 #endif
+    encoder_init();
+    controller_init();
     motor_enable();
     watchdog_enable(100, true);
     add_repeating_timer_us(-1000, on_tick, NULL, &timer);
