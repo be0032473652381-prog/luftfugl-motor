@@ -25,7 +25,7 @@ static uint32_t deadline_ms, brake_until_ms;
 static volatile bool debug_pending;
 static volatile dbg_request_t debug_mailbox;
 static volatile tick_stats_t tick_stats;
-static volatile hist_entry_t history[16];
+static volatile hist_entry_t history[DEBUG_HISTORY_DEPTH];
 static volatile uint8_t history_head, history_used;
 static volatile dbg_counters_t counters;
 static volatile fault_record_t last_fault;
@@ -34,9 +34,9 @@ static volatile fault_record_t last_fault;
 static uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
 #ifdef LUFTFUGL_DEBUG
 static void hist_push(uint32_t ms, position_t pos, uint8_t kind)
-{ history[history_head] = (hist_entry_t){ms, pos, kind}; history_head = (uint8_t)((history_head + 1u) % 16u); if (history_used < 16u) ++history_used; }
+{ history[history_head] = (hist_entry_t){ms, pos, kind}; history_head = (uint8_t)((history_head + 1u) % DEBUG_HISTORY_DEPTH); if (history_used < DEBUG_HISTORY_DEPTH) ++history_used; }
 static void timing_finish(uint32_t start)
-{ uint32_t elapsed = time_us_32() - start; if (!tick_stats.count || elapsed < tick_stats.min_us) tick_stats.min_us = elapsed; if (elapsed > tick_stats.max_us) tick_stats.max_us = elapsed; tick_stats.sum_us += elapsed; ++tick_stats.count; if (elapsed > 1000u) { ++tick_stats.overruns; ++counters.tick_overruns; } }
+{ uint32_t elapsed = time_us_32() - start; if (!tick_stats.count || elapsed < tick_stats.min_us) tick_stats.min_us = elapsed; if (elapsed > tick_stats.max_us) tick_stats.max_us = elapsed; tick_stats.sum_us += elapsed; ++tick_stats.count; if (elapsed > TICK_PERIOD_US) { ++tick_stats.overruns; ++counters.tick_overruns; } }
 #endif
 static bool reached(uint32_t now, uint32_t deadline) { return deadline && (int32_t)(now - deadline) >= 0; }
 static bool valid(position_t p) { return p >= POS_MIN && p <= POS_MAX; }
@@ -298,7 +298,7 @@ direction_t controller_last_direction(void) { return last_direction; }
 void controller_timing_get(tick_stats_t *out) { *out = tick_stats; }
 void controller_timing_reset(void) { memset((void *)&tick_stats, 0, sizeof tick_stats); }
 uint8_t controller_history_count(void) { return history_used; }
-bool controller_history_get(uint8_t index, hist_entry_t *out) { if (index >= history_used) return false; uint8_t first = (uint8_t)((history_head + 16u - history_used) % 16u); *out = history[(first + index) % 16u]; return true; }
+bool controller_history_get(uint8_t index, hist_entry_t *out) { if (index >= history_used) return false; uint8_t first = (uint8_t)((history_head + DEBUG_HISTORY_DEPTH - history_used) % DEBUG_HISTORY_DEPTH); *out = history[(first + index) % DEBUG_HISTORY_DEPTH]; return true; }
 void controller_counters_get(dbg_counters_t *out) { *out = counters; }
 void controller_counters_reset(void) { memset((void *)&counters, 0, sizeof counters); }
 void controller_fault_get(fault_record_t *out) { *out = last_fault; }

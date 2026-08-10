@@ -10,5 +10,6 @@ void console_watchdog_reset(void);
 #ifdef LUFTFUGL_DEBUG
 void console_debug_write(const char *text);
 void console_debug_line(const char *text);
+bool console_event_queue_full(void);
 #endif
 #endif

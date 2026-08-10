@@ -115,4 +115,5 @@ void console_watchdog_reset(void) { write_line("ERR: watchdog reset"); }
 #ifdef LUFTFUGL_DEBUG
 void console_debug_write(const char *text) { write_text(text); }
 void console_debug_line(const char *text) { write_line(text); }
+bool console_event_queue_full(void) { return (uint8_t)((event_head + 1u) % EVENT_QUEUE_DEPTH) == event_tail; }
 #endif
