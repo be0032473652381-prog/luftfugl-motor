@@ -666,3 +666,153 @@ enforcement disappear from the binary entirely.
 
 That is the real reason for the compile guard. Not code size — the fact that a
 shipped build should contain no route to unguarded motion at all.
+
+---
+
+## 13. Interface Resolutions
+
+These five points were under-specified. The resolutions below are binding and
+take precedence over anything implied earlier in this document.
+
+### 13.1 Leaving `ST_FAULT` — `dbg_fault_clear()`
+
+`agent.md` §6.9 governs production behaviour and is not weakened: **after a
+fault, the mechanism cannot be moved without homing.**
+
+`dbg_fault_clear()` exists only under `LUFTFUGL_DEBUG` and does not return the
+system to a normal, movable state. It performs:
+
+```c
+state    = ST_IDLE;
+position = POS_UNKNOWN;      // this is the point
+last_direction = DIR_REV;
+```
+
+Because `position` is `POS_UNKNOWN`, every subsequent `move` returns
+`ERR: position unknown` until a `home` completes. The operator has cleared the
+fault *flag*, not the requirement to re-establish position. §6.9's guarantee
+holds intact.
+
+The prompt requires typing `CLEAR`, for the same reason the other interlocks
+require typed words:
+
+```
+Clearing a fault does not restore position.
+A home sequence will still be required before any move.
+Type CLEAR to confirm:
+```
+
+### 13.2 The debug mailbox
+
+`controller_request(request_kind_t, position_t)` is the **production** API and
+does not change. A one-byte argument cannot carry direction, duty and duration,
+so debug operations use a separate single-slot mailbox.
+
+Remove `REQ_DEBUG_ENTER`, `REQ_DEBUG_DRIVE` and `REQ_DEBUG_EXIT` from
+`request_kind_t` — they are superseded by:
+
+```c
+#ifdef LUFTFUGL_DEBUG
+typedef enum {
+    DBG_OP_NONE = 0,
+    DBG_OP_ENTER,
+    DBG_OP_EXIT,
+    DBG_OP_DRIVE,        // dir, duty, ms
+    DBG_OP_BRAKE,
+    DBG_OP_COAST,
+    DBG_OP_STANDBY,      // flag: true = STBY high
+    DBG_OP_FAULT_CLEAR
+} dbg_op_t;
+
+typedef struct {
+    dbg_op_t    op;
+    direction_t dir;
+    uint8_t     duty;
+    uint16_t    ms;
+    bool        flag;
+} dbg_request_t;
+
+bool controller_debug_request(const dbg_request_t *req);
+#endif
+```
+
+`controller_debug_request()` is called from the main loop, validates against a
+state snapshot, and posts to the single-slot mailbox. It returns `false` — and
+posts nothing — when a debug request is already pending, or when
+`dbg_motor_armed()` is false for any op other than `DBG_OP_EXIT` and
+`DBG_OP_FAULT_CLEAR`.
+
+`controller_tick()` consumes the debug mailbox in the same step where it
+consumes the production mailbox, and executes the op inside `ST_DEBUG`. This
+resolves §13.3 as well: `dbg_motor_brake()`, `dbg_motor_coast()` and
+`dbg_motor_standby()` post `DBG_OP_BRAKE`, `DBG_OP_COAST` and `DBG_OP_STANDBY`
+respectively. **No debug function calls `motor_*` directly** — invariant 7 in
+`function-description.md` §9 holds without exception.
+
+`DBG_OP_DRIVE` arms the controller's own deadline with `ms`, so the duration
+cap survives a stalled main loop.
+
+### 13.3 Runtime configuration overrides
+
+Overrides are a debug-only facility and must cost nothing in a production
+build.
+
+`config.h` keeps the compiled constants exactly as they are. Add:
+
+```c
+#ifdef LUFTFUGL_DEBUG
+typedef struct {
+    uint8_t  duty_normal, duty_approach, duty_creep, duty_min;
+    uint16_t band_p1_max, band_p2_max, band_p3_max, band_p4_max, band_p5_max;
+    uint16_t debounce_ms, brake_hold_ms;
+    uint32_t timeout_step_ms, timeout_home_ms, timeout_recover_ms;
+} cfg_t;
+
+extern volatile cfg_t cfg;
+void cfg_reset(void);          // load compiled defaults
+#endif
+```
+
+Every runtime read in `encoder.c` and `controller.c` goes through an accessor
+macro:
+
+```c
+#ifdef LUFTFUGL_DEBUG
+#  define CFG_DUTY_NORMAL   (cfg.duty_normal)
+#  define CFG_BAND_P1_MAX   (cfg.band_p1_max)
+   /* ...one per overridable value... */
+#else
+#  define CFG_DUTY_NORMAL   DUTY_NORMAL
+#  define CFG_BAND_P1_MAX   BAND_P1_MAX
+#endif
+```
+
+With `LUFTFUGL_DEBUG` off, each macro collapses to the original constant and
+the struct does not exist. Ownership: `cfg` lives in `config.c`, is written
+only by `dbg_cfg_set()` and `cfg_reset()` from the main loop, and is read by
+the tick. It is `volatile` for that reason. Single-word writes are atomic on
+Cortex-M0+, so no critical section is needed.
+
+`cfg_reset()` is called from `dbg_init()`. Pin numbers, `PWM_WRAP`,
+`PWM_CLKDIV`, `FILTER_DEPTH` and `TICK_HZ` are not in the struct and are not
+overridable, as §8 already states.
+
+### 13.4 Exactness of debug output
+
+The prohibition on inventing strings applies to the **production protocol**
+in `agent.md` §7–§8. Those responses are machine-parsed and every character
+matters.
+
+Debug monitor output is human-facing. The rule is:
+
+- Where this document shows an exact output format — the telemetry `T` line,
+  `CAPTURE`, `FINDMIN`, `CAL STEP`, `CAL OVERSHOOT`, `CAL POSITIONS`,
+  `HISTORY`, `SELFTEST MOTION`, the arming prompts — reproduce it exactly.
+- Where it does not, choose clear wording and **list every such choice in the
+  final report**.
+- Never emit a string that could be mistaken for a production response. Debug
+  output must not begin with `POS:`, `OK:`, `ERR:`, `PASS:` or `ARR:` unless
+  this document shows it doing so.
+
+That last rule matters because the two share one UART. A host script watching
+for `ARR:` should never be tripped by a debug menu.
