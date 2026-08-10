@@ -112,3 +112,7 @@ void console_drain_events(void) {
     }
 }
 void console_watchdog_reset(void) { write_line("ERR: watchdog reset"); }
+#ifdef LUFTFUGL_DEBUG
+void console_debug_write(const char *text) { write_text(text); }
+void console_debug_line(const char *text) { write_line(text); }
+#endif

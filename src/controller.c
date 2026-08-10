@@ -4,6 +4,9 @@
 #include "console.h"
 #include "hardware/watchdog.h"
 #include "pico/time.h"
+#ifdef LUFTFUGL_DEBUG
+#include "debug.h"
+#endif
 
 static volatile sys_state_t state;
 static volatile position_t position, target;
@@ -12,6 +15,10 @@ static direction_t last_direction;
 static volatile request_kind_t mailbox;
 static volatile position_t mailbox_arg;
 static uint32_t deadline_ms, brake_until_ms;
+#ifdef LUFTFUGL_DEBUG
+static volatile bool debug_pending;
+static volatile dbg_request_t debug_mailbox;
+#endif
 
 static uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
 static bool reached(uint32_t now, uint32_t deadline) { return deadline && (int32_t)(now - deadline) >= 0; }
@@ -95,6 +102,9 @@ void controller_init(void)
     mailbox = REQ_NONE;
     deadline_ms = 0;
     brake_until_ms = 0;
+#ifdef LUFTFUGL_DEBUG
+    debug_pending = false;
+#endif
 }
 
 move_result_t controller_request(request_kind_t kind, position_t arg)
@@ -116,11 +126,38 @@ move_result_t controller_request(request_kind_t kind, position_t arg)
     return MOVE_OK;
 }
 
+#ifdef LUFTFUGL_DEBUG
+bool controller_debug_request(const dbg_request_t *req)
+{
+    if (debug_pending) return false;
+    if (req->op != DBG_OP_EXIT && req->op != DBG_OP_FAULT_CLEAR && !dbg_motor_armed()) return false;
+    debug_mailbox = *req;
+    debug_pending = true;
+    return true;
+}
+#endif
+
 void controller_tick(void)
 {
     uint32_t now = now_ms();
     position_t changed;
     watchdog_update();
+#ifdef LUFTFUGL_DEBUG
+    if (debug_pending) {
+        dbg_request_t req = debug_mailbox;
+        debug_pending = false;
+        switch (req.op) {
+        case DBG_OP_ENTER: if (state == ST_IDLE) { state = ST_DEBUG; motor_brake(); } break;
+        case DBG_OP_EXIT: motor_brake(); deadline_ms = 0; state = ST_IDLE; break;
+        case DBG_OP_DRIVE: if (state == ST_DEBUG) { motor_drive(req.dir, req.duty); deadline_ms = now + req.ms; } break;
+        case DBG_OP_BRAKE: motor_brake(); deadline_ms = 0; break;
+        case DBG_OP_COAST: if (state == ST_DEBUG) motor_coast(); break;
+        case DBG_OP_STANDBY: if (state == ST_DEBUG) { if (req.flag) motor_enable(); else motor_disable(); } break;
+        case DBG_OP_FAULT_CLEAR: if (state == ST_FAULT) { state = ST_IDLE; position = POS_UNKNOWN; last_valid = POS_UNKNOWN; last_direction = DIR_REV; motor_enable(); motor_brake(); } break;
+        default: break;
+        }
+    }
+#endif
 
     request_kind_t request = mailbox;
     if (request != REQ_NONE) {
@@ -150,6 +187,9 @@ void controller_tick(void)
     }
 
     if (reached(now, deadline_ms)) {
+#ifdef LUFTFUGL_DEBUG
+        if (state == ST_DEBUG) { motor_brake(); deadline_ms = 0; return; }
+#endif
         if (state == ST_MOVING || state == ST_APPROACH) {
             motor_brake(); console_push_event(EV_TIMEOUT, 0); begin_home(now);
         } else if (state == ST_HOMING) enter_fault(EV_FAULT_HOME);
@@ -196,4 +236,8 @@ void controller_tick(void)
 
 sys_state_t controller_state(void) { return state; }
 position_t controller_position(void) { return position; }
+#ifdef LUFTFUGL_DEBUG
+uint32_t controller_deadline_ms(void) { return deadline_ms; }
+direction_t controller_last_direction(void) { return last_direction; }
+#endif
 position_t controller_target(void) { return target; }

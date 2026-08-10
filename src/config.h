@@ -67,6 +67,9 @@ typedef enum {
 } event_kind_t;
 
 #ifdef LUFTFUGL_DEBUG
+typedef enum { DBG_OP_NONE = 0, DBG_OP_ENTER, DBG_OP_EXIT, DBG_OP_DRIVE, DBG_OP_BRAKE, DBG_OP_COAST, DBG_OP_STANDBY, DBG_OP_FAULT_CLEAR } dbg_op_t;
+typedef struct { dbg_op_t op; direction_t dir; uint8_t duty; uint16_t ms; bool flag; } dbg_request_t;
+
 typedef struct {
     uint8_t duty_normal, duty_approach, duty_creep, duty_min;
     uint16_t band_p1_max, band_p2_max, band_p3_max, band_p4_max, band_p5_max;
