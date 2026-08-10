@@ -5,6 +5,12 @@
 #include "hardware/watchdog.h"
 #include "pico/time.h"
 #ifdef LUFTFUGL_DEBUG
+#include <string.h>
+#define TICK_RETURN() goto tick_done
+#else
+#define TICK_RETURN() return
+#endif
+#ifdef LUFTFUGL_DEBUG
 #include "debug.h"
 #endif
 
@@ -18,9 +24,20 @@ static uint32_t deadline_ms, brake_until_ms;
 #ifdef LUFTFUGL_DEBUG
 static volatile bool debug_pending;
 static volatile dbg_request_t debug_mailbox;
+static volatile tick_stats_t tick_stats;
+static volatile hist_entry_t history[16];
+static volatile uint8_t history_head, history_used;
+static volatile dbg_counters_t counters;
+static volatile fault_record_t last_fault;
 #endif
 
 static uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
+#ifdef LUFTFUGL_DEBUG
+static void hist_push(uint32_t ms, position_t pos, uint8_t kind)
+{ history[history_head] = (hist_entry_t){ms, pos, kind}; history_head = (uint8_t)((history_head + 1u) % 16u); if (history_used < 16u) ++history_used; }
+static void timing_finish(uint32_t start)
+{ uint32_t elapsed = time_us_32() - start; if (!tick_stats.count || elapsed < tick_stats.min_us) tick_stats.min_us = elapsed; if (elapsed > tick_stats.max_us) tick_stats.max_us = elapsed; tick_stats.sum_us += elapsed; ++tick_stats.count; if (elapsed > 1000u) { ++tick_stats.overruns; ++counters.tick_overruns; } }
+#endif
 static bool reached(uint32_t now, uint32_t deadline) { return deadline && (int32_t)(now - deadline) >= 0; }
 static bool valid(position_t p) { return p >= POS_MIN && p <= POS_MAX; }
 static uint8_t distance(position_t a, position_t b) { return a > b ? a - b : b - a; }
@@ -44,8 +61,15 @@ static void enter_fault(event_kind_t event)
 {
     motor_brake();
     motor_disable();
+#ifdef LUFTFUGL_DEBUG
+    uint32_t fault_deadline = deadline_ms;
+#endif
     deadline_ms = 0;
     state = ST_FAULT;
+#ifdef LUFTFUGL_DEBUG
+    ++counters.faults;
+    last_fault = (fault_record_t){event, now_ms(), state, position, target, fault_deadline};
+#endif
     console_push_event(event, 0);
 }
 
@@ -83,6 +107,9 @@ static void begin_move(position_t tgt, uint32_t now)
 
 static void enter_recover(uint32_t now)
 {
+#ifdef LUFTFUGL_DEBUG
+    ++counters.recover_entered; hist_push(now, POS_UNKNOWN, 2);
+#endif
     direction_t direction = recover_direction(last_valid);
     state = ST_RECOVER;
     deadline_ms = now + CFG_TIMEOUT_RECOVER_MS;
@@ -91,6 +118,11 @@ static void enter_recover(uint32_t now)
 
 static void arrive(position_t p, uint32_t now)
 {
+#ifdef LUFTFUGL_DEBUG
+    if (state == ST_RECOVER) ++counters.recover_ok;
+    if (state == ST_MOVING || state == ST_APPROACH) ++counters.moves_ok;
+    hist_push(now, p, 1);
+#endif
     motor_brake();
     position = p;
     last_valid = p;
@@ -113,7 +145,7 @@ void controller_init(void)
     deadline_ms = 0;
     brake_until_ms = 0;
 #ifdef LUFTFUGL_DEBUG
-    debug_pending = false;
+    debug_pending = false; memset((void *)&tick_stats, 0, sizeof tick_stats); memset((void *)history, 0, sizeof history); history_head = history_used = 0; memset((void *)&counters, 0, sizeof counters); memset((void *)&last_fault, 0, sizeof last_fault);
 #endif
 }
 
@@ -149,6 +181,9 @@ bool controller_debug_request(const dbg_request_t *req)
 
 void controller_tick(void)
 {
+#ifdef LUFTFUGL_DEBUG
+    uint32_t tick_start = time_us_32();
+#endif
     uint32_t now = now_ms();
     position_t changed;
     watchdog_update();
@@ -193,18 +228,22 @@ void controller_tick(void)
     if (state == ST_BOOT) {
         position = encoder_confirmed();
         if (valid(position)) arrive(position, now); else begin_home(now);
-        return;
+        TICK_RETURN();
     }
 
     if (reached(now, deadline_ms)) {
 #ifdef LUFTFUGL_DEBUG
-        if (state == ST_DEBUG) { motor_brake(); deadline_ms = 0; return; }
+        if (state == ST_DEBUG) { motor_brake(); deadline_ms = 0; TICK_RETURN(); }
 #endif
         if (state == ST_MOVING || state == ST_APPROACH) {
-            motor_brake(); console_push_event(EV_TIMEOUT, 0); begin_home(now);
+            motor_brake();
+#ifdef LUFTFUGL_DEBUG
+            ++counters.moves_timeout;
+#endif
+            console_push_event(EV_TIMEOUT, 0); begin_home(now);
         } else if (state == ST_HOMING) enter_fault(EV_FAULT_HOME);
         else if (state == ST_RECOVER) enter_fault(EV_FAULT_RECOVER);
-        return;
+        TICK_RETURN();
     }
 
     switch (state) {
@@ -213,6 +252,9 @@ void controller_tick(void)
         if (valid(instant) && instant != last_reported && instant != target) {
             last_reported = instant;
             console_push_event(EV_PASS, instant);
+#ifdef LUFTFUGL_DEBUG
+            ++counters.pass_events; hist_push(now, instant, 0);
+#endif
         }
         if (valid(position) && distance(position, target) == 1) {
             state = ST_APPROACH;
@@ -242,6 +284,10 @@ void controller_tick(void)
     default:
         break;
     }
+#ifdef LUFTFUGL_DEBUG
+tick_done:
+    timing_finish(tick_start);
+#endif
 }
 
 sys_state_t controller_state(void) { return state; }
@@ -249,5 +295,12 @@ position_t controller_position(void) { return position; }
 #ifdef LUFTFUGL_DEBUG
 uint32_t controller_deadline_ms(void) { return deadline_ms; }
 direction_t controller_last_direction(void) { return last_direction; }
+void controller_timing_get(tick_stats_t *out) { *out = tick_stats; }
+void controller_timing_reset(void) { memset((void *)&tick_stats, 0, sizeof tick_stats); }
+uint8_t controller_history_count(void) { return history_used; }
+bool controller_history_get(uint8_t index, hist_entry_t *out) { if (index >= history_used) return false; uint8_t first = (uint8_t)((history_head + 16u - history_used) % 16u); *out = history[(first + index) % 16u]; return true; }
+void controller_counters_get(dbg_counters_t *out) { *out = counters; }
+void controller_counters_reset(void) { memset((void *)&counters, 0, sizeof counters); }
+void controller_fault_get(fault_record_t *out) { *out = last_fault; }
 #endif
 position_t controller_target(void) { return target; }
