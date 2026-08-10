@@ -3,3 +3,4 @@ build/
 *.uf2
 *.bin
 *.dis
+build*/

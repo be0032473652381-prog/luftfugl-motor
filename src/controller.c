@@ -1,7 +1,12 @@
 #include "controller.h"
-void controller_init(void) {}
-move_result_t controller_request(request_kind_t kind, position_t arg) { (void)kind; (void)arg; return MOVE_OK; }
-void controller_tick(void) {}
-sys_state_t controller_state(void) { return ST_BOOT; }
-position_t controller_position(void) { return POS_UNKNOWN; }
-position_t controller_target(void) { return POS_UNKNOWN; }
+#include "motor.h"
+#include "encoder.h"
+#include "console.h"
+#include "hardware/watchdog.h"
+static volatile sys_state_t state; static volatile position_t position,target; static direction_t last_dir; static volatile request_kind_t mailbox; static volatile position_t mailbox_arg; static uint32_t deadline; static uint32_t now;
+static bool expired(uint32_t d){return d && (int32_t)(now-d)>=0;}
+static void fault(event_kind_t e){motor_brake();motor_disable();state=ST_FAULT;console_push_event(e,0);}
+void controller_init(void){state=ST_BOOT;position=POS_UNKNOWN;target=POS_UNKNOWN;last_dir=DIR_REV;mailbox=REQ_NONE;deadline=0;now=0;}
+move_result_t controller_request(request_kind_t k,position_t a){if(k==REQ_STOP||k==REQ_HOME){mailbox=k;mailbox_arg=a;return MOVE_OK;}if(state==ST_FAULT)return MOVE_FAULT;if(a<POS_MIN||a>POS_MAX)return MOVE_INVALID;if(position==POS_UNKNOWN)return MOVE_POS_UNKNOWN;if(state==ST_MOVING||state==ST_APPROACH||state==ST_HOMING||state==ST_RECOVER)return MOVE_BUSY;if(a==position)return MOVE_ALREADY;if(position==POS_MIN&&a<position)return MOVE_ENDSTOP;if(position==POS_MAX&&a>position)return MOVE_ENDSTOP;mailbox=k;mailbox_arg=a;return MOVE_OK;}
+void controller_tick(void){now++;watchdog_update();position_t p;if(state==ST_BOOT){p=encoder_confirmed();if(p){position=p;motor_enable();motor_brake();state=ST_IDLE;console_push_event(EV_ARRIVE,p);}else{motor_enable();motor_drive(DIR_REV,DUTY_CREEP);state=ST_HOMING;deadline=now+TIMEOUT_HOME_MS;console_push_event(EV_HOMING,0);}}if(encoder_take_change(&p)){if(p)position=p;if((state==ST_MOVING||state==ST_APPROACH)&&p==target){motor_brake();state=ST_IDLE;console_push_event(EV_ARRIVE,p);}else if(p)console_push_event(EV_PASS,p);}if(state==ST_HOMING&&position==POS_MIN){motor_brake();state=ST_IDLE;target=POS_MIN;console_push_event(EV_ARRIVE,POS_MIN);}if(state==ST_HOMING&&expired(deadline))fault(EV_FAULT_HOME);if(state==ST_RECOVER&&expired(deadline))fault(EV_FAULT_RECOVER);if(mailbox==REQ_STOP){mailbox=REQ_NONE;motor_brake();if(state!=ST_FAULT)state=ST_IDLE;}else if(mailbox==REQ_HOME){mailbox=REQ_NONE;motor_enable();motor_drive(DIR_REV,DUTY_CREEP);state=ST_HOMING;deadline=now+TIMEOUT_HOME_MS;}else if(mailbox==REQ_MOVE){mailbox=REQ_NONE;target=mailbox_arg;last_dir=target>position?DIR_FWD:DIR_REV;motor_enable();motor_drive(last_dir,(target==position+1||target==position-1)?((target==1||target==5)?DUTY_CREEP:DUTY_APPROACH):DUTY_NORMAL);state=((target==position+1||target==position-1)?ST_APPROACH:ST_MOVING);deadline=now+TIMEOUT_STEP_MS;}}
+sys_state_t controller_state(void){return state;} position_t controller_position(void){return position;} position_t controller_target(void){return target;}
