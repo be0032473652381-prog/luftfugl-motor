@@ -121,7 +121,7 @@ root
 │    ├── c  coast
 │    ├── s  standby toggle
 │    └── n  find minimum duty
-├── 4  calibration               [arm required for motion tests]
+├── 4  calibration               [coupled confirm for motion tests]
 │    ├── p  record position readings
 │    ├── s  measure step time
 │    ├── w  measure full travel time
@@ -140,7 +140,7 @@ root
 │    └── k  clear fault
 └── 7  self-test
      ├── s  static tests
-     └── m  motion tests         [arm required]
+     └── m  motion tests         [coupled confirm]
 ```
 
 ---
@@ -261,6 +261,49 @@ Only the exact string `UNCOUPLED` arms it. Anything else aborts. Once armed:
 Requiring the operator to type a word that asserts a physical fact — rather
 than pressing `y` — is deliberate. It is hard to do by reflex.
 
+### Two Interlocks, Not One
+
+Arming with `UNCOUPLED` gates **menu 3 only**. It is the interlock for
+*unguarded* motion — `ST_DEBUG`, limits bypassed, mechanism disconnected.
+
+Menus 4 and 7 are different. Their motion routines run closed-loop through the
+normal state machine with full limit enforcement, and they require the
+mechanism to be **coupled** — measuring step time or verifying arrivals is
+meaningless with the motor spinning free. Gating them behind `UNCOUPLED` would
+force the operator to assert the opposite of what is true.
+
+They therefore use a separate, weaker interlock:
+
+```c
+bool dbg_coupled_confirm(void);
+void dbg_coupled_clear(void);
+bool dbg_coupled(void);
+```
+
+`dbg_coupled_confirm()` prompts:
+
+```
+This test moves the mechanism under closed-loop control.
+Position limits ARE enforced. The mechanism must be connected.
+Type COUPLED to confirm:
+```
+
+| | Menu 3 | Menus 4 and 7 |
+|---|---|---|
+| Phrase | `UNCOUPLED` | `COUPLED` |
+| Limits | bypassed | enforced |
+| State | `ST_DEBUG` | normal states |
+| Mechanism | disconnected | connected |
+| Header | `armed YES` | `coupled YES` |
+
+**The two are mutually exclusive.** Confirming either clears the other, and the
+header never shows both. This is the point of splitting them: the firmware can
+never be in a mode where limits are bypassed *and* the operator has asserted
+the mechanism is attached. Both expire after 120 s of inactivity and clear on
+exit, abort, or `ST_FAULT`.
+
+`dbg_cal_positions` is motion-free and needs neither.
+
 | Key | Function | Behaviour |
 |-----|----------|-----------|
 | `A` | `dbg_motor_arm` / `dbg_motor_disarm` | Toggles the interlock. |
@@ -318,13 +361,16 @@ void dbg_cal_overshoot(void);
 void dbg_cal_report(void);
 ```
 
-| Key | Function | Feeds |
-|-----|----------|-------|
-| `p` | `dbg_cal_positions` | `BAND_*_MAX` |
-| `s` | `dbg_cal_step_time` | `TIMEOUT_STEP_MS` |
-| `w` | `dbg_cal_travel_time` | `TIMEOUT_HOME_MS` |
-| `o` | `dbg_cal_overshoot` | `DUTY_APPROACH`, `DUTY_CREEP` |
-| `r` | `dbg_cal_report` | — |
+Motion routines here require `dbg_coupled()`, not `dbg_motor_armed()`. They
+drive through the normal state machine and limits stay enforced throughout.
+
+| Key | Function | Feeds | Interlock |
+|-----|----------|-------|-----------|
+| `p` | `dbg_cal_positions` | `BAND_*_MAX` | none — motion-free |
+| `s` | `dbg_cal_step_time` | `TIMEOUT_STEP_MS` | `COUPLED` |
+| `w` | `dbg_cal_travel_time` | `TIMEOUT_HOME_MS` | `COUPLED` |
+| `o` | `dbg_cal_overshoot` | `DUTY_APPROACH`, `DUTY_CREEP` | `COUPLED` |
+| `r` | `dbg_cal_report` | — | none |
 
 ### `dbg_cal_positions`
 
@@ -538,7 +584,7 @@ Run this after every configuration change. The band-ordering and coverage
 checks in particular would have caught the arithmetic error in the original
 band table, where position 4's nominal reading fell inside position 5's band.
 
-### `dbg_selftest_motion` — requires arm, coupled mechanism
+### `dbg_selftest_motion` — requires `COUPLED` confirmation
 
 Sequence: home, then step 1→2→3→2→1, verifying that each `ARR` matches the
 commanded target and that no step exceeds its deadline. Reports pass or fail
