@@ -13,14 +13,25 @@ static volatile bool sim_active;
 static volatile uint16_t sim_value;
 #endif
 
-static position_t classify(uint16_t value)
+uint16_t encoder_nominal(position_t position)
 {
-    if (value <= CFG_BAND_P1_MAX) return 1;
-    if (value <= CFG_BAND_P2_MAX) return 2;
-    if (value <= CFG_BAND_P3_MAX) return 3;
-    if (value <= CFG_BAND_P4_MAX) return 4;
-    if (value <= CFG_BAND_P5_MAX) return 5;
-    return POS_UNKNOWN;
+#ifdef LUFTFUGL_DEBUG
+    const volatile uint16_t *active = &cfg.pos_1_adc;
+    return position >= POS_MIN && position <= POS_MAX ? active[position - POS_MIN] : 0u;
+#else
+    static const uint16_t compiled[] = {POS_1_ADC, POS_2_ADC, POS_3_ADC, POS_4_ADC, POS_5_ADC};
+    return position >= POS_MIN && position <= POS_MAX ? compiled[position - POS_MIN] : 0u;
+#endif
+}
+
+static position_t position_at(uint16_t value)
+{
+    for (position_t position = POS_MIN; position <= POS_MAX; ++position) {
+        uint16_t nominal = encoder_nominal(position);
+        uint16_t delta = value > nominal ? value - nominal : nominal - value;
+        if (delta <= CFG_POS_WINDOW) return position;
+    }
+    return POS_BETWEEN;
 }
 
 void encoder_init(void)
@@ -36,7 +47,7 @@ void encoder_init(void)
     }
     raw_value = samples[FILTER_DEPTH - 1u];
     average_value = (uint16_t)(sample_sum / FILTER_DEPTH);
-    instant_position = classify(average_value);
+    instant_position = encoder_in_safe_range() ? position_at(average_value) : POS_UNKNOWN;
     confirmed_position = instant_position;
     stable_ms = CFG_DEBOUNCE_MS;
     confirmed_changed = false;
@@ -56,7 +67,7 @@ void encoder_tick(void)
     sample_sum += raw_value;
     sample_index = (uint8_t)((sample_index + 1u) % FILTER_DEPTH);
     average_value = (uint16_t)(sample_sum / FILTER_DEPTH);
-    position_t classified = classify(average_value);
+    position_t classified = encoder_in_safe_range() ? position_at(average_value) : POS_UNKNOWN;
     if (classified != instant_position) {
         instant_position = classified;
         stable_ms = 1;
@@ -79,6 +90,14 @@ bool encoder_take_change(position_t *out)
     *out = confirmed_position;
     confirmed_changed = false;
     return true;
+}
+bool encoder_in_safe_range(void)
+{
+    return average_value >= CFG_ADC_SAFE_MIN && average_value <= CFG_ADC_SAFE_MAX;
+}
+int16_t encoder_error_to(position_t target)
+{
+    return (int16_t)encoder_nominal(target) - (int16_t)average_value;
 }
 #ifdef LUFTFUGL_DEBUG
 void encoder_sim_enable(bool on) { sim_active = on; }

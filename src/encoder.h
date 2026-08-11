@@ -10,6 +10,9 @@ uint16_t encoder_average(void);
 position_t encoder_instant(void);
 position_t encoder_confirmed(void);
 bool encoder_take_change(position_t *out);
+bool encoder_in_safe_range(void);
+int16_t encoder_error_to(position_t target);
+uint16_t encoder_nominal(position_t position);
 #ifdef LUFTFUGL_DEBUG
 void encoder_sim_enable(bool on);
 bool encoder_sim_active(void);
