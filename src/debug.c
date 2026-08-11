@@ -312,8 +312,8 @@ static void action_poll(uint32_t now)
         action_sample_adc();
         if ((int32_t)(now - action_deadline) < 0) return;
         uint16_t change = encoder_average() > action_start_adc ? encoder_average() - action_start_adc : action_start_adc - encoder_average();
-        bool moved = change > noise_floor || (action_max - action_min) > noise_floor;
-        snprintf(b,sizeof b,moved?"  duty %u  MOTION (adc %u -> %u)":"  duty %u  no motion",action_duty,action_start_adc,encoder_average()); line(b);
+        bool moved = change > noise_floor;
+        snprintf(b,sizeof b,moved?"  duty %u  MOTION (adc %u -> %u, delta %u, noise floor %u)":"  duty %u  no motion (adc %u -> %u, delta %u, noise floor %u)",action_duty,action_start_adc,encoder_average(),change,noise_floor); line(b);
         if (moved) { uint16_t suggested=(uint16_t)((action_duty*(DEBUG_PERCENT_SCALE+DEBUG_FINDMIN_MARGIN_PERCENT)+DEBUG_PERCENT_SCALE-1u)/DEBUG_PERCENT_SCALE);snprintf(b,sizeof b,"FINDMIN result=%u  suggest DUTY_MIN=%u (result +10%% margin)",action_duty,suggested);line(b);action=ACT_NONE;return; }
         if (action_duty >= DEBUG_FINDMIN_DUTY_MAX) { line("FINDMIN stopped at duty 120 without motion"); action=ACT_NONE; return; }
         action_duty += DEBUG_FINDMIN_DUTY_STEP; action_start_adc=encoder_average();dbg_motor_pulse((direction_t)action_stage,action_duty,DEBUG_FINDMIN_PULSE_MS);action_deadline=now+DEBUG_FINDMIN_PULSE_MS;action_min=ADC_MAX_VALUE;action_max=0;return;
