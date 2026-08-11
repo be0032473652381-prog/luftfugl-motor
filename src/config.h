@@ -23,11 +23,18 @@
 #define DUTY_CREEP 50
 #define DUTY_MIN 45
 
-#define BAND_P1_MAX 555
-#define BAND_P2_MAX 1023
-#define BAND_P3_MAX 1678
-#define BAND_P4_MAX 2431
-#define BAND_P5_MAX 3455
+#define POS_1_ADC 372
+#define POS_2_ADC 738
+#define POS_3_ADC 1309
+#define POS_4_ADC 2047
+#define POS_5_ADC 2815
+#define POS_WINDOW 40
+#define APPROACH_COUNTS 200
+#define ADC_SAFE_MIN 272
+#define ADC_SAFE_MAX 2915
+#define STALL_DELTA 8
+#define STALL_WINDOW_MS 300
+#define REVERSE_DELTA 30
 
 #define TICK_HZ 1000
 #define TICK_PERIOD_US 1000u
@@ -36,7 +43,6 @@
 #define BRAKE_HOLD_MS 100
 #define TIMEOUT_STEP_MS 1500
 #define TIMEOUT_HOME_MS 6000
-#define TIMEOUT_RECOVER_MS 2000
 
 #define CONSOLE_LINE_MAX 32
 #define EVENT_QUEUE_DEPTH 8
@@ -103,11 +109,12 @@
 #define POS_UNKNOWN 0
 #define POS_MIN 1
 #define POS_MAX 5
+#define POS_BETWEEN 6
 typedef uint8_t position_t;
 
 typedef enum { DIR_STOP = 0, DIR_FWD, DIR_REV } direction_t;
 typedef enum {
-    ST_BOOT = 0, ST_IDLE, ST_MOVING, ST_APPROACH, ST_HOMING, ST_RECOVER,
+    ST_BOOT = 0, ST_IDLE, ST_MOVING, ST_APPROACH, ST_HOMING,
     ST_FAULT,
 #ifdef LUFTFUGL_DEBUG
     ST_DEBUG,
@@ -121,8 +128,8 @@ typedef enum {
     MOVE_POS_UNKNOWN, MOVE_FAULT
 } move_result_t;
 typedef enum {
-    EV_PASS = 0, EV_ARRIVE, EV_TIMEOUT, EV_FAULT_HOME, EV_FAULT_RECOVER,
-    EV_HOMING, EV_STOPPED_UNKNOWN
+    EV_PASS = 0, EV_ARRIVE, EV_TIMEOUT, EV_FAULT_HOME, EV_HOMING,
+    EV_STOPPED_UNKNOWN, EV_FAULT_OVERTRAVEL, EV_FAULT_STALL, EV_FAULT_DIRECTION
 } event_kind_t;
 
 #ifdef LUFTFUGL_DEBUG
@@ -131,9 +138,11 @@ typedef struct { dbg_op_t op; direction_t dir; uint8_t duty; uint16_t ms; bool f
 
 typedef struct {
     uint8_t duty_normal, duty_approach, duty_creep, duty_min;
-    uint16_t band_p1_max, band_p2_max, band_p3_max, band_p4_max, band_p5_max;
+    uint16_t pos_1_adc, pos_2_adc, pos_3_adc, pos_4_adc, pos_5_adc;
+    uint16_t pos_window, approach_counts, adc_safe_min, adc_safe_max;
+    uint16_t stall_delta, stall_window_ms, reverse_delta;
     uint16_t debounce_ms, brake_hold_ms;
-    uint32_t timeout_step_ms, timeout_home_ms, timeout_recover_ms;
+    uint32_t timeout_step_ms, timeout_home_ms;
 } cfg_t;
 extern volatile cfg_t cfg;
 void cfg_reset(void);
@@ -141,31 +150,43 @@ void cfg_reset(void);
 #define CFG_DUTY_APPROACH (cfg.duty_approach)
 #define CFG_DUTY_CREEP (cfg.duty_creep)
 #define CFG_DUTY_MIN (cfg.duty_min)
-#define CFG_BAND_P1_MAX (cfg.band_p1_max)
-#define CFG_BAND_P2_MAX (cfg.band_p2_max)
-#define CFG_BAND_P3_MAX (cfg.band_p3_max)
-#define CFG_BAND_P4_MAX (cfg.band_p4_max)
-#define CFG_BAND_P5_MAX (cfg.band_p5_max)
+#define CFG_POS_1_ADC (cfg.pos_1_adc)
+#define CFG_POS_2_ADC (cfg.pos_2_adc)
+#define CFG_POS_3_ADC (cfg.pos_3_adc)
+#define CFG_POS_4_ADC (cfg.pos_4_adc)
+#define CFG_POS_5_ADC (cfg.pos_5_adc)
+#define CFG_POS_WINDOW (cfg.pos_window)
+#define CFG_APPROACH_COUNTS (cfg.approach_counts)
+#define CFG_ADC_SAFE_MIN (cfg.adc_safe_min)
+#define CFG_ADC_SAFE_MAX (cfg.adc_safe_max)
+#define CFG_STALL_DELTA (cfg.stall_delta)
+#define CFG_STALL_WINDOW_MS (cfg.stall_window_ms)
+#define CFG_REVERSE_DELTA (cfg.reverse_delta)
 #define CFG_DEBOUNCE_MS (cfg.debounce_ms)
 #define CFG_BRAKE_HOLD_MS (cfg.brake_hold_ms)
 #define CFG_TIMEOUT_STEP_MS (cfg.timeout_step_ms)
 #define CFG_TIMEOUT_HOME_MS (cfg.timeout_home_ms)
-#define CFG_TIMEOUT_RECOVER_MS (cfg.timeout_recover_ms)
 #else
 #define CFG_DUTY_NORMAL DUTY_NORMAL
 #define CFG_DUTY_APPROACH DUTY_APPROACH
 #define CFG_DUTY_CREEP DUTY_CREEP
 #define CFG_DUTY_MIN DUTY_MIN
-#define CFG_BAND_P1_MAX BAND_P1_MAX
-#define CFG_BAND_P2_MAX BAND_P2_MAX
-#define CFG_BAND_P3_MAX BAND_P3_MAX
-#define CFG_BAND_P4_MAX BAND_P4_MAX
-#define CFG_BAND_P5_MAX BAND_P5_MAX
+#define CFG_POS_1_ADC POS_1_ADC
+#define CFG_POS_2_ADC POS_2_ADC
+#define CFG_POS_3_ADC POS_3_ADC
+#define CFG_POS_4_ADC POS_4_ADC
+#define CFG_POS_5_ADC POS_5_ADC
+#define CFG_POS_WINDOW POS_WINDOW
+#define CFG_APPROACH_COUNTS APPROACH_COUNTS
+#define CFG_ADC_SAFE_MIN ADC_SAFE_MIN
+#define CFG_ADC_SAFE_MAX ADC_SAFE_MAX
+#define CFG_STALL_DELTA STALL_DELTA
+#define CFG_STALL_WINDOW_MS STALL_WINDOW_MS
+#define CFG_REVERSE_DELTA REVERSE_DELTA
 #define CFG_DEBOUNCE_MS DEBOUNCE_MS
 #define CFG_BRAKE_HOLD_MS BRAKE_HOLD_MS
 #define CFG_TIMEOUT_STEP_MS TIMEOUT_STEP_MS
 #define CFG_TIMEOUT_HOME_MS TIMEOUT_HOME_MS
-#define CFG_TIMEOUT_RECOVER_MS TIMEOUT_RECOVER_MS
 #endif
 
 #endif
