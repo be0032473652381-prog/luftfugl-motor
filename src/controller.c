@@ -22,7 +22,7 @@ static volatile request_kind_t mailbox;
 static volatile position_t mailbox_arg;
 static uint32_t deadline_ms, brake_until_ms;
 static uint16_t stall_reference, best_error_magnitude;
-static uint32_t stall_check_ms;
+static uint32_t stall_check_ms, direction_check_ms;
 #ifdef LUFTFUGL_DEBUG
 static bool adc_move;
 static uint16_t adc_target;
@@ -96,6 +96,7 @@ static void begin_home(uint32_t now)
     stall_reference = encoder_average();
     best_error_magnitude = error_magnitude(error);
     stall_check_ms = now + CFG_STALL_WINDOW_MS;
+    direction_check_ms = now + CFG_STALL_WINDOW_MS;
     motor_drive(last_direction, speed_for_error(error, target));
     console_push_event(EV_HOMING, 0);
 }
@@ -116,6 +117,7 @@ static void begin_move(position_t tgt, uint32_t now)
     stall_reference = encoder_average();
     best_error_magnitude = error_magnitude(error);
     stall_check_ms = now + CFG_STALL_WINDOW_MS;
+    direction_check_ms = now + CFG_STALL_WINDOW_MS;
     motor_enable();
     motor_drive(last_direction, speed_for_error(error, tgt));
 }
@@ -146,7 +148,7 @@ void controller_init(void)
     deadline_ms = 0;
     brake_until_ms = 0;
     stall_reference = best_error_magnitude = 0u;
-    stall_check_ms = 0u;
+    stall_check_ms = direction_check_ms = 0u;
 #ifdef LUFTFUGL_DEBUG
     adc_move = false; adc_target = 0u; adc_arrival_since = 0u;
     debug_pending = false; memset((void *)&tick_stats, 0, sizeof tick_stats); memset((void *)history, 0, sizeof history); history_head = history_used = 0; memset((void *)&counters, 0, sizeof counters); memset((void *)&last_fault, 0, sizeof last_fault);
@@ -256,6 +258,7 @@ void controller_tick(void)
             state = error_magnitude(error) <= CFG_APPROACH_COUNTS ? ST_APPROACH : ST_MOVING;
             stall_reference = current; best_error_magnitude = error_magnitude(error);
             stall_check_ms = now + CFG_STALL_WINDOW_MS;
+            direction_check_ms = now + CFG_STALL_WINDOW_MS;
             motor_enable(); motor_drive(last_direction, speed_for_error(error, POS_BETWEEN));
             break;
         }
@@ -348,7 +351,7 @@ void controller_tick(void)
         }
 
         if (magnitude < best_error_magnitude) best_error_magnitude = magnitude;
-        else if (magnitude > best_error_magnitude + CFG_REVERSE_DELTA) {
+        else if (reached(now, direction_check_ms) && magnitude > best_error_magnitude && magnitude - best_error_magnitude > CFG_REVERSE_DELTA) {
             enter_fault(EV_FAULT_DIRECTION);
             TICK_RETURN();
         }
@@ -441,7 +444,7 @@ void controller_motion_checks_get(motion_check_status_t *out)
     out->current_delta = current > stall_reference ? current - stall_reference : stall_reference - current;
     out->window_remaining_ms = reached(now, stall_check_ms) ? 0u : stall_check_ms - now;
     out->stall_armed = (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING) && motor_duty() > CFG_DUTY_MIN;
-    out->direction_armed = state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING;
+    out->direction_armed = (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING) && reached(now, direction_check_ms);
 }
 #endif
 position_t controller_target(void) { return target; }

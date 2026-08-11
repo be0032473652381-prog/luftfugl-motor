@@ -107,7 +107,7 @@ static void draw_menu_area(void)
     default: items=" m menus: S status  E encoder  M manual  C calibrate"; break;
     }
     dbg_field_write(11, 1, items);
-    dbg_field_write(12, 1, "           G config  F faults  T selftest  B bench  I sim   q root  x exit");
+    dbg_field_write(12, 1, menu == MENU_ROOT ? "           G config  F faults  T selftest  B bench  I sim" : " ? help     q root     x exit");
 }
 
 void dbg_frame_draw(void)
