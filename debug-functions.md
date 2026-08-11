@@ -1190,3 +1190,246 @@ end-stops.
 - Every simulated sequence reports `RESULT: PASS` or `RESULT: FAIL` with the
   expectation stated, so results do not depend on the operator interpreting the
   output correctly.
+
+---
+
+## 15. Revision 3 — Fixed-Screen Interface
+
+This section supersedes the rendering and navigation model in §3 and §14.2.
+The menu structure, interlocks and every function contract from §4–§14 are
+unchanged; only how they are drawn and reached changes.
+
+Three goals: a screen that updates in place rather than scrolling, a debug mode
+that stays entered, and direct one-key access to the five positions.
+
+### 15.1 The Bandwidth Constraint
+
+An 80×24 screen is about 1920 characters. At 115200 baud that is **167 ms per
+full repaint**. Repainting the whole screen at 5 Hz would consume most of the
+link and make keystrokes feel sluggish.
+
+So the rendering model is:
+
+- **Static frame drawn once** on entry and on menu change (~167 ms, acceptable
+  as a one-off).
+- **Live fields updated individually** by cursor addressing — twelve fields at
+  roughly 22 bytes each is 264 bytes, about 23 ms, or **11 % of the link at
+  5 Hz**.
+- **Never redraw a field whose value has not changed.** In practice most ticks
+  update two or three fields, not twelve.
+
+This is not an optimisation, it is the difference between a usable interface
+and an unusable one. Any implementation that repaints the frame on every
+refresh is wrong.
+
+### 15.2 Terminal Requirements
+
+Requires an ANSI/VT100-capable terminal at **80×24 minimum**. picocom and
+minicom both qualify.
+
+Escape sequences used, and no others:
+
+| Sequence | Purpose |
+|----------|---------|
+| `ESC[2J` | Clear screen |
+| `ESC[H` | Cursor home |
+| `ESC[<r>;<c>H` | Position cursor |
+| `ESC[K` | Erase to end of line |
+| `ESC[?25l` / `ESC[?25h` | Hide / show cursor |
+| `ESC[<t>;<b>r` | Set scrolling region |
+| `ESC[7m` / `ESC[0m` | Reverse video / reset |
+| `ESC[s` / `ESC[u` | Save / restore cursor |
+
+**A plain line-mode fallback is mandatory.** `dbg plain` enters the §14
+line-oriented interface instead. Reason: escape sequences make logs, scripts
+and non-ANSI terminals unreadable, and a diagnostic tool that cannot be
+captured to a file is worth less than one that can. The mode is remembered
+across resets (§15.7).
+
+### 15.3 Screen Layout
+
+```
+ ┌────────────────────────────────────────────────────────────────────────────┐
+1│ luftfugl 1.0          POSITION CONTROL                    up 00:04:12       │
+2│                                                                            │
+3│  state  IDLE          pos  4        adc  2028      err   +19               │
+4│  armed  NO            coupled NO    sim  OFF       faults 0                │
+5│  duty   0             dir  STP      target  -      stall  --               │
+6├────────────────────────────────────────────────────────────────────────────┤
+7│  1 ▸ pos 1   372      4 ▸ pos 4   2047        j  jog          g  goto adc  │
+8│  2 ▸ pos 2   738      5 ▸ pos 5   2815        h  home         s  stop      │
+9│  3 ▸ pos 3  1309                                                           │
+10├────────────────────────────────────────────────────────────────────────────┤
+11│  m menus:  S status   E encoder   M manual   C calibrate                   │
+12│            G config   F faults    T selftest  B bench    I sim             │
+13├────────────────────────────────────────────────────────────────────────────┤
+14│ EVENTS                                                                     │
+15│  00:04:07  ARR:4                                                           │
+16│  00:04:06  PASS:3                                                          │
+17│  00:04:05  OK: moving to 4                                                 │
+...
+24│                                                                            │
+ └────────────────────────────────────────────────────────────────────────────┘
+```
+
+Four fixed regions:
+
+| Rows | Region | Behaviour |
+|------|--------|-----------|
+| 1–5 | Status | Fields updated in place at 5 Hz |
+| 6–9 | Position control | Always present, every menu |
+| 10–13 | Menu area | Redrawn on menu change only |
+| 14–24 | Event log | Scrolling region, `ESC[15;24r` |
+
+The event log is a **scrolling region** set with `ESC[15;24r`, so events scroll
+within rows 15–24 while everything above stays fixed. Writing to the status
+fields wraps in `ESC[s` / `ESC[u` so the log cursor is preserved.
+
+### 15.4 Field Refresh
+
+Only these are live. Each has a fixed screen address and is written only when
+its value changes.
+
+| Field | Row, col | Rate |
+|-------|----------|------|
+| uptime | 1, 62 | 1 Hz |
+| state | 3, 10 | on change |
+| pos | 3, 30 | on change |
+| adc | 3, 45 | 5 Hz |
+| err | 3, 61 | 5 Hz |
+| armed | 4, 10 | on change |
+| coupled | 4, 26 | on change |
+| sim | 4, 41 | on change |
+| faults | 5, 61 | on change |
+| duty | 5, 10 | on change |
+| dir | 5, 26 | on change |
+| target | 5, 41 | on change |
+| stall | 5, 61 | 5 Hz while moving |
+
+`armed`, `coupled` and `sim` render in reverse video when active — an operator
+glancing at the screen must not have to read the word to know the motor can
+move.
+
+### 15.5 Navigation
+
+- **Single keypress, no Enter.** Menu keys act immediately.
+- **The position row is always live**, in every menu. `1`–`5` command a move
+  from anywhere.
+- **`m` cycles focus to the menu area**; letters then select a menu. Menus are
+  letters, positions are digits, so the two can never collide.
+- **`q` returns to the root menu**, `x` exits debug mode entirely.
+- **`?` overlays contextual help** in the event region, cleared by any key.
+- **Prompts** (`UNCOUPLED`, duty values, and so on) take over rows 10–13 and
+  restore the previous menu when done. Line input, terminated by CR, LF or
+  CRLF — see §15.8.
+
+There is no scrolling of the interface itself. Only the event region scrolls.
+
+### 15.6 Position Control — new
+
+Rows 6–9, available from every menu. This is closed-loop movement through
+`controller_request(REQ_MOVE, n)`, with **full limit enforcement**. It needs no
+arming, because nothing here bypasses a safety check.
+
+| Key | Action |
+|-----|--------|
+| `1`–`5` | Move to that position |
+| `h` | Home (move to position 1) |
+| `s` | Stop — immediate brake |
+| `j` | Jog submenu |
+| `g` | Go to a raw ADC value |
+
+Each position line shows its configured nominal value, so the operator can see
+what a key will do before pressing it. The current position is marked `▸`.
+
+**`s` (stop) is live in every menu and every submenu**, including during a
+prompt. It is the one key that must always work.
+
+#### Jog submenu (`j`)
+
+```
+  j ▸ JOG      + / -  step 50 counts      [ / ]  step size      s  stop
+```
+
+`+` and `-` request a move to `current ± step` counts, clamped to the safe
+range. Step size cycles 10 / 25 / 50 / 100 with `[` and `]`.
+
+Jog is closed-loop and limit-enforced. It is the tool for positioning the
+mechanism during calibration without hand-turning it, and it replaces most uses
+of manual drive.
+
+#### Goto raw (`g`)
+
+Prompts for an ADC value, moves there, clamped to the safe range. For probing
+behaviour between stations.
+
+### 15.7 Persistence Across Reset
+
+Re-entering debug after every reset is the main friction in the current
+interface. The RP2040 watchdog scratch registers survive a reset, so:
+
+```c
+#define DBG_SCRATCH_INDEX   3
+#define DBG_MAGIC_FULL      0x4C554631u   /* "LUF1" */
+#define DBG_MAGIC_PLAIN     0x4C554632u   /* "LUF2" */
+```
+
+`dbg_enter()` writes the magic; `dbg_exit()` clears it. `main()` reads
+`watchdog_hw->scratch[DBG_SCRATCH_INDEX]` after `console_init()` and, if it
+matches, enters debug automatically in the corresponding mode.
+
+Scratch registers 4–7 are used by the SDK for reboot signalling. Use index 3 or
+lower.
+
+This means: enter debug once, and it stays entered across resets, watchdog
+resets and reflashes until explicitly exited with `x`. Given how often the
+board resets during bring-up, this is the single largest usability improvement
+in this revision.
+
+### 15.8 Prompt Input
+
+Superseding §13.4 and fixing the defect found on hardware:
+
+- Prompts read a line, not a keystroke.
+- **CR, LF and CRLF are equivalent**, and a leading empty line is discarded.
+  The bug where `A` left a terminator that the following prompt consumed as an
+  empty line must not recur.
+- Prompts echo, so the operator sees what they typed.
+- `ESC` cancels a prompt.
+- The typed-word interlocks are unchanged: `UNCOUPLED`, `COUPLED`, `CLEAR`.
+  Exact match still required.
+
+### 15.9 Functions
+
+```c
+void dbg_screen_init(void);                 /* clear, hide cursor, scroll region */
+void dbg_screen_teardown(void);             /* restore cursor, full-screen scroll */
+void dbg_frame_draw(void);                  /* static frame, once per menu change */
+void dbg_fields_refresh(void);              /* changed live fields only, 5 Hz */
+void dbg_field_write(uint8_t row, uint8_t col, const char *text);
+void dbg_log_push(const char *text);        /* append to the scrolling region */
+void dbg_menu_focus(char key);
+bool dbg_plain_mode(void);
+void dbg_pos_goto(position_t p);            /* closed-loop, limit enforced */
+void dbg_pos_jog(int16_t counts);
+void dbg_pos_goto_adc(uint16_t adc);
+void dbg_pos_step_size(int8_t direction);
+```
+
+`dbg_fields_refresh()` keeps a shadow copy of each field's last rendered text
+and writes only on difference. That shadow is what keeps the refresh inside its
+bandwidth budget.
+
+### 15.10 Constraints
+
+- Everything remains under `LUFTFUGL_DEBUG`. A production build has no escape
+  sequences and no screen state.
+- Rendering happens in the main loop. The tick may never write to the UART —
+  invariant 8 is unchanged.
+- `dbg_log_push()` is called only from the main loop, draining the same event
+  queue as before. The IRQ still only enqueues.
+- Position control uses the normal controller request path. It must not gain a
+  route that bypasses limit enforcement; that remains exclusive to menu 3 under
+  `UNCOUPLED`.
+- If the terminal is narrower than 80 columns the display will wrap and be
+  unreadable. State the requirement on entry; do not attempt to detect it.
