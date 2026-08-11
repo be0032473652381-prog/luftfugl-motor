@@ -174,7 +174,8 @@ move_result_t controller_request(request_kind_t kind, position_t arg)
 bool controller_debug_request(const dbg_request_t *req)
 {
     if (debug_pending && req->op != DBG_OP_EXIT && !(req->op == DBG_OP_SIM_ENABLE && !req->flag)) return false;
-    if (req->op != DBG_OP_EXIT && req->op != DBG_OP_FAULT_CLEAR && req->op != DBG_OP_SIM_ENABLE && !dbg_motor_armed()) return false;
+    if (req->op != DBG_OP_EXIT && req->op != DBG_OP_FAULT_CLEAR && req->op != DBG_OP_SIM_ENABLE &&
+        !(req->op == DBG_OP_ENTER && encoder_sim_active()) && !dbg_motor_armed()) return false;
     debug_mailbox = *req;
     debug_pending = true;
     return true;
@@ -200,7 +201,7 @@ void controller_tick(void)
         case DBG_OP_BRAKE: motor_brake(); deadline_ms = 0; break;
         case DBG_OP_COAST: if (state == ST_DEBUG) motor_coast(); break;
         case DBG_OP_STANDBY: if (state == ST_DEBUG) { if (req.flag) motor_enable(); else motor_disable(); } break;
-        case DBG_OP_FAULT_CLEAR: if (state == ST_FAULT) { state = ST_IDLE; position = encoder_in_safe_range() ? encoder_confirmed() : POS_UNKNOWN; last_direction = DIR_REV; motor_enable(); motor_brake(); } break;
+        case DBG_OP_FAULT_CLEAR: if (state == ST_FAULT) { state = ST_IDLE; position = POS_UNKNOWN; last_direction = DIR_REV; motor_enable(); motor_brake(); } break;
         case DBG_OP_SIM_ENABLE: if (req.flag) { state = ST_IDLE; deadline_ms = 0; motor_set_inhibit(true); encoder_sim_set(DEBUG_SIM_DEFAULT_ADC); encoder_sim_enable(true); } else { encoder_sim_enable(false); motor_set_inhibit(false); motor_enable(); motor_brake(); } break;
         case DBG_OP_GPIO_SET:
             if (req.duty == DEBUG_GPIO_OP_AIN1) { motor_set_inhibit(true); motor_drive(DIR_FWD, PWM_WRAP); }
@@ -222,7 +223,8 @@ void controller_tick(void)
             if (state != ST_FAULT) state = ST_IDLE;
             if (position == POS_UNKNOWN || position == POS_BETWEEN) console_push_event(EV_STOPPED_UNKNOWN, 0);
         } else if (request == REQ_HOME) {
-            begin_home(now);
+            if (encoder_in_safe_range()) begin_home(now);
+            else enter_fault(EV_FAULT_OVERTRAVEL);
         } else if (request == REQ_MOVE) {
             begin_move(arg, now);
         }
