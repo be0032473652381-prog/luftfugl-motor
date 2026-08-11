@@ -24,6 +24,9 @@ static uint32_t deadline_ms, brake_until_ms;
 static uint16_t stall_reference, best_error_magnitude;
 static uint32_t stall_check_ms;
 #ifdef LUFTFUGL_DEBUG
+static bool adc_move;
+static uint16_t adc_target;
+static uint32_t adc_arrival_since;
 static volatile bool debug_pending;
 static volatile dbg_request_t debug_mailbox;
 static volatile tick_stats_t tick_stats;
@@ -145,6 +148,7 @@ void controller_init(void)
     stall_reference = best_error_magnitude = 0u;
     stall_check_ms = 0u;
 #ifdef LUFTFUGL_DEBUG
+    adc_move = false; adc_target = 0u; adc_arrival_since = 0u;
     debug_pending = false; memset((void *)&tick_stats, 0, sizeof tick_stats); memset((void *)history, 0, sizeof history); history_head = history_used = 0; memset((void *)&counters, 0, sizeof counters); memset((void *)&last_fault, 0, sizeof last_fault);
 #endif
 }
@@ -171,10 +175,24 @@ move_result_t controller_request(request_kind_t kind, position_t arg)
 }
 
 #ifdef LUFTFUGL_DEBUG
+move_result_t controller_debug_goto_adc(uint16_t adc)
+{
+    uint32_t now = now_ms();
+    if (state == ST_FAULT) return MOVE_FAULT;
+    if (!encoder_in_safe_range()) return MOVE_POS_UNKNOWN;
+    if (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING || state == ST_DEBUG || reached(now, brake_until_ms)) return MOVE_BUSY;
+    if (adc < CFG_ADC_SAFE_MIN || adc > CFG_ADC_SAFE_MAX) return MOVE_ENDSTOP;
+    uint16_t current = encoder_average();
+    uint16_t delta = current > adc ? current - adc : adc - current;
+    if (delta <= CFG_POS_WINDOW) return MOVE_ALREADY;
+    dbg_request_t req = {.op = DBG_OP_GOTO_ADC, .adc = adc};
+    return controller_debug_request(&req) ? MOVE_OK : MOVE_BUSY;
+}
+
 bool controller_debug_request(const dbg_request_t *req)
 {
     if (debug_pending && req->op != DBG_OP_EXIT && !(req->op == DBG_OP_SIM_ENABLE && !req->flag)) return false;
-    if (req->op != DBG_OP_EXIT && req->op != DBG_OP_FAULT_CLEAR && req->op != DBG_OP_SIM_ENABLE &&
+    if (req->op != DBG_OP_EXIT && req->op != DBG_OP_FAULT_CLEAR && req->op != DBG_OP_SIM_ENABLE && req->op != DBG_OP_GOTO_ADC &&
         !(req->op == DBG_OP_ENTER && encoder_sim_active()) && !dbg_motor_armed()) return false;
     debug_mailbox = *req;
     debug_pending = true;
@@ -228,6 +246,19 @@ void controller_tick(void)
             else if (req.duty == DEBUG_GPIO_OP_STBY) { motor_set_inhibit(false); motor_disable(); motor_enable(); }
             else { motor_set_inhibit(false); motor_disable(); }
             break;
+        case DBG_OP_GOTO_ADC: {
+            uint16_t current = encoder_average();
+            int16_t error = (int16_t)req.adc - (int16_t)current;
+            adc_move = true; adc_target = req.adc; adc_arrival_since = 0u;
+            target = POS_BETWEEN;
+            last_direction = error > 0 ? DIR_FWD : DIR_REV;
+            deadline_ms = now + CFG_TIMEOUT_HOME_MS;
+            state = error_magnitude(error) <= CFG_APPROACH_COUNTS ? ST_APPROACH : ST_MOVING;
+            stall_reference = current; best_error_magnitude = error_magnitude(error);
+            stall_check_ms = now + CFG_STALL_WINDOW_MS;
+            motor_enable(); motor_drive(last_direction, speed_for_error(error, POS_BETWEEN));
+            break;
+        }
         default: break;
         }
     }
@@ -237,6 +268,9 @@ void controller_tick(void)
     if (request != REQ_NONE) {
         position_t arg = mailbox_arg;
         mailbox = REQ_NONE;
+#ifdef LUFTFUGL_DEBUG
+        adc_move = false; adc_arrival_since = 0u;
+#endif
         if (request == REQ_STOP) {
             motor_brake(); deadline_ms = 0; target = POS_UNKNOWN;
             if (state != ST_FAULT) state = ST_IDLE;
@@ -292,7 +326,11 @@ void controller_tick(void)
     }
 
     if (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING) {
-        int16_t error = encoder_error_to(target);
+        int16_t error =
+#ifdef LUFTFUGL_DEBUG
+            adc_move ? (int16_t)adc_target - (int16_t)encoder_average() :
+#endif
+            encoder_error_to(target);
         uint16_t magnitude = error_magnitude(error);
         uint16_t current = encoder_average();
         direction_t direction = error > 0 ? DIR_FWD : DIR_REV;
@@ -302,7 +340,11 @@ void controller_tick(void)
             (current >= encoder_nominal(POS_MAX) - CFG_POS_WINDOW && direction == DIR_FWD)) {
             motor_brake();
         } else if (magnitude > CFG_POS_WINDOW) {
-            motor_drive(direction, speed_for_error(error, target));
+            motor_drive(direction, speed_for_error(error,
+#ifdef LUFTFUGL_DEBUG
+                adc_move ? POS_BETWEEN :
+#endif
+                target));
         }
 
         if (magnitude < best_error_magnitude) best_error_magnitude = magnitude;
@@ -321,11 +363,28 @@ void controller_tick(void)
             stall_check_ms = now + CFG_STALL_WINDOW_MS;
         }
 
+
+#ifdef LUFTFUGL_DEBUG
+        if (adc_move) {
+            if (magnitude <= CFG_POS_WINDOW) {
+                motor_brake();
+                if (!adc_arrival_since) adc_arrival_since = now;
+                else if ((uint32_t)(now - adc_arrival_since) >= CFG_DEBOUNCE_MS) {
+                    deadline_ms = 0; brake_until_ms = now + CFG_BRAKE_HOLD_MS;
+                    state = ST_IDLE; position = encoder_instant(); adc_move = false;
+                    TICK_RETURN();
+                }
+            } else adc_arrival_since = 0u;
+        } else {
+#endif
         if ((target == POS_MIN || target == POS_MAX) && magnitude <= CFG_POS_WINDOW) motor_brake();
         if (encoder_confirmed() == target) {
             arrive(target, now);
             TICK_RETURN();
         }
+#ifdef LUFTFUGL_DEBUG
+        }
+#endif
         if (state != ST_HOMING) state = magnitude <= CFG_APPROACH_COUNTS ? ST_APPROACH : ST_MOVING;
     }
 
@@ -365,6 +424,7 @@ tick_done:
 sys_state_t controller_state(void) { return state; }
 position_t controller_position(void) { return position; }
 #ifdef LUFTFUGL_DEBUG
+uint16_t controller_target_adc(void) { return adc_move ? adc_target : (valid(target) ? encoder_nominal(target) : 0u); }
 uint32_t controller_deadline_ms(void) { return deadline_ms; }
 direction_t controller_last_direction(void) { return last_direction; }
 void controller_timing_get(tick_stats_t *out) { *out = tick_stats; }

@@ -14,6 +14,8 @@ typedef struct { uint32_t moves_ok, moves_timeout, faults, limit_rejects, pass_e
 typedef struct { event_kind_t kind; uint32_t ms; sys_state_t state; position_t pos, target; uint32_t deadline_ms; } fault_record_t;
 typedef struct { uint16_t current_delta; uint32_t window_remaining_ms; bool stall_armed, direction_armed; } motion_check_status_t;
 bool controller_debug_request(const dbg_request_t *req);
+move_result_t controller_debug_goto_adc(uint16_t adc);
+uint16_t controller_target_adc(void);
 uint32_t controller_deadline_ms(void);
 direction_t controller_last_direction(void);
 void controller_timing_get(tick_stats_t *out);

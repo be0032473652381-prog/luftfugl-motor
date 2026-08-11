@@ -97,6 +97,16 @@
 #define DEBUG_GPIO_OP_AIN1 1u
 #define DEBUG_GPIO_OP_AIN2 2u
 #define DEBUG_GPIO_OP_STBY 3u
+#define DEBUG_SCREEN_REFRESH_MS 200u
+#define DEBUG_SCREEN_UPTIME_MS 1000u
+#define DEBUG_JOG_STEP_DEFAULT 50u
+#define DEBUG_JOG_STEP_1 10u
+#define DEBUG_JOG_STEP_2 25u
+#define DEBUG_JOG_STEP_3 50u
+#define DEBUG_JOG_STEP_4 100u
+#define DBG_SCRATCH_INDEX 3u
+#define DBG_MAGIC_FULL 0x4C554631u
+#define DBG_MAGIC_PLAIN 0x4C554632u
 #endif
 
 #define POS_UNKNOWN 0
@@ -126,8 +136,8 @@ typedef enum {
 } event_kind_t;
 
 #ifdef LUFTFUGL_DEBUG
-typedef enum { DBG_OP_NONE = 0, DBG_OP_ENTER, DBG_OP_EXIT, DBG_OP_DRIVE, DBG_OP_BRAKE, DBG_OP_COAST, DBG_OP_STANDBY, DBG_OP_FAULT_CLEAR, DBG_OP_SIM_ENABLE, DBG_OP_GPIO_SET } dbg_op_t;
-typedef struct { dbg_op_t op; direction_t dir; uint8_t duty; uint16_t ms; bool flag; } dbg_request_t;
+typedef enum { DBG_OP_NONE = 0, DBG_OP_ENTER, DBG_OP_EXIT, DBG_OP_DRIVE, DBG_OP_BRAKE, DBG_OP_COAST, DBG_OP_STANDBY, DBG_OP_FAULT_CLEAR, DBG_OP_SIM_ENABLE, DBG_OP_GPIO_SET, DBG_OP_GOTO_ADC } dbg_op_t;
+typedef struct { dbg_op_t op; direction_t dir; uint8_t duty; uint16_t ms; bool flag; uint16_t adc; } dbg_request_t;
 
 typedef struct {
     uint8_t duty_normal, duty_approach, duty_creep, duty_min;

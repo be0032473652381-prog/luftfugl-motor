@@ -76,6 +76,7 @@ static void console_handle_line(char *line) {
     else if (!strcmp(line, "home") && !argument) { (void)controller_request(REQ_HOME, POS_UNKNOWN); write_line("OK: homing"); }
 #ifdef LUFTFUGL_DEBUG
     else if (!strcmp(line, "dbg") && !argument) dbg_enter();
+    else if (!strcmp(line, "dbg") && argument && !strcmp(argument, "plain")) dbg_enter_plain();
 #endif
     else write_line("ERR: unknown command");
 }
@@ -112,7 +113,11 @@ void console_drain_events(void) {
         case EV_FAULT_STALL: snprintf(output, sizeof output, "ERR: stall"); break;
         case EV_FAULT_DIRECTION: snprintf(output, sizeof output, "ERR: direction"); break;
         default: continue;
-        } write_line(output);
+        }
+#ifdef LUFTFUGL_DEBUG
+        if (dbg_active() && !dbg_plain_mode()) dbg_log_push(output); else
+#endif
+        write_line(output);
     }
 }
 void console_watchdog_reset(void) { write_line("ERR: watchdog reset"); }

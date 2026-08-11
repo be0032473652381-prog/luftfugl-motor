@@ -12,11 +12,17 @@
 #include "hardware/pwm.h"
 #include "hardware/structs/pwm.h"
 #include "hardware/watchdog.h"
+#include "hardware/structs/watchdog.h"
 
 typedef enum { MENU_ROOT, MENU_STATUS, MENU_ADC, MENU_MOTOR, MENU_CAL, MENU_CFG, MENU_FAULT, MENU_TEST, MENU_BENCH, MENU_SIM } menu_t;
-typedef enum { PROMPT_NONE, PROMPT_ARM, PROMPT_COUPLED, PROMPT_CLEAR, PROMPT_RATE, PROMPT_DUTY, PROMPT_DURATION, PROMPT_CFG_KEY, PROMPT_CFG_VALUE, PROMPT_SIM_VALUE, PROMPT_SIM_BAND, PROMPT_SIM_FROM, PROMPT_SIM_TO, PROMPT_SIM_MS, PROMPT_SIM_DRIFT } prompt_t;
+typedef enum { PROMPT_NONE, PROMPT_ARM, PROMPT_COUPLED, PROMPT_CLEAR, PROMPT_RATE, PROMPT_DUTY, PROMPT_DURATION, PROMPT_CFG_KEY, PROMPT_CFG_VALUE, PROMPT_SIM_VALUE, PROMPT_SIM_BAND, PROMPT_SIM_FROM, PROMPT_SIM_TO, PROMPT_SIM_MS, PROMPT_SIM_DRIFT, PROMPT_GOTO_ADC } prompt_t;
 typedef enum { ACT_NONE, ACT_STATIC, ACT_FINDMIN_BASE, ACT_FINDMIN_PULSE, ACT_CAL_POS_WAIT, ACT_CAL_POS_SAMPLE, ACT_CAL_STEP, ACT_CAL_TRAVEL, ACT_CAL_OVER, ACT_SELFTEST, ACT_BENCH_PINS, ACT_GPIO_WALK, ACT_TICK_HEALTH, ACT_SIM_TRAVEL, ACT_SIM_PARK, ACT_SIM_DRIFT, ACT_SIM_SWEEP } action_t;
 static bool active, armed, coupled, streaming, monitoring, capturing, echo_enabled;
+static bool plain_mode, menu_focused, jog_mode;
+static uint16_t jog_step;
+static uint32_t next_field_refresh;
+typedef struct { char uptime[16], state[16], pos[8], adc[12], error[12], armed[8], coupled[8], sim[8], faults[12], duty[8], dir[8], target[12], stall[24]; } field_shadow_t;
+static field_shadow_t field_shadow;
 static bool prompt_swallow_lf;
 static menu_t menu;
 static prompt_t prompt;
@@ -51,17 +57,107 @@ static uint32_t ms_now(void) { return to_ms_since_boot(get_absolute_time()); }
 static void dbg_help(void){switch(menu){case MENU_ROOT:line("HELP: choose 1-9; w shows currently runnable tests; x exits debug.");break;case MENU_STATUS:line("HELP: inspect state or stream telemetry; streaming is motion-free.");break;case MENU_ADC:line("HELP: read, monitor, capture, or inspect position windows; no motion required.");break;case MENU_MOTOR:line("HELP: manual outputs require typing UNCOUPLED; simulation must be off.");break;case MENU_CAL:line("HELP: position sampling is motion-free; motion calibration requires COUPLED.");break;case MENU_CFG:line("HELP: overrides are volatile RAM values and reset on debug exit.");break;case MENU_FAULT:line("HELP: inspect faults/history/counters; clearing a fault still requires home.");break;case MENU_TEST:line("HELP: static test is motion-free; motion test requires COUPLED and known position.");break;case MENU_BENCH:line("HELP: all tests are bare-board safe; GPIO walk additionally requires UNCOUPLED.");break;case MENU_SIM:line("HELP: enable simulation first; motor inhibit has no override; any key aborts a sequence.");break;}}
 static const char *state_text(sys_state_t s) { static const char *const n[]={"BOOT","IDLE","MOVING","APPROACH","HOMING","FAULT","DEBUG"}; return n[s]; }
 static const char *dir_text(direction_t d) { return d==DIR_FWD?"FWD":d==DIR_REV?"REV":"STP"; }
-static void line(const char *s) { console_debug_line(s); }
+static void line(const char *s) { if (active && !plain_mode) { size_t n=strlen(s);while(n&&s[n-1u]==' ')--n;if(n&&s[n-1u]==':')dbg_field_write(11,1,s);else dbg_log_push(s); } else console_debug_line(s); }
 static void position_limits(position_t p,uint16_t *lo,uint16_t *hi){if(p<POS_MIN||p>POS_MAX){*lo=CFG_ADC_SAFE_MIN;*hi=CFG_ADC_SAFE_MAX;return;}uint16_t nominal=encoder_nominal(p);*lo=nominal-CFG_POS_WINDOW;*hi=nominal+CFG_POS_WINDOW;}
-static bool post(dbg_op_t op, direction_t dir, uint8_t duty, uint16_t ms, bool flag) { dbg_request_t r={op,dir,duty,ms,flag}; return controller_debug_request(&r); }
+static bool post(dbg_op_t op, direction_t dir, uint8_t duty, uint16_t ms, bool flag) { dbg_request_t r={.op=op,.dir=dir,.duty=duty,.ms=ms,.flag=flag}; return controller_debug_request(&r); }
 static void activity(void) { uint32_t n=ms_now(); if(armed)arm_deadline=n+DEBUG_INTERLOCK_TIMEOUT_MS;if(coupled)coupled_deadline=n+DEBUG_INTERLOCK_TIMEOUT_MS; }
 
-void dbg_init(void) { cfg_reset(); active=armed=coupled=streaming=monitoring=capturing=false; menu=MENU_ROOT; prompt=PROMPT_NONE; prompt_swallow_lf=false; pulse_duty=DUTY_CREEP; pulse_ms=DEBUG_PULSE_DEFAULT_MS; stream_hz=DEBUG_STREAM_DEFAULT_HZ; action=ACT_NONE; echo_enabled=false; }
-void dbg_enter(void) { echo_enabled=true; active=true; menu=MENU_ROOT; dbg_render(); }
-void dbg_exit(void) { echo_enabled=false; (void)post(DBG_OP_EXIT,DIR_STOP,0,0,false); armed=coupled=false; streaming=monitoring=capturing=false; action=ACT_NONE; cfg_reset(); active=false; line("debug exited"); }
+void dbg_field_write(uint8_t row, uint8_t col, const char *text)
+{
+    char esc[24];
+    console_debug_write("\033[s");
+    snprintf(esc, sizeof esc, "\033[%u;%uH", row, col);
+    console_debug_write(esc); console_debug_write(text); console_debug_write("    \033[u");
+}
+
+void dbg_log_push(const char *text)
+{
+    char prefix[20]; uint32_t seconds = ms_now() / 1000u;
+    snprintf(prefix, sizeof prefix, "  %02lu:%02lu:%02lu  ", (unsigned long)(seconds / 3600u), (unsigned long)((seconds / 60u) % 60u), (unsigned long)(seconds % 60u));
+    console_debug_write("\033[s\033[24;1H"); console_debug_write(prefix); console_debug_write(text); console_debug_write("\033[K\r\n\033[u");
+}
+
+bool dbg_plain_mode(void) { return plain_mode; }
+void dbg_screen_init(void) { console_debug_write("\033[2J\033[H\033[?25l\033[15;24r"); }
+void dbg_screen_teardown(void) { console_debug_write("\033[1;24r\033[?25h\033[2J\033[H"); }
+
+static void draw_position_rows(void)
+{
+    char b[80]; position_t p = controller_position();
+    snprintf(b, sizeof b, "  1 %c pos 1 %5u      4 %c pos 4 %5u        j jog          g goto adc", p == 1 ? '>' : ' ', encoder_nominal(1), p == 4 ? '>' : ' ', encoder_nominal(4)); dbg_field_write(7, 1, b);
+    snprintf(b, sizeof b, "  2 %c pos 2 %5u      5 %c pos 5 %5u        h home         s stop", p == 2 ? '>' : ' ', encoder_nominal(2), p == 5 ? '>' : ' ', encoder_nominal(5)); dbg_field_write(8, 1, b);
+    snprintf(b, sizeof b, "  3 %c pos 3 %5u", p == 3 ? '>' : ' ', encoder_nominal(3)); dbg_field_write(9, 1, b);
+}
+
+static void draw_menu_area(void)
+{
+    const char *items;
+    switch (menu) {
+    case MENU_STATUS: items=" STATUS: t telemetry  r rate  k timing  z reset"; break;
+    case MENU_ADC: items=" ENCODER: a reading  m monitor  c capture  b table  e error"; break;
+    case MENU_MOTOR: items=" MANUAL: A arm  f/v pulse  d duty  t time  b brake  c coast  n findmin"; break;
+    case MENU_CAL: items=" CALIBRATE: p positions  s step  w travel  o overshoot  r report"; break;
+    case MENU_CFG: items=" CONFIG: l list  s set  d defaults  e export"; break;
+    case MENU_FAULT: items=" FAULTS: f last  h history  c counters  z reset  k clear"; break;
+    case MENU_TEST: items=" SELFTEST: s static  m motion"; break;
+    case MENU_BENCH: items=" BENCH: p pins  g gpio  f pwm  t tick  r reset  o protocol  e echo"; break;
+    case MENU_SIM: items=" SIM: e enable  v adc  b position  t travel  p park  l limit  s sweep"; break;
+    default: items=" m menus: S status  E encoder  M manual  C calibrate"; break;
+    }
+    dbg_field_write(11, 1, items);
+    dbg_field_write(12, 1, "           G config  F faults  T selftest  B bench  I sim   q root  x exit");
+}
+
+void dbg_frame_draw(void)
+{
+    console_debug_write("\033[2J\033[H");
+    dbg_field_write(1, 1, " luftfugl " FW_VERSION "          POSITION CONTROL                    up 00:00:00");
+    dbg_field_write(3, 1, "  state  --          pos  --       adc  ----      err   ----");
+    dbg_field_write(4, 1, "  armed  --          coupled --    sim  ---       faults --");
+    dbg_field_write(5, 1, "  duty   --          dir  ---      target --     stall  --");
+    dbg_field_write(6, 1, "-------------------------------------------------------------------------------"); draw_position_rows();
+    dbg_field_write(10, 1, "-------------------------------------------------------------------------------"); draw_menu_area();
+    dbg_field_write(13, 1, "-------------------------------------------------------------------------------"); dbg_field_write(14, 1, " EVENTS");
+    console_debug_write("\033[15;24r\033[24;1H"); memset(&field_shadow, 0, sizeof field_shadow); dbg_fields_refresh();
+}
+
+static void refresh_field(char *shadow, size_t size, uint8_t row, uint8_t col, const char *value, bool reverse)
+{
+    if (!strcmp(shadow, value)) return;
+    strncpy(shadow, value, size - 1u); shadow[size - 1u] = 0;
+    char b[40]; snprintf(b, sizeof b, reverse ? "\033[7m%s\033[0m" : "%s", value); dbg_field_write(row, col, b);
+}
+
+void dbg_fields_refresh(void)
+{
+    char b[24]; dbg_counters_t c; motion_check_status_t checks; uint32_t seconds = ms_now() / 1000u;
+    controller_counters_get(&c); controller_motion_checks_get(&checks);
+    snprintf(b, sizeof b, "%02lu:%02lu:%02lu", (unsigned long)(seconds / 3600u), (unsigned long)((seconds / 60u) % 60u), (unsigned long)(seconds % 60u)); refresh_field(field_shadow.uptime, sizeof field_shadow.uptime, 1, 65, b, false);
+    refresh_field(field_shadow.state, sizeof field_shadow.state, 3, 10, state_text(controller_state()), false);
+    position_t p = controller_position(); if (p >= POS_MIN && p <= POS_MAX) snprintf(b, sizeof b, "%u", p); else snprintf(b, sizeof b, "?"); if (strcmp(field_shadow.pos, b)) { refresh_field(field_shadow.pos, sizeof field_shadow.pos, 3, 30, b, false); draw_position_rows(); }
+    snprintf(b, sizeof b, "%u", encoder_average()); refresh_field(field_shadow.adc, sizeof field_shadow.adc, 3, 45, b, false);
+    uint16_t tgt = controller_target_adc(); if (tgt) snprintf(b, sizeof b, "%+d", (int16_t)tgt - (int16_t)encoder_average()); else snprintf(b, sizeof b, "--"); refresh_field(field_shadow.error, sizeof field_shadow.error, 3, 61, b, false);
+    refresh_field(field_shadow.armed, sizeof field_shadow.armed, 4, 10, armed ? "YES" : "NO", armed); refresh_field(field_shadow.coupled, sizeof field_shadow.coupled, 4, 26, coupled ? "YES" : "NO", coupled); refresh_field(field_shadow.sim, sizeof field_shadow.sim, 4, 41, encoder_sim_active() ? "ON" : "OFF", encoder_sim_active());
+    snprintf(b, sizeof b, "%lu", (unsigned long)c.faults); refresh_field(field_shadow.faults, sizeof field_shadow.faults, 4, 61, b, false); snprintf(b, sizeof b, "%u", motor_duty()); refresh_field(field_shadow.duty, sizeof field_shadow.duty, 5, 10, b, false); refresh_field(field_shadow.dir, sizeof field_shadow.dir, 5, 26, dir_text(motor_direction()), false);
+    position_t tp = controller_target(); if (tp >= POS_MIN && tp <= POS_MAX) snprintf(b, sizeof b, "%u", tp); else if (tgt) snprintf(b, sizeof b, "%u", tgt); else snprintf(b, sizeof b, "-"); refresh_field(field_shadow.target, sizeof field_shadow.target, 5, 41, b, false);
+    if (checks.stall_armed) snprintf(b, sizeof b, "%u/%lums", checks.current_delta, (unsigned long)checks.window_remaining_ms); else snprintf(b, sizeof b, "--"); refresh_field(field_shadow.stall, sizeof field_shadow.stall, 5, 61, b, false);
+}
+
+void dbg_menu_focus(char key) { switch (key) { case 'S': menu=MENU_STATUS; break; case 'E': menu=MENU_ADC; break; case 'M': menu=MENU_MOTOR; break; case 'C': menu=MENU_CAL; break; case 'G': menu=MENU_CFG; break; case 'F': menu=MENU_FAULT; break; case 'T': menu=MENU_TEST; break; case 'B': menu=MENU_BENCH; break; case 'I': menu=MENU_SIM; break; default:return; } menu_focused=false; draw_menu_area(); }
+void dbg_pos_goto(position_t p) { move_result_t r=controller_request(REQ_MOVE,p); char b[48]; snprintf(b,sizeof b,"position %u request: %s",p,r==MOVE_OK?"accepted":r==MOVE_ALREADY?"already there":"rejected");line(b); }
+void dbg_pos_goto_adc(uint16_t adc) { if(adc<CFG_ADC_SAFE_MIN)adc=CFG_ADC_SAFE_MIN;if(adc>CFG_ADC_SAFE_MAX)adc=CFG_ADC_SAFE_MAX;move_result_t r=controller_debug_goto_adc(adc);char b[56];snprintf(b,sizeof b,"goto adc %u: %s",adc,r==MOVE_OK?"accepted":r==MOVE_ALREADY?"already in window":"rejected");line(b); }
+void dbg_pos_jog(int16_t counts) { int32_t adc=(int32_t)encoder_average()+counts;if(adc<CFG_ADC_SAFE_MIN)adc=CFG_ADC_SAFE_MIN;if(adc>CFG_ADC_SAFE_MAX)adc=CFG_ADC_SAFE_MAX;dbg_pos_goto_adc((uint16_t)adc); }
+void dbg_pos_step_size(int8_t direction) { static const uint16_t steps[]={DEBUG_JOG_STEP_1,DEBUG_JOG_STEP_2,DEBUG_JOG_STEP_3,DEBUG_JOG_STEP_4};uint8_t i=0;while(i<4u&&steps[i]!=jog_step)++i;i=direction>0?(uint8_t)((i+1u)%4u):(uint8_t)((i+3u)%4u);jog_step=steps[i];char b[40];snprintf(b,sizeof b,"jog step %u counts",jog_step);line(b); }
+
+void dbg_init(void) { cfg_reset(); active=armed=coupled=streaming=monitoring=capturing=false; plain_mode=false;menu_focused=jog_mode=false;jog_step=DEBUG_JOG_STEP_DEFAULT;next_field_refresh=0;menu=MENU_ROOT;prompt=PROMPT_NONE;prompt_swallow_lf=false;pulse_duty=DUTY_CREEP;pulse_ms=DEBUG_PULSE_DEFAULT_MS;stream_hz=DEBUG_STREAM_DEFAULT_HZ;action=ACT_NONE;echo_enabled=false; }
+static void enter_mode(bool plain) { plain_mode=plain;echo_enabled=true;active=true;menu=MENU_ROOT;watchdog_hw->scratch[DBG_SCRATCH_INDEX]=plain?DBG_MAGIC_PLAIN:DBG_MAGIC_FULL;if(plain)dbg_render();else{dbg_screen_init();dbg_frame_draw();dbg_log_push("debug entered; ANSI/VT100 80x24 minimum");} }
+void dbg_enter(void) { enter_mode(false); }
+void dbg_enter_plain(void) { enter_mode(true); }
+void dbg_restore_mode(void) { uint32_t magic=watchdog_hw->scratch[DBG_SCRATCH_INDEX];if(magic==DBG_MAGIC_FULL)enter_mode(false);else if(magic==DBG_MAGIC_PLAIN)enter_mode(true); }
+void dbg_exit(void) { bool was_plain=plain_mode;echo_enabled=false;(void)post(DBG_OP_EXIT,DIR_STOP,0,0,false);armed=coupled=false;streaming=monitoring=capturing=false;action=ACT_NONE;cfg_reset();watchdog_hw->scratch[DBG_SCRATCH_INDEX]=0;active=false;if(!was_plain)dbg_screen_teardown();console_debug_line("debug exited"); }
 bool dbg_active(void) { return active; }
 void dbg_render_header(void) { char b[DEBUG_HEADER_BUFFER_SIZE];dbg_counters_t c;uint16_t v=encoder_average();position_t p=encoder_instant();int16_t error=(p>=POS_MIN&&p<=POS_MAX)?encoder_error_to(p):0;controller_counters_get(&c);snprintf(b,sizeof b,"=== luftfugl debug 1.0 ============================\r\n state %s   pos %s   adc %u (error %+d counts)\r\n armed %s     coupled %s     sim %s     faults %lu\r\n===================================================",state_text(controller_state()),p==1?"1":p==2?"2":p==3?"3":p==4?"4":p==5?"5":"?",v,error,armed?"YES":"NO",coupled?"YES":"NO",encoder_sim_active()?"\033[7mON\033[0m":"OFF",(unsigned long)c.faults);line(b);}
-void dbg_render(void) { char b[DEBUG_MENU_BUFFER_SIZE];dbg_render_header();switch(menu){
+void dbg_render(void) { char b[DEBUG_MENU_BUFFER_SIZE];if(!plain_mode){dbg_frame_draw();return;}dbg_render_header();switch(menu){
 case MENU_ROOT:snprintf(b,sizeof b," 1  status & telemetry .... stream %s\r\n 2  encoder & adc ......... avg %u\r\n 3  motor manual .......... %s\r\n 4  calibration ........... %s\r\n 5  configuration ......... defaults/overrides\r\n 6  faults & history ...... state %s\r\n 7  self-test ............. static ready\r\n 8  bench tests ........... bare-board ready\r\n 9  simulation ............ %s\r\n w  what can run now\r\n x  exit",streaming?"ON":"OFF",encoder_average(),armed?"ARMED":"needs UNCOUPLED",coupled?"COUPLED":"needs COUPLED",state_text(controller_state()),encoder_sim_active()?"ON":"OFF");line(b);break;
 case MENU_STATUS:snprintf(b,sizeof b," s  state dump ............ %s\r\n t  telemetry stream ...... %s\r\n r  stream rate ........... %u Hz\r\n k  tick timing ........... measured\r\n z  reset timing stats\r\n ?  help   w available   q back   x exit",state_text(controller_state()),streaming?"ON":"OFF",stream_hz);line(b);break;
 case MENU_ADC:snprintf(b,sizeof b," a  adc reading ........... raw %u avg %u\r\n m  live monitor .......... %s\r\n c  min/max capture ....... %s\r\n b  position table ........ active\r\n e  position error ........ current\r\n ? help   w available   q back   x exit",encoder_raw(),encoder_average(),monitoring?"ON":"OFF",capturing?"ON":"OFF");line(b);break;
@@ -87,12 +183,15 @@ else if(prompt==PROMPT_SIM_FROM){long v=strtol(input,NULL,10);if(v>=POS_MIN&&v<=
 else if(prompt==PROMPT_SIM_TO){long v=strtol(input,NULL,10);if(v>=POS_MIN&&v<=POS_MAX){sim_to=(position_t)v;line("milliseconds per position (12-65535 ms): ");prompt=PROMPT_SIM_MS;input_len=0;return;}else line("rejected: to position must be 1-5");}
 else if(prompt==PROMPT_SIM_MS){long v=strtol(input,NULL,10);if(v>=DEBUG_SIM_MIN_POSITION_MS&&v<=UINT16_MAX)dbg_sim_travel(sim_from,sim_to,(uint16_t)v);else line("rejected: rate is below debounce window or out of range");}
 else if(prompt==PROMPT_SIM_DRIFT){long v=strtol(input,NULL,10);if(v==POS_MIN||v==POS_MAX)dbg_sim_overtravel((position_t)v);else line("rejected: limit must be 1 or 5");}
-prompt=PROMPT_NONE;input_len=0; }
+    else if(prompt==PROMPT_GOTO_ADC){long v=strtol(input,NULL,10);if(v>=0&&v<=(long)ADC_MAX_VALUE)dbg_pos_goto_adc((uint16_t)v);else line("rejected: adc must be 0-4095 counts");}
+prompt=PROMPT_NONE;input_len=0;if(!plain_mode)draw_menu_area(); }
 
 static bool handle_prompt_char(char c)
 {
     static bool previous_was_cr;
     if (prompt == PROMPT_NONE) return false;
+    if (c == 27) { prompt = PROMPT_NONE; input_len = 0; line("prompt cancelled"); if (!plain_mode) draw_menu_area(); return true; }
+    if (!plain_mode && c == 's') { (void)controller_request(REQ_STOP, 0); line("stop requested"); return true; }
     if (c == '\n' && previous_was_cr) {
         previous_was_cr = false;
         return true;
@@ -120,8 +219,8 @@ static bool handle_prompt_char(char c)
     return true;
 }
 
-void dbg_handle_key(char c) { if(handle_prompt_char(c))return; if(prompt_swallow_lf){prompt_swallow_lf=false;if(c=='\n')return;}if(prompt!=PROMPT_NONE&&(c=='\r'||c=='\n')){if(!input_len)return;if(echo_enabled)console_debug_write("\r\n");prompt_swallow_lf=c=='\r';finish_prompt();return;} if((c=='\b'||c==127)&&prompt!=PROMPT_NONE){if(input_len){--input_len;if(echo_enabled)console_debug_write("\b \b");}return;}if(echo_enabled){if(c=='\n')console_debug_write("\r\n");else if(c!='\r'){char e[2]={c,0};console_debug_write(e);}} if(action!=ACT_NONE){ if(action==ACT_BENCH_PINS){action=ACT_NONE;line("PIN STATE stopped");return;} if(action==ACT_CAL_POS_WAIT&&c==' '){action=ACT_CAL_POS_SAMPLE;action_started=ms_now();action_deadline=action_started+DEBUG_CAL_SAMPLE_MS;action_sum=action_count=0;action_min=ADC_MAX_VALUE;action_max=0;return;} dbg_abort(); return; } if(prompt!=PROMPT_NONE){if(c=='\r')return;if(c=='\n'){finish_prompt();return;}if(input_len<CONSOLE_LINE_MAX)input[input_len++]=c;return;} activity(); if(c=='x'){dbg_exit();return;}if(c=='w'){dbg_what_can_run();return;}if(c=='?'){dbg_help();return;}if(c=='q'){menu=MENU_ROOT;dbg_render();return;}if(menu==MENU_ROOT&&c>='1'&&c<='9'){menu=(menu_t)(c-'0');dbg_render();return;}switch(menu){case MENU_STATUS:if(c=='s')dbg_status_dump();else if(c=='t')dbg_stream_toggle();else if(c=='r'){{char b[64];snprintf(b,sizeof b,"rate (1-50 Hz, current %u Hz):",stream_hz);line(b);}prompt=PROMPT_RATE;input_len=0;}else if(c=='k')dbg_timing_stats();else if(c=='z')dbg_timing_reset();break;case MENU_ADC:if(c=='a')dbg_adc_read_once();else if(c=='m')dbg_adc_monitor_toggle();else if(c=='c')dbg_adc_capture_toggle();else if(c=='b')dbg_position_table();else if(c=='e')dbg_position_error();break;case MENU_MOTOR:if(c=='A'){if(armed)dbg_motor_disarm();else dbg_motor_arm();}else if(c=='f')dbg_motor_pulse(DIR_FWD,pulse_duty,pulse_ms);else if(c=='v')dbg_motor_pulse(DIR_REV,pulse_duty,pulse_ms);else if(c=='d'){{char b[64];snprintf(b,sizeof b,"duty (0-255, current %u): ",pulse_duty);line(b);}prompt=PROMPT_DUTY;input_len=0;}else if(c=='t'){{char b[72];snprintf(b,sizeof b,"duration (10-2000 ms, current %u ms): ",pulse_ms);line(b);}prompt=PROMPT_DURATION;input_len=0;}else if(c=='b')dbg_motor_brake();else if(c=='c')dbg_motor_coast();else if(c=='s')dbg_motor_standby(true);else if(c=='n')dbg_motor_find_min(DIR_FWD);break;case MENU_CAL:if(c=='p')dbg_cal_positions();else if(c=='s')dbg_cal_step_time();else if(c=='w')dbg_cal_travel_time();else if(c=='o')dbg_cal_overshoot();else if(c=='r')dbg_cal_report();break;case MENU_CFG:if(c=='l')dbg_cfg_list();else if(c=='s'){line("key:");prompt=PROMPT_CFG_KEY;input_len=0;}else if(c=='d')dbg_cfg_reset();else if(c=='e')dbg_cfg_export();break;case MENU_FAULT:if(c=='f')dbg_fault_show();else if(c=='h')dbg_history_dump();else if(c=='c')dbg_counters_show();else if(c=='z')dbg_counters_reset();else if(c=='k')dbg_fault_clear();break;case MENU_TEST:if(c=='s')dbg_selftest_static();else if(c=='m')dbg_selftest_motion();break;case MENU_BENCH:if(c=='p')dbg_bench_pins();else if(c=='g')dbg_bench_gpio_walk();else if(c=='f')dbg_bench_pwm_report();else if(c=='t')dbg_bench_tick_health();else if(c=='r')dbg_bench_reset_reason();else if(c=='o')dbg_bench_protocol_list();else if(c=='e')dbg_bench_echo_toggle();else if(c=='s')dbg_bench_motion_checks();break;case MENU_SIM:if(c=='e')dbg_sim_toggle();else if(c=='v'){line("adc value (0-4095, unit counts): ");prompt=PROMPT_SIM_VALUE;input_len=0;}else if(c=='b'){line("position (1-5): ");prompt=PROMPT_SIM_BAND;input_len=0;}else if(c=='t'){line("from position (1-5): ");prompt=PROMPT_SIM_FROM;input_len=0;}else if(c=='p')dbg_sim_park();else if(c=='l'){line("limit (1 or 5): ");prompt=PROMPT_SIM_DRIFT;input_len=0;}else if(c=='s')dbg_sim_sweep();break;default:break;} }
-void dbg_poll(void) { uint32_t n=ms_now(); action_poll(n);if(armed&&(int32_t)(n-arm_deadline)>=0)dbg_motor_disarm();if(coupled&&(int32_t)(n-coupled_deadline)>=0)dbg_coupled_clear();if(streaming&&(int32_t)(n-next_stream)>=0){char b[128];snprintf(b,sizeof b,"T %lu %s %u %u %s %u %u %u",(unsigned long)n,state_text(controller_state()),controller_position(),controller_target(),dir_text(motor_direction()),motor_duty(),encoder_raw(),encoder_average());line(b);next_stream=n+DEBUG_SELFTEST_WINDOW_MS/stream_hz;}if(monitoring&&(int32_t)(n-next_stream)>=0){dbg_adc_read_once();next_stream=n+DEBUG_ADC_MONITOR_PERIOD_MS;}if(capturing){uint16_t v=encoder_average();if(!capture_samples||v<capture_min)capture_min=v;if(!capture_samples||v>capture_max)capture_max=v;capture_samples++;} }
+void dbg_handle_key(char c) { if(handle_prompt_char(c))return; if(!plain_mode){if(c=='s'){(void)controller_request(REQ_STOP,0);line("stop requested");return;}if(c>='1'&&c<='5'){dbg_pos_goto((position_t)(c-'0'));return;}if(c=='h'){if(controller_state()==ST_FAULT)line("rejected: faulted; clear fault before motion");else{(void)controller_request(REQ_HOME,0);line("home requested");}return;}if(c=='m'){menu_focused=true;line("menu focus: press S E M C G F T B or I");return;}if(menu_focused){dbg_menu_focus(c);return;}if(c=='j'){jog_mode=true;line("JOG: + or -, [ or ] changes step, s stops");return;}if(jog_mode&&(c=='+'||c=='-')){dbg_pos_jog(c=='+'?(int16_t)jog_step:-(int16_t)jog_step);return;}if(jog_mode&&(c=='['||c==']')){dbg_pos_step_size(c==']'?1:-1);return;}if(c=='g'){dbg_field_write(11,1,"goto adc (0-4095 counts, clamped safe):");prompt=PROMPT_GOTO_ADC;input_len=0;return;}} if(prompt_swallow_lf){prompt_swallow_lf=false;if(c=='\n')return;}if(prompt!=PROMPT_NONE&&(c=='\r'||c=='\n')){if(!input_len)return;if(echo_enabled)console_debug_write("\r\n");prompt_swallow_lf=c=='\r';finish_prompt();return;} if((c=='\b'||c==127)&&prompt!=PROMPT_NONE){if(input_len){--input_len;if(echo_enabled)console_debug_write("\b \b");}return;}if(echo_enabled){if(c=='\n')console_debug_write("\r\n");else if(c!='\r'){char e[2]={c,0};console_debug_write(e);}} if(action!=ACT_NONE){ if(action==ACT_BENCH_PINS){action=ACT_NONE;line("PIN STATE stopped");return;} if(action==ACT_CAL_POS_WAIT&&c==' '){action=ACT_CAL_POS_SAMPLE;action_started=ms_now();action_deadline=action_started+DEBUG_CAL_SAMPLE_MS;action_sum=action_count=0;action_min=ADC_MAX_VALUE;action_max=0;return;} dbg_abort(); return; } if(prompt!=PROMPT_NONE){if(c=='\r')return;if(c=='\n'){finish_prompt();return;}if(input_len<CONSOLE_LINE_MAX)input[input_len++]=c;return;} activity(); if(c=='x'){dbg_exit();return;}if(c=='w'){dbg_what_can_run();return;}if(c=='?'){dbg_help();return;}if(c=='q'){menu=MENU_ROOT;dbg_render();return;}if(menu==MENU_ROOT&&c>='1'&&c<='9'){menu=(menu_t)(c-'0');dbg_render();return;}switch(menu){case MENU_STATUS:if(c=='s')dbg_status_dump();else if(c=='t')dbg_stream_toggle();else if(c=='r'){{char b[64];snprintf(b,sizeof b,"rate (1-50 Hz, current %u Hz):",stream_hz);line(b);}prompt=PROMPT_RATE;input_len=0;}else if(c=='k')dbg_timing_stats();else if(c=='z')dbg_timing_reset();break;case MENU_ADC:if(c=='a')dbg_adc_read_once();else if(c=='m')dbg_adc_monitor_toggle();else if(c=='c')dbg_adc_capture_toggle();else if(c=='b')dbg_position_table();else if(c=='e')dbg_position_error();break;case MENU_MOTOR:if(c=='A'){if(armed)dbg_motor_disarm();else dbg_motor_arm();}else if(c=='f')dbg_motor_pulse(DIR_FWD,pulse_duty,pulse_ms);else if(c=='v')dbg_motor_pulse(DIR_REV,pulse_duty,pulse_ms);else if(c=='d'){{char b[64];snprintf(b,sizeof b,"duty (0-255, current %u): ",pulse_duty);line(b);}prompt=PROMPT_DUTY;input_len=0;}else if(c=='t'){{char b[72];snprintf(b,sizeof b,"duration (10-2000 ms, current %u ms): ",pulse_ms);line(b);}prompt=PROMPT_DURATION;input_len=0;}else if(c=='b')dbg_motor_brake();else if(c=='c')dbg_motor_coast();else if(c=='s')dbg_motor_standby(true);else if(c=='n')dbg_motor_find_min(DIR_FWD);break;case MENU_CAL:if(c=='p')dbg_cal_positions();else if(c=='s')dbg_cal_step_time();else if(c=='w')dbg_cal_travel_time();else if(c=='o')dbg_cal_overshoot();else if(c=='r')dbg_cal_report();break;case MENU_CFG:if(c=='l')dbg_cfg_list();else if(c=='s'){line("key:");prompt=PROMPT_CFG_KEY;input_len=0;}else if(c=='d')dbg_cfg_reset();else if(c=='e')dbg_cfg_export();break;case MENU_FAULT:if(c=='f')dbg_fault_show();else if(c=='h')dbg_history_dump();else if(c=='c')dbg_counters_show();else if(c=='z')dbg_counters_reset();else if(c=='k')dbg_fault_clear();break;case MENU_TEST:if(c=='s')dbg_selftest_static();else if(c=='m')dbg_selftest_motion();break;case MENU_BENCH:if(c=='p')dbg_bench_pins();else if(c=='g')dbg_bench_gpio_walk();else if(c=='f')dbg_bench_pwm_report();else if(c=='t')dbg_bench_tick_health();else if(c=='r')dbg_bench_reset_reason();else if(c=='o')dbg_bench_protocol_list();else if(c=='e')dbg_bench_echo_toggle();else if(c=='s')dbg_bench_motion_checks();break;case MENU_SIM:if(c=='e')dbg_sim_toggle();else if(c=='v'){line("adc value (0-4095, unit counts): ");prompt=PROMPT_SIM_VALUE;input_len=0;}else if(c=='b'){line("position (1-5): ");prompt=PROMPT_SIM_BAND;input_len=0;}else if(c=='t'){line("from position (1-5): ");prompt=PROMPT_SIM_FROM;input_len=0;}else if(c=='p')dbg_sim_park();else if(c=='l'){line("limit (1 or 5): ");prompt=PROMPT_SIM_DRIFT;input_len=0;}else if(c=='s')dbg_sim_sweep();break;default:break;} }
+void dbg_poll(void) { uint32_t n=ms_now();if(active&&!plain_mode&&(int32_t)(n-next_field_refresh)>=0){dbg_fields_refresh();next_field_refresh=n+DEBUG_SCREEN_REFRESH_MS;} action_poll(n);if(armed&&(int32_t)(n-arm_deadline)>=0)dbg_motor_disarm();if(coupled&&(int32_t)(n-coupled_deadline)>=0)dbg_coupled_clear();if(streaming&&(int32_t)(n-next_stream)>=0){char b[128];snprintf(b,sizeof b,"T %lu %s %u %u %s %u %u %u",(unsigned long)n,state_text(controller_state()),controller_position(),controller_target(),dir_text(motor_direction()),motor_duty(),encoder_raw(),encoder_average());line(b);next_stream=n+DEBUG_SELFTEST_WINDOW_MS/stream_hz;}if(monitoring&&(int32_t)(n-next_stream)>=0){dbg_adc_read_once();next_stream=n+DEBUG_ADC_MONITOR_PERIOD_MS;}if(capturing){uint16_t v=encoder_average();if(!capture_samples||v<capture_min)capture_min=v;if(!capture_samples||v>capture_max)capture_max=v;capture_samples++;} }
 
 void dbg_status_dump(void){char b[160];snprintf(b,sizeof b,"state %s pos %u target %u dir %s duty %u deadline %lu lastdir %s avg %u armed %s uptime %lu",state_text(controller_state()),controller_position(),controller_target(),dir_text(motor_direction()),motor_duty(),(unsigned long)controller_deadline_ms(),dir_text(controller_last_direction()),encoder_average(),armed?"YES":"NO",(unsigned long)ms_now());line(b);}
 void dbg_stream_toggle(void){streaming=!streaming;next_stream=ms_now();line(streaming?"telemetry started":"telemetry stopped");}void dbg_stream_set_rate(uint16_t hz){if(hz>=DEBUG_STREAM_MIN_HZ&&hz<=DEBUG_STREAM_MAX_HZ)stream_hz=hz;line(hz>=DEBUG_STREAM_MIN_HZ&&hz<=DEBUG_STREAM_MAX_HZ?"stream rate updated":"stream rate must be 1..50");}void dbg_timing_stats(void){tick_stats_t s;char b[128];controller_timing_get(&s);snprintf(b,sizeof b,"TIMING min=%lu max=%lu mean=%llu overruns=%lu",(unsigned long)s.min_us,(unsigned long)s.max_us,s.count?(unsigned long long)(s.sum_us/s.count):0ull,(unsigned long)s.overruns);line(b);}void dbg_timing_reset(void){controller_timing_reset();line("timing statistics reset");}
