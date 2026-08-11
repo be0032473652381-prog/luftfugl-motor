@@ -20,7 +20,7 @@ static volatile uint8_t event_tail;
 static void write_text(const char *text) { while (*text) uart_putc_raw(uart0, *text++); }
 static void write_line(const char *text) { write_text(text); write_text("\r\n"); }
 static const char *state_name(sys_state_t state) {
-    static const char *const names[] = {"BOOT", "IDLE", "MOVING", "APPROACH", "HOMING", "RECOVER", "FAULT",
+    static const char *const names[] = {"BOOT", "IDLE", "MOVING", "APPROACH", "HOMING", "FAULT",
 #ifdef LUFTFUGL_DEBUG
         "DEBUG",
 #endif
@@ -34,13 +34,13 @@ static const char *direction_name(direction_t direction) {
 }
 static void print_position(const char *prefix, position_t position) {
     char output[16];
-    if (position == POS_UNKNOWN) snprintf(output, sizeof output, "%s?", prefix);
+    if (position == POS_UNKNOWN || position == POS_BETWEEN) snprintf(output, sizeof output, "%s?", prefix);
     else snprintf(output, sizeof output, "%s%u", prefix, position);
     write_line(output);
 }
 static void console_status(void) {
     char output[80]; position_t position = controller_position();
-    if (position == POS_UNKNOWN) snprintf(output, sizeof output, "POS:? DIR:%s SPD:%u STATE:%s", direction_name(motor_direction()), motor_duty(), state_name(controller_state()));
+    if (position == POS_UNKNOWN || position == POS_BETWEEN) snprintf(output, sizeof output, "POS:? DIR:%s SPD:%u STATE:%s", direction_name(motor_direction()), motor_duty(), state_name(controller_state()));
     else snprintf(output, sizeof output, "POS:%u DIR:%s SPD:%u STATE:%s", position, direction_name(motor_direction()), motor_duty(), state_name(controller_state()));
     write_line(output);
 }
@@ -64,7 +64,9 @@ static void handle_move(char *argument) {
     write_line(output);
 }
 static void console_handle_line(char *line) {
-    char *argument = strchr(line, ' '); char *p;
+    char *argument; char *p, *end = line + strlen(line);
+    while (end > line && isspace((unsigned char)end[-1])) *--end = '\0';
+    argument = strchr(line, ' ');
     if (argument) { *argument++ = '\0'; while (*argument == ' ') argument++; }
     for (p = line; *p; p++) *p = (char)tolower((unsigned char)*p);
     if (!strcmp(line, "pos") && !argument) print_position("POS:", controller_position());
@@ -104,9 +106,11 @@ void console_drain_events(void) {
         case EV_ARRIVE: snprintf(output, sizeof output, "ARR:%u", event.arg); break;
         case EV_TIMEOUT: snprintf(output, sizeof output, "ERR: timeout"); break;
         case EV_FAULT_HOME: snprintf(output, sizeof output, "ERR: fault home timeout"); break;
-        case EV_FAULT_RECOVER: snprintf(output, sizeof output, "ERR: fault recover timeout"); break;
         case EV_HOMING: snprintf(output, sizeof output, "OK: homing"); break;
         case EV_STOPPED_UNKNOWN: snprintf(output, sizeof output, "POS:?"); break;
+        case EV_FAULT_OVERTRAVEL: snprintf(output, sizeof output, "ERR: overtravel"); break;
+        case EV_FAULT_STALL: snprintf(output, sizeof output, "ERR: stall"); break;
+        case EV_FAULT_DIRECTION: snprintf(output, sizeof output, "ERR: direction"); break;
         default: continue;
         } write_line(output);
     }
