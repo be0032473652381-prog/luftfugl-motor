@@ -196,13 +196,32 @@ void controller_tick(void)
         debug_pending = false;
         switch (req.op) {
         case DBG_OP_ENTER: if (state == ST_IDLE) { state = ST_DEBUG; motor_brake(); } break;
-        case DBG_OP_EXIT: encoder_sim_enable(false); motor_set_inhibit(false); motor_enable(); motor_brake(); deadline_ms = 0; state = ST_IDLE; break;
+        case DBG_OP_EXIT:
+            encoder_sim_enable(false);
+            motor_set_inhibit(false);
+            deadline_ms = 0;
+            if (state == ST_FAULT) { motor_brake(); motor_disable(); }
+            else { motor_enable(); motor_brake(); state = ST_IDLE; }
+            break;
         case DBG_OP_DRIVE: if (state == ST_DEBUG) { motor_drive(req.dir, req.duty); deadline_ms = now + req.ms; } break;
         case DBG_OP_BRAKE: motor_brake(); deadline_ms = 0; break;
         case DBG_OP_COAST: if (state == ST_DEBUG) motor_coast(); break;
         case DBG_OP_STANDBY: if (state == ST_DEBUG) { if (req.flag) motor_enable(); else motor_disable(); } break;
         case DBG_OP_FAULT_CLEAR: if (state == ST_FAULT) { state = ST_IDLE; position = POS_UNKNOWN; last_direction = DIR_REV; motor_enable(); motor_brake(); } break;
-        case DBG_OP_SIM_ENABLE: if (req.flag) { state = ST_IDLE; deadline_ms = 0; motor_set_inhibit(true); encoder_sim_set(DEBUG_SIM_DEFAULT_ADC); encoder_sim_enable(true); } else { encoder_sim_enable(false); motor_set_inhibit(false); motor_enable(); motor_brake(); } break;
+        case DBG_OP_SIM_ENABLE:
+            if (req.flag) {
+                if (state != ST_FAULT) state = ST_IDLE;
+                deadline_ms = 0;
+                motor_set_inhibit(true);
+                encoder_sim_set(DEBUG_SIM_DEFAULT_ADC);
+                encoder_sim_enable(true);
+            } else {
+                encoder_sim_enable(false);
+                motor_set_inhibit(false);
+                if (state == ST_FAULT) { motor_brake(); motor_disable(); }
+                else { motor_enable(); motor_brake(); }
+            }
+            break;
         case DBG_OP_GPIO_SET:
             if (req.duty == DEBUG_GPIO_OP_AIN1) { motor_set_inhibit(true); motor_drive(DIR_FWD, PWM_WRAP); }
             else if (req.duty == DEBUG_GPIO_OP_AIN2) { motor_set_inhibit(true); motor_drive(DIR_REV, PWM_WRAP); }
