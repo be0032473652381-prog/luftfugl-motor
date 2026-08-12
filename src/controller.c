@@ -40,7 +40,8 @@ static volatile adc_trace_entry_t adc_trace[DEBUG_ADC_TRACE_DEPTH];
 static volatile uint16_t adc_trace_head, adc_trace_count;
 static uint32_t adc_trace_tick;
 static uint16_t adc_trace_current;
-static bool adc_trace_frozen;
+static volatile bool adc_trace_frozen;
+static uint16_t adc_trace_dump_first, adc_trace_dump_count;
 #endif
 
 static uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
@@ -71,7 +72,7 @@ static void enter_fault(event_kind_t event)
 {
     endpoint_braking = false;
 #ifdef LUFTFUGL_DEBUG
-    adc_trace[adc_trace_current].fault = (uint8_t)event + 1u;
+    if (adc_trace_current < DEBUG_ADC_TRACE_DEPTH) adc_trace[adc_trace_current].fault = (uint8_t)event + 1u;
     adc_trace_frozen = true;
     encoder_sim_enable(false); motor_set_inhibit(false);
 #endif
@@ -184,7 +185,7 @@ void controller_init(void)
 #ifdef LUFTFUGL_DEBUG
     adc_move = false; adc_target = 0u; adc_arrival_since = 0u;
     debug_pending = false; memset((void *)&tick_stats, 0, sizeof tick_stats); memset((void *)history, 0, sizeof history); history_head = history_used = 0; memset((void *)&counters, 0, sizeof counters); memset((void *)&last_fault, 0, sizeof last_fault);
-    memset((void *)adc_trace, 0, sizeof adc_trace); adc_trace_head = adc_trace_count = 0u; adc_trace_tick = 0u; adc_trace_current = 0u; adc_trace_frozen = false;
+    memset((void *)adc_trace, 0, sizeof adc_trace); adc_trace_head = adc_trace_count = 0u; adc_trace_tick = 0u; adc_trace_current = 0u; adc_trace_frozen = false; adc_trace_dump_first = adc_trace_dump_count = 0u;
 #endif
 }
 
@@ -245,6 +246,7 @@ void controller_tick(void)
     watchdog_update();
 #ifdef LUFTFUGL_DEBUG
     if (!adc_trace_frozen) {
+        if (adc_trace_head >= DEBUG_ADC_TRACE_DEPTH) adc_trace_head = 0u;
         adc_trace_current = adc_trace_head;
         adc_trace[adc_trace_current].tick = ++adc_trace_tick;
         adc_trace[adc_trace_current].adc = encoder_average();
@@ -511,12 +513,21 @@ void controller_motion_checks_get(motion_check_status_t *out)
     out->stall_armed = (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING) && motor_duty() > CFG_DUTY_MIN;
     out->direction_armed = (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING) && reached(now, direction_check_ms);
 }
-uint16_t controller_adc_trace_snapshot(adc_trace_entry_t *out, uint16_t capacity)
+uint16_t controller_adc_trace_begin_dump(void)
 {
-    uint16_t count = adc_trace_count < capacity ? adc_trace_count : capacity;
-    uint16_t first = (uint16_t)((adc_trace_head + DEBUG_ADC_TRACE_DEPTH - count) % DEBUG_ADC_TRACE_DEPTH);
-    for (uint16_t i = 0; i < count; ++i) out[i] = adc_trace[(first + i) % DEBUG_ADC_TRACE_DEPTH];
-    return count;
+    adc_trace_frozen = true;
+    adc_trace_dump_count = adc_trace_count <= DEBUG_ADC_TRACE_DEPTH ? adc_trace_count : DEBUG_ADC_TRACE_DEPTH;
+    adc_trace_dump_first = (uint16_t)((adc_trace_head + DEBUG_ADC_TRACE_DEPTH - adc_trace_dump_count) % DEBUG_ADC_TRACE_DEPTH);
+    return adc_trace_dump_count;
+}
+bool controller_adc_trace_get(uint16_t index, adc_trace_entry_t *out)
+{
+    if (out == NULL || index >= adc_trace_dump_count || adc_trace_dump_first >= DEBUG_ADC_TRACE_DEPTH) return false;
+    uint16_t physical = (uint16_t)(adc_trace_dump_first + index);
+    if (physical >= DEBUG_ADC_TRACE_DEPTH) physical = (uint16_t)(physical - DEBUG_ADC_TRACE_DEPTH);
+    if (physical >= DEBUG_ADC_TRACE_DEPTH) return false;
+    *out = adc_trace[physical];
+    return true;
 }
 #endif
 position_t controller_target(void) { return target; }

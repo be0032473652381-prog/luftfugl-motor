@@ -27,6 +27,7 @@ void controller_counters_get(dbg_counters_t *out);
 void controller_counters_reset(void);
 void controller_fault_get(fault_record_t *out);
 void controller_motion_checks_get(motion_check_status_t *out);
-uint16_t controller_adc_trace_snapshot(adc_trace_entry_t *out, uint16_t capacity);
+uint16_t controller_adc_trace_begin_dump(void);
+bool controller_adc_trace_get(uint16_t index, adc_trace_entry_t *out);
 #endif
 #endif
