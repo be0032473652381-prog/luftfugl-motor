@@ -36,7 +36,7 @@ static uint8_t input_len;
 static char out_buf[DEBUG_OUT_BUFFER];
 static volatile uint16_t out_head, out_tail;
 static uint32_t last_tx_us;
-static uint32_t auto_enter_deadline, next_refresh;
+static uint32_t next_refresh;
 static pending_t pending;
 static char pending_text[DEBUG_COMMAND_MAX + 1u];
 static char status_shadow[9][81];
@@ -1081,7 +1081,6 @@ void dbg_init(void) {
   first_command = true;
   frame_phase = 0u;
   welcome_line = (uint8_t)(sizeof welcome / sizeof welcome[0]);
-  auto_enter_deadline = ms_now() + DEBUG_AUTO_ENTER_MS;
   next_refresh = 0u;
   memset(status_shadow, 0, sizeof status_shadow);
 }
@@ -1116,13 +1115,6 @@ void dbg_exit(void) {
 }
 bool dbg_active(void) { return active; }
 bool dbg_plain_mode(void) { return plain_mode; }
-bool dbg_auto_enter(char c) {
-  if (active || (int32_t)(ms_now() - auto_enter_deadline) >= 0)
-    return false;
-  enter(false);
-  dbg_handle_key(c);
-  return true;
-}
 bool dbg_motor_armed(void) { return armed; }
 void dbg_poll(void) {
   uint32_t now = ms_now();

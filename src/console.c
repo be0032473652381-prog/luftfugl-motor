@@ -6,6 +6,7 @@
 #include "hardware/structs/uart.h"
 #include "hardware/uart.h"
 #include "motor.h"
+#include "pico/time.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,9 +24,12 @@ static bool discard_line;
 static volatile event_t event_queue[EVENT_QUEUE_DEPTH];
 static volatile uint8_t event_head;
 static volatile uint8_t event_tail;
+static uint32_t last_console_tx_us;
 static void write_text(const char *text) {
-  while (*text)
+  while (*text) {
     uart_putc_raw(uart0, *text++);
+    last_console_tx_us = time_us_32();
+  }
 }
 static void write_line(const char *text) {
   write_text(text);
@@ -263,22 +267,24 @@ void console_init(void) {
   discard_line = false;
   event_head = 0;
   event_tail = 0;
+  last_console_tx_us = 0u;
   write_line("luftfugl motor fw " FW_VERSION);
 }
 void console_poll(void) {
   if (uart_get_hw(uart0)->rsr)
     uart_get_hw(uart0)->rsr = 0u;
+  /* A returned copy of console or full-screen output must never become
+     command input. This also covers the boot banner before debug is active. */
+  bool tx_quiet = time_us_32() - last_console_tx_us >= 50000u;
 #ifdef LUFTFUGL_MONITOR
-  /* A returned copy of the full-screen output must never become command
-     input. Drain it while output is queued or the PL011 is still shifting. */
-  if (dbg_active() &&
-      (dbg_out_pending() || !dbg_rx_ready() ||
-       (uart_get_hw(uart0)->fr & UART_UARTFR_BUSY_BITS))) {
+  tx_quiet = tx_quiet &&
+             (!dbg_active() || (!dbg_out_pending() && dbg_rx_ready()));
+#endif
+  if (!tx_quiet || (uart_get_hw(uart0)->fr & UART_UARTFR_BUSY_BITS)) {
     while (uart_is_readable(uart0))
       (void)uart_get_hw(uart0)->dr;
     return;
   }
-#endif
   while (uart_is_readable(uart0)) {
     uint32_t received = uart_get_hw(uart0)->dr;
     uint32_t errors = UART_UARTDR_OE_BITS | UART_UARTDR_BE_BITS |
@@ -293,8 +299,6 @@ void console_poll(void) {
       dbg_handle_key(c);
       continue;
     }
-    if (dbg_auto_enter(c))
-      continue;
 #endif
     if (c == '\r')
       continue;

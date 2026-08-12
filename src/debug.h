@@ -11,7 +11,6 @@ void dbg_enter_plain(void);
 void dbg_exit(void);
 bool dbg_active(void);
 bool dbg_plain_mode(void);
-bool dbg_auto_enter(char c);
 void dbg_handle_key(char c);
 void dbg_poll(void);
 void dbg_render(void);
