@@ -20,7 +20,8 @@ typedef enum { ACT_NONE, ACT_STATIC, ACT_FINDMIN_BASE, ACT_FINDMIN_PULSE, ACT_CA
 static bool active, armed, coupled, streaming, monitoring, capturing, echo_enabled;
 static bool plain_mode, menu_focused, jog_mode;
 static uint16_t jog_step;
-static uint32_t next_field_refresh;
+static uint32_t next_field_refresh, debug_confirm_deadline;
+static bool debug_persist_pending;
 typedef struct { char uptime[16], state[16], pos[8], adc[12], error[12], armed[8], coupled[8], sim[8], faults[12], duty[8], dir[8], target[12], stall[24]; } field_shadow_t;
 static field_shadow_t field_shadow;
 static bool prompt_swallow_lf;
@@ -47,7 +48,8 @@ static uint16_t self_adc[DEBUG_SELFTEST_ADC_SAMPLES];
 static uint32_t self_tick_start;
 static bool adc_trace_dump_active, adc_trace_dump_fullscreen, adc_trace_screen_suspended;
 static uint16_t adc_trace_dump_count, adc_trace_dump_index, adc_trace_dump_head;
-static bool adc_trace_dump_was_frozen;
+static bool adc_trace_dump_was_frozen, adc_trace_dump_valid;
+static uint16_t adc_trace_dump_bad_index;
 static uint8_t adc_trace_dump_phase, adc_trace_line_length, adc_trace_line_offset;
 static char adc_trace_line[96];
 
@@ -170,12 +172,13 @@ void dbg_pos_goto_adc(uint16_t adc) { if(adc<CFG_ADC_SAFE_MIN)adc=CFG_ADC_SAFE_M
 void dbg_pos_jog(int16_t counts) { int32_t adc=(int32_t)encoder_average()+counts;if(adc<CFG_ADC_SAFE_MIN)adc=CFG_ADC_SAFE_MIN;if(adc>CFG_ADC_SAFE_MAX)adc=CFG_ADC_SAFE_MAX;dbg_pos_goto_adc((uint16_t)adc); }
 void dbg_pos_step_size(int8_t direction) { static const uint16_t steps[]={DEBUG_JOG_STEP_1,DEBUG_JOG_STEP_2,DEBUG_JOG_STEP_3,DEBUG_JOG_STEP_4};uint8_t i=0;while(i<4u&&steps[i]!=jog_step)++i;i=direction>0?(uint8_t)((i+1u)%4u):(uint8_t)((i+3u)%4u);jog_step=steps[i];char b[40];snprintf(b,sizeof b,"jog step %u counts",jog_step);line(b); }
 
-void dbg_init(void) { cfg_reset(); active=armed=coupled=streaming=monitoring=capturing=false; plain_mode=false;menu_focused=jog_mode=false;jog_step=DEBUG_JOG_STEP_DEFAULT;next_field_refresh=0;menu=MENU_ROOT;prompt=PROMPT_NONE;prompt_swallow_lf=false;pulse_duty=DUTY_CREEP;pulse_ms=DEBUG_PULSE_DEFAULT_MS;stream_hz=DEBUG_STREAM_DEFAULT_HZ;action=ACT_NONE;adc_trace_dump_active=adc_trace_dump_fullscreen=adc_trace_screen_suspended=false;adc_trace_dump_count=adc_trace_dump_index=adc_trace_dump_head=0u;adc_trace_dump_was_frozen=false;adc_trace_dump_phase=adc_trace_line_length=adc_trace_line_offset=0u;echo_enabled=false; }
-static void enter_mode(bool plain) { plain_mode=plain;echo_enabled=true;active=true;menu=MENU_ROOT;watchdog_hw->scratch[DBG_SCRATCH_INDEX]=plain?DBG_MAGIC_PLAIN:DBG_MAGIC_FULL;if(plain)dbg_render();else{dbg_screen_init();dbg_frame_draw();dbg_log_push("debug entered; ANSI/VT100 80x24 minimum");} }
+static void adc_trace_dump_reset(void) { adc_trace_dump_active=adc_trace_dump_fullscreen=adc_trace_screen_suspended=false;adc_trace_dump_count=adc_trace_dump_index=adc_trace_dump_head=0u;adc_trace_dump_was_frozen=false;adc_trace_dump_valid=false;adc_trace_dump_bad_index=0u;adc_trace_dump_phase=adc_trace_line_length=adc_trace_line_offset=0u; }
+void dbg_init(void) { cfg_reset(); active=armed=coupled=streaming=monitoring=capturing=false; plain_mode=false;menu_focused=jog_mode=false;jog_step=DEBUG_JOG_STEP_DEFAULT;next_field_refresh=0;menu=MENU_ROOT;prompt=PROMPT_NONE;prompt_swallow_lf=false;pulse_duty=DUTY_CREEP;pulse_ms=DEBUG_PULSE_DEFAULT_MS;stream_hz=DEBUG_STREAM_DEFAULT_HZ;action=ACT_NONE;adc_trace_dump_reset();debug_confirm_deadline=0u;debug_persist_pending=false;echo_enabled=false; }
+static void enter_mode(bool plain) { adc_trace_dump_reset();plain_mode=plain;echo_enabled=true;active=true;menu=MENU_ROOT;debug_persist_pending=true;debug_confirm_deadline=ms_now()+DEBUG_PERSIST_CONFIRM_MS;watchdog_hw->scratch[DBG_SCRATCH_INDEX]=plain?DBG_MAGIC_PLAIN_PENDING:DBG_MAGIC_FULL_PENDING;if(plain)dbg_render();else{dbg_screen_init();dbg_frame_draw();dbg_log_push("debug entered; ANSI/VT100 80x24 minimum");} }
 void dbg_enter(void) { enter_mode(false); }
 void dbg_enter_plain(void) { enter_mode(true); }
-void dbg_restore_mode(void) { uint32_t magic=watchdog_hw->scratch[DBG_SCRATCH_INDEX];if(magic==DBG_MAGIC_FULL)enter_mode(false);else if(magic==DBG_MAGIC_PLAIN)enter_mode(true); }
-void dbg_exit(void) { bool was_plain=plain_mode;echo_enabled=false;(void)post(DBG_OP_EXIT,DIR_STOP,0,0,false);armed=coupled=false;streaming=monitoring=capturing=false;action=ACT_NONE;cfg_reset();watchdog_hw->scratch[DBG_SCRATCH_INDEX]=0;active=false;if(!was_plain)dbg_screen_teardown();console_debug_line("debug exited"); }
+void dbg_restore_mode(bool watchdog_reset) { uint32_t magic=watchdog_hw->scratch[DBG_SCRATCH_INDEX];adc_trace_dump_reset();if(watchdog_reset&&(magic==DBG_MAGIC_FULL_PENDING||magic==DBG_MAGIC_PLAIN_PENDING)){watchdog_hw->scratch[DBG_SCRATCH_INDEX]=0u;return;}if(magic==DBG_MAGIC_FULL||magic==DBG_MAGIC_FULL_PENDING)enter_mode(false);else if(magic==DBG_MAGIC_PLAIN||magic==DBG_MAGIC_PLAIN_PENDING)enter_mode(true); }
+void dbg_exit(void) { bool was_plain=plain_mode;echo_enabled=false;(void)post(DBG_OP_EXIT,DIR_STOP,0,0,false);armed=coupled=false;streaming=monitoring=capturing=false;action=ACT_NONE;adc_trace_dump_reset();debug_persist_pending=false;cfg_reset();watchdog_hw->scratch[DBG_SCRATCH_INDEX]=0;active=false;if(!was_plain)dbg_screen_teardown();console_debug_line("debug exited"); }
 bool dbg_active(void) { return active; }
 void dbg_render_header(void) { char b[DEBUG_HEADER_BUFFER_SIZE];dbg_counters_t c;uint16_t v=encoder_average();position_t p=encoder_instant();int16_t error=(p>=POS_MIN&&p<=POS_MAX)?encoder_error_to(p):0;controller_counters_get(&c);snprintf(b,sizeof b,"=== luftfugl debug 1.0 ============================\r\n state %s   pos %s   adc %u (error %+d counts)\r\n armed %s     coupled %s     sim %s     faults %lu\r\n===================================================",state_text(controller_state()),p==1?"1":p==2?"2":p==3?"3":p==4?"4":p==5?"5":"?",v,error,armed?"YES":"NO",coupled?"YES":"NO",encoder_sim_active()?"\033[7mON\033[0m":"OFF",(unsigned long)c.faults);line(b);}
 void dbg_render(void) { char b[DEBUG_MENU_BUFFER_SIZE];if(!plain_mode){dbg_frame_draw();return;}dbg_render_header();switch(menu){
@@ -241,17 +244,34 @@ static bool handle_prompt_char(char c)
 }
 
 void dbg_handle_key(char c) { if(adc_trace_dump_active){if(c=='s')(void)controller_request(REQ_STOP,0);return;}if(adc_trace_screen_suspended){adc_trace_screen_suspended=false;if(c=='s')(void)controller_request(REQ_STOP,0);dbg_screen_init();dbg_frame_draw();return;}if(handle_prompt_char(c))return; if(!plain_mode){if(c=='s'){(void)controller_request(REQ_STOP,0);line("stop requested");return;}if(c>='1'&&c<='5'){dbg_pos_goto((position_t)(c-'0'));return;}if(c=='h'){if(controller_state()==ST_FAULT)line("rejected: faulted; clear fault before motion");else{(void)controller_request(REQ_HOME,0);line("home requested");}return;}if(c=='S'||c=='E'||c=='M'||c=='C'||c=='G'||c=='F'||c=='T'||c=='B'||c=='I'){dbg_menu_focus(c);return;}if(c=='m'){menu_focused=true;line("menu focus: press S E M C G F T B or I");return;}if(menu_focused){dbg_menu_focus(c);return;}if(c=='j'){jog_mode=true;line("JOG: + or -, [ or ] changes step, s stops");return;}if(jog_mode&&(c=='+'||c=='-')){dbg_pos_jog(c=='+'?(int16_t)jog_step:-(int16_t)jog_step);return;}if(jog_mode&&(c=='['||c==']')){dbg_pos_step_size(c==']'?1:-1);return;}if(c=='g'){dbg_field_write(11,1,"goto adc (0-4095 counts, clamped safe):");prompt=PROMPT_GOTO_ADC;input_len=0;return;}} if(prompt_swallow_lf){prompt_swallow_lf=false;if(c=='\n')return;}if(prompt!=PROMPT_NONE&&(c=='\r'||c=='\n')){if(!input_len)return;if(echo_enabled)console_debug_write("\r\n");prompt_swallow_lf=c=='\r';finish_prompt();return;} if((c=='\b'||c==127)&&prompt!=PROMPT_NONE){if(input_len){--input_len;if(echo_enabled)console_debug_write("\b \b");}return;}if(plain_mode&&echo_enabled){if(c=='\n')console_debug_write("\r\n");else if(c!='\r'){char e[2]={c,0};console_debug_write(e);}} if(action!=ACT_NONE){ if(action==ACT_BENCH_PINS){action=ACT_NONE;line("PIN STATE stopped");return;} if(action==ACT_CAL_POS_WAIT&&c==' '){action=ACT_CAL_POS_SAMPLE;action_started=ms_now();action_deadline=action_started+DEBUG_CAL_SAMPLE_MS;action_sum=action_count=0;action_min=ADC_MAX_VALUE;action_max=0;return;} dbg_abort(); return; } if(prompt!=PROMPT_NONE){if(c=='\r')return;if(c=='\n'){finish_prompt();return;}if(input_len<CONSOLE_LINE_MAX)input[input_len++]=c;return;} activity(); if(c=='x'){dbg_exit();return;}if(c=='w'){dbg_what_can_run();return;}if(c=='?'){dbg_help();return;}if(c=='q'){menu=MENU_ROOT;dbg_render();return;}if(menu==MENU_ROOT&&c>='1'&&c<='9'){menu=(menu_t)(c-'0');dbg_render();return;}switch(menu){case MENU_STATUS:if(c=='s')dbg_status_dump();else if(c=='t')dbg_stream_toggle();else if(c=='r'){{char b[64];snprintf(b,sizeof b,"rate (1-50 Hz, current %u Hz):",stream_hz);line(b);}prompt=PROMPT_RATE;input_len=0;}else if(c=='k')dbg_timing_stats();else if(c=='z')dbg_timing_reset();else if(c=='a')dbg_adc_trace_dump();break;case MENU_ADC:if(c=='a')dbg_adc_read_once();else if(c=='m')dbg_adc_monitor_toggle();else if(c=='c')dbg_adc_capture_toggle();else if(c=='b')dbg_position_table();else if(c=='e')dbg_position_error();break;case MENU_MOTOR:if(c=='A'){if(armed)dbg_motor_disarm();else dbg_motor_arm();}else if(c=='f')dbg_motor_pulse(DIR_FWD,pulse_duty,pulse_ms);else if(c=='v')dbg_motor_pulse(DIR_REV,pulse_duty,pulse_ms);else if(c=='d'){{char b[64];snprintf(b,sizeof b,"duty (0-255, current %u): ",pulse_duty);line(b);}prompt=PROMPT_DUTY;input_len=0;}else if(c=='t'){{char b[72];snprintf(b,sizeof b,"duration (10-2000 ms, current %u ms): ",pulse_ms);line(b);}prompt=PROMPT_DURATION;input_len=0;}else if(c=='b')dbg_motor_brake();else if(c=='c')dbg_motor_coast();else if(c=='s')dbg_motor_standby(true);else if(c=='n')dbg_motor_find_min(DIR_FWD);break;case MENU_CAL:if(c=='p')dbg_cal_positions();else if(c=='s')dbg_cal_step_time();else if(c=='w')dbg_cal_travel_time();else if(c=='o')dbg_cal_overshoot();else if(c=='r')dbg_cal_report();break;case MENU_CFG:if(c=='l')dbg_cfg_list();else if(c=='s'){line("key:");prompt=PROMPT_CFG_KEY;input_len=0;}else if(c=='d')dbg_cfg_reset();else if(c=='e')dbg_cfg_export();break;case MENU_FAULT:if(c=='f')dbg_fault_show();else if(c=='h')dbg_history_dump();else if(c=='c')dbg_counters_show();else if(c=='z')dbg_counters_reset();else if(c=='k')dbg_fault_clear();break;case MENU_TEST:if(c=='s')dbg_selftest_static();else if(c=='m')dbg_selftest_motion();break;case MENU_BENCH:if(c=='p')dbg_bench_pins();else if(c=='g')dbg_bench_gpio_walk();else if(c=='f')dbg_bench_pwm_report();else if(c=='t')dbg_bench_tick_health();else if(c=='r')dbg_bench_reset_reason();else if(c=='o')dbg_bench_protocol_list();else if(c=='e')dbg_bench_echo_toggle();else if(c=='s')dbg_bench_motion_checks();break;case MENU_SIM:if(c=='e')dbg_sim_toggle();else if(c=='v'){line("adc value (0-4095, unit counts): ");prompt=PROMPT_SIM_VALUE;input_len=0;}else if(c=='b'){line("position (1-5): ");prompt=PROMPT_SIM_BAND;input_len=0;}else if(c=='t'){line("from position (1-5): ");prompt=PROMPT_SIM_FROM;input_len=0;}else if(c=='p')dbg_sim_park();else if(c=='l'){line("limit (1 or 5): ");prompt=PROMPT_SIM_DRIFT;input_len=0;}else if(c=='s')dbg_sim_sweep();break;default:break;} }
-void dbg_poll(void) { uint32_t n=ms_now();adc_trace_dump_poll();if(adc_trace_dump_active)return;if(active&&!plain_mode&&!adc_trace_dump_active&&(int32_t)(n-next_field_refresh)>=0){dbg_fields_refresh();next_field_refresh=n+DEBUG_SCREEN_REFRESH_MS;} action_poll(n);if(armed&&(int32_t)(n-arm_deadline)>=0)dbg_motor_disarm();if(coupled&&(int32_t)(n-coupled_deadline)>=0)dbg_coupled_clear();if(streaming&&(int32_t)(n-next_stream)>=0){char b[128];snprintf(b,sizeof b,"T %lu %s %u %u %s %u %u %u",(unsigned long)n,state_text(controller_state()),controller_position(),controller_target(),dir_text(motor_direction()),motor_duty(),encoder_raw(),encoder_average());line(b);next_stream=n+DEBUG_SELFTEST_WINDOW_MS/stream_hz;}if(monitoring&&(int32_t)(n-next_stream)>=0){dbg_adc_read_once();next_stream=n+DEBUG_ADC_MONITOR_PERIOD_MS;}if(capturing){uint16_t v=encoder_average();if(!capture_samples||v<capture_min)capture_min=v;if(!capture_samples||v>capture_max)capture_max=v;capture_samples++;} }
+void dbg_poll(void) { uint32_t n=ms_now();if(active&&debug_persist_pending&&(int32_t)(n-debug_confirm_deadline)>=0){watchdog_hw->scratch[DBG_SCRATCH_INDEX]=plain_mode?DBG_MAGIC_PLAIN:DBG_MAGIC_FULL;debug_persist_pending=false;}adc_trace_dump_poll();if(adc_trace_dump_active)return;if(active&&!plain_mode&&!adc_trace_dump_active&&(int32_t)(n-next_field_refresh)>=0){dbg_fields_refresh();next_field_refresh=n+DEBUG_SCREEN_REFRESH_MS;} action_poll(n);if(armed&&(int32_t)(n-arm_deadline)>=0)dbg_motor_disarm();if(coupled&&(int32_t)(n-coupled_deadline)>=0)dbg_coupled_clear();if(streaming&&(int32_t)(n-next_stream)>=0){char b[128];snprintf(b,sizeof b,"T %lu %s %u %u %s %u %u %u",(unsigned long)n,state_text(controller_state()),controller_position(),controller_target(),dir_text(motor_direction()),motor_duty(),encoder_raw(),encoder_average());line(b);next_stream=n+DEBUG_SELFTEST_WINDOW_MS/stream_hz;}if(monitoring&&(int32_t)(n-next_stream)>=0){dbg_adc_read_once();next_stream=n+DEBUG_ADC_MONITOR_PERIOD_MS;}if(capturing){uint16_t v=encoder_average();if(!capture_samples||v<capture_min)capture_min=v;if(!capture_samples||v>capture_max)capture_max=v;capture_samples++;} }
 
 void dbg_status_dump(void){char b[160];snprintf(b,sizeof b,"state %s pos %u target %u dir %s duty %u deadline %lu lastdir %s avg %u armed %s uptime %lu",state_text(controller_state()),controller_position(),controller_target(),dir_text(motor_direction()),motor_duty(),(unsigned long)controller_deadline_ms(),dir_text(controller_last_direction()),encoder_average(),armed?"YES":"NO",(unsigned long)ms_now());line(b);}
 void dbg_stream_toggle(void){streaming=!streaming;next_stream=ms_now();line(streaming?"telemetry started":"telemetry stopped");}void dbg_stream_set_rate(uint16_t hz){if(hz>=DEBUG_STREAM_MIN_HZ&&hz<=DEBUG_STREAM_MAX_HZ)stream_hz=hz;line(hz>=DEBUG_STREAM_MIN_HZ&&hz<=DEBUG_STREAM_MAX_HZ?"stream rate updated":"stream rate must be 1..50");}void dbg_timing_stats(void){tick_stats_t s;char b[128];controller_timing_get(&s);snprintf(b,sizeof b,"TIMING min=%lu max=%lu mean=%llu overruns=%lu",(unsigned long)s.min_us,(unsigned long)s.max_us,s.count?(unsigned long long)(s.sum_us/s.count):0ull,(unsigned long)s.overruns);line(b);}void dbg_timing_reset(void){controller_timing_reset();line("timing statistics reset");}
 void dbg_adc_trace_dump(void)
 {
     if (adc_trace_dump_active) return;
+    debug_persist_pending = true;
+    debug_confirm_deadline = ms_now() + DEBUG_PERSIST_CONFIRM_MS;
+    watchdog_hw->scratch[DBG_SCRATCH_INDEX] = plain_mode ? DBG_MAGIC_PLAIN_PENDING : DBG_MAGIC_FULL_PENDING;
     adc_trace_status_t status = controller_adc_trace_begin_dump();
     adc_trace_dump_count = status.count;
     adc_trace_dump_head = status.head;
     adc_trace_dump_was_frozen = status.frozen;
+    adc_trace_dump_valid = status.valid && status.count != 0u;
+    adc_trace_dump_bad_index = 0u;
+    uint32_t previous_tick = 0u;
+    for (uint16_t i = 0u; adc_trace_dump_valid && i < status.count; ++i) {
+        adc_trace_entry_t entry;
+        bool got = controller_adc_trace_get(i, &entry);
+        if (!got || entry.tick == 0u || entry.adc > ADC_MAX_VALUE ||
+            (i != 0u && entry.tick != previous_tick + 1u)) {
+            adc_trace_dump_valid = false;
+            adc_trace_dump_bad_index = i;
+        } else {
+            previous_tick = entry.tick;
+        }
+    }
     adc_trace_dump_index = 0u;
     adc_trace_dump_phase = 0u;
     adc_trace_line_length = adc_trace_line_offset = 0u;
@@ -272,11 +292,12 @@ static void adc_trace_dump_poll(void)
     adc_trace_line_offset = adc_trace_line_length = 0u;
     if (adc_trace_dump_phase == 0u) {
         int n = snprintf(adc_trace_line, sizeof adc_trace_line,
-            "ADC TRACE count=%u head=%u frozen=%s\r\n", adc_trace_dump_count,
-            adc_trace_dump_head, adc_trace_dump_was_frozen ? "YES" : "NO");
+            "ADC TRACE count=%u head=%u frozen=%s valid=%s bad=%u\r\n", adc_trace_dump_count,
+            adc_trace_dump_head, adc_trace_dump_was_frozen ? "YES" : "NO",
+            adc_trace_dump_valid ? "YES" : "NO", adc_trace_dump_bad_index);
         adc_trace_line_length = n > 0 && n < (int)sizeof adc_trace_line ? (uint8_t)n : 0u;
         adc_trace_dump_phase = 1u;
-    } else if (adc_trace_dump_phase == 1u && adc_trace_dump_index < adc_trace_dump_count) {
+    } else if (adc_trace_dump_phase == 1u && adc_trace_dump_valid && adc_trace_dump_index < adc_trace_dump_count) {
         adc_trace_entry_t entry;
         int n;
         if (!controller_adc_trace_get(adc_trace_dump_index, &entry)) {

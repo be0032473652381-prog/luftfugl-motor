@@ -516,6 +516,7 @@ void controller_motion_checks_get(motion_check_status_t *out)
 adc_trace_status_t controller_adc_trace_begin_dump(void)
 {
     adc_trace_status_t status;
+    status.valid = adc_trace_count <= DEBUG_ADC_TRACE_DEPTH && adc_trace_head < DEBUG_ADC_TRACE_DEPTH;
     status.count = adc_trace_count <= DEBUG_ADC_TRACE_DEPTH ? adc_trace_count : DEBUG_ADC_TRACE_DEPTH;
     status.head = adc_trace_head < DEBUG_ADC_TRACE_DEPTH ? adc_trace_head : 0u;
     status.frozen = adc_trace_frozen;

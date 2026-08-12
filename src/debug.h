@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "config.h"
-void dbg_init(void); void dbg_enter(void); void dbg_enter_plain(void); void dbg_restore_mode(void); void dbg_exit(void); bool dbg_active(void);
+void dbg_init(void); void dbg_enter(void); void dbg_enter_plain(void); void dbg_restore_mode(bool watchdog_reset); void dbg_exit(void); bool dbg_active(void);
 void dbg_screen_init(void); void dbg_screen_teardown(void); void dbg_frame_draw(void); void dbg_fields_refresh(void); void dbg_field_write(uint8_t row, uint8_t col, const char *text); void dbg_log_push(const char *text); void dbg_menu_focus(char key); bool dbg_plain_mode(void);
 void dbg_pos_goto(position_t p); void dbg_pos_jog(int16_t counts); void dbg_pos_goto_adc(uint16_t adc); void dbg_pos_step_size(int8_t direction);
 void dbg_poll(void); void dbg_handle_key(char c); void dbg_render(void); void dbg_render_header(void); void dbg_abort(void);

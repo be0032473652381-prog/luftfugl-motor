@@ -30,7 +30,7 @@ int main(void)
     encoder_init();
     controller_init();
 #ifdef LUFTFUGL_DEBUG
-    dbg_restore_mode();
+    dbg_restore_mode(watchdog_reset);
 #endif
     motor_enable();
     watchdog_enable(100, true);
