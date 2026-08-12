@@ -200,7 +200,8 @@ move_result_t controller_request(request_kind_t kind, position_t arg)
     if (state == ST_FAULT) return MOVE_FAULT;
     if (arg < POS_MIN || arg > POS_MAX) return MOVE_INVALID;
     if (position == POS_UNKNOWN || !encoder_in_safe_range()) return MOVE_POS_UNKNOWN;
-    if (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING || reached(now, brake_until_ms)) return MOVE_BUSY;
+    if (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING) return MOVE_BUSY;
+    if (brake_until_ms && !reached(now, brake_until_ms)) return MOVE_BUSY;
     if (arg == position) return MOVE_ALREADY;
     int16_t error = encoder_error_to(arg);
     if ((encoder_average() <= encoder_nominal(POS_MIN) + CFG_POS_WINDOW && error < 0) ||
@@ -216,7 +217,8 @@ move_result_t controller_debug_goto_adc(uint16_t adc)
     uint32_t now = now_ms();
     if (state == ST_FAULT) return MOVE_FAULT;
     if (!encoder_in_safe_range()) return MOVE_POS_UNKNOWN;
-    if (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING || state == ST_DEBUG || reached(now, brake_until_ms)) return MOVE_BUSY;
+    if (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING || state == ST_DEBUG) return MOVE_BUSY;
+    if (brake_until_ms && !reached(now, brake_until_ms)) return MOVE_BUSY;
     if (adc < CFG_ADC_SAFE_MIN || adc > CFG_ADC_SAFE_MAX) return MOVE_ENDSTOP;
     uint16_t current = encoder_average();
     uint16_t delta = current > adc ? current - adc : adc - current;
@@ -244,6 +246,7 @@ void controller_tick(void)
     uint32_t now = now_ms();
     position_t changed;
     watchdog_update();
+    if (reached(now, brake_until_ms)) brake_until_ms = 0u;
 #ifdef LUFTFUGL_DEBUG
     if (!adc_trace_frozen) {
         if (adc_trace_head >= DEBUG_ADC_TRACE_DEPTH) adc_trace_head = 0u;
