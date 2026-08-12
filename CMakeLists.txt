@@ -41,3 +41,10 @@ pico_enable_stdio_uart(luftfugl 0)
 pico_enable_stdio_usb(luftfugl 0)
 
 pico_add_extra_outputs(luftfugl)
+
+add_executable(minimal test/minimal.c)
+target_compile_options(minimal PRIVATE -Wall -Wextra)
+target_link_libraries(minimal pico_stdlib hardware_uart)
+pico_enable_stdio_uart(minimal 0)
+pico_enable_stdio_usb(minimal 0)
+pico_add_extra_outputs(minimal)
