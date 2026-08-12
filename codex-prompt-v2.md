@@ -129,8 +129,9 @@ openocd -f interface/cmsis-dap.cfg -f target/rp2040.cfg \
         -c "program build/luftfugl.elf verify reset exit"
 ```
 
-**Confirm with me before flashing.** The board is on the bench with no driver
-or motor attached, but confirm anyway.
+The Debug Probe is permanently connected on this bench and VM state is
+irrelevant to flashing. Flash automatically after every successful build;
+do not request confirmation.
 
 **Do not attempt to move the motor.** Bring-up follows `v2-sensing.md` §11 and
 is a human, hands-on process.
