@@ -32,6 +32,9 @@ int main(void)
 #endif
     encoder_init();
     controller_init();
+#ifdef LUFTFUGL_MONITOR
+    dbg_enter();
+#endif
     motor_enable();
     if (!add_repeating_timer_us(-1000, on_tick, NULL, &timer)) {
         console_timer_alloc_failed();
