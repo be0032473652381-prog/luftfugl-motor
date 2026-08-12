@@ -35,7 +35,6 @@ static char input[DEBUG_COMMAND_MAX + 1u];
 static uint8_t input_len;
 static char out_buf[DEBUG_OUT_BUFFER];
 static volatile uint16_t out_head, out_tail;
-static uint32_t last_tx_us;
 static uint32_t next_refresh;
 static pending_t pending;
 static char pending_text[DEBUG_COMMAND_MAX + 1u];
@@ -92,13 +91,10 @@ void dbg_out_drain(void) {
   while (out_tail != out_head && uart_is_writable(uart0)) {
     uart_putc_raw(uart0, out_buf[out_tail]);
     out_tail = (uint16_t)((out_tail + 1u) % DEBUG_OUT_BUFFER);
-    last_tx_us = time_us_32();
   }
 }
 
 bool dbg_out_pending(void) { return out_tail != out_head; }
-
-bool dbg_rx_ready(void) { return time_us_32() - last_tx_us >= 50000u; }
 
 static void result(const char *command, const char *outcome,
                    const char *detail) {
@@ -247,7 +243,6 @@ void dbg_render(void) {
   if (plain_mode)
     return;
   out_head = out_tail = 0u;
-  last_tx_us = 0u;
   dbg_out_push("\033[2J\033[H\033[?25l");
   memset(status_shadow, 0, sizeof status_shadow);
   frame_phase = 1u;

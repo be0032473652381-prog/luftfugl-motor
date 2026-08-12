@@ -20,7 +20,6 @@ void dbg_event(event_kind_t kind, uint8_t arg);
 void dbg_out_push(const char *text);
 void dbg_out_drain(void);
 bool dbg_out_pending(void);
-bool dbg_rx_ready(void);
 bool dbg_motor_armed(void);
 
 #endif
