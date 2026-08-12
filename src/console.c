@@ -70,6 +70,45 @@ static void handle_move(char *argument) {
     }
     write_line(output);
 }
+static void handle_jog(char *argument) {
+    char *end; long delta; char output[48]; uint16_t from_adc;
+    if (!argument || !*argument) { write_line("ERR: invalid jog"); return; }
+    delta = strtol(argument, &end, 10); while (isspace((unsigned char)*end)) end++;
+    if (end == argument || *end || delta < -JOG_MAX_COUNTS || delta > JOG_MAX_COUNTS) {
+        write_line("ERR: invalid jog"); return;
+    }
+    switch (controller_request_jog((int16_t)delta, &from_adc)) {
+    case JOG_OK: snprintf(output, sizeof output, "OK: jog %+ld from %u", delta, from_adc); break;
+    case JOG_INVALID: snprintf(output, sizeof output, "ERR: invalid jog"); break;
+    case JOG_ENDSTOP: snprintf(output, sizeof output, "ERR: at end-stop"); break;
+    case JOG_OVERTRAVEL: snprintf(output, sizeof output, "ERR: overtravel"); break;
+    case JOG_BUSY: snprintf(output, sizeof output, "ERR: busy"); break;
+    default: snprintf(output, sizeof output, "ERR: fault"); break;
+    }
+    write_line(output);
+}
+static void handle_setpos(char *argument) {
+    char *end; long station; char output[32]; uint16_t adc = encoder_average();
+    if (!argument || !*argument) { write_line("ERR: invalid target"); return; }
+    station = strtol(argument, &end, 10); while (isspace((unsigned char)*end)) end++;
+    if (end == argument || *end || station < POS_MIN || station > POS_MAX) {
+        write_line("ERR: invalid target"); return;
+    }
+    switch (controller_request_setpos((position_t)station, adc)) {
+    case MOVE_OK: snprintf(output, sizeof output, "OK: pos %ld = %u", station, adc); break;
+    case MOVE_BUSY: snprintf(output, sizeof output, "ERR: busy"); break;
+    case MOVE_FAULT: snprintf(output, sizeof output, "ERR: fault"); break;
+    default: snprintf(output, sizeof output, "ERR: invalid target"); break;
+    }
+    write_line(output);
+}
+static void console_savepos(void) {
+    char output[32];
+    for (position_t p = POS_MIN; p <= POS_MAX; ++p) {
+        snprintf(output, sizeof output, "#define POS_%u_ADC %u", p, encoder_nominal(p));
+        write_line(output);
+    }
+}
 static void console_handle_line(char *line) {
     char *argument; char *p, *end = line + strlen(line);
     while (end > line && isspace((unsigned char)end[-1])) *--end = '\0';
@@ -78,6 +117,9 @@ static void console_handle_line(char *line) {
     for (p = line; *p; p++) *p = (char)tolower((unsigned char)*p);
     if (!strcmp(line, "pos") && !argument) print_position("POS:", controller_position());
     else if (!strcmp(line, "adc") && !argument) console_adc();
+    else if (!strcmp(line, "jog")) handle_jog(argument);
+    else if (!strcmp(line, "setpos")) handle_setpos(argument);
+    else if (!strcmp(line, "savepos") && !argument) console_savepos();
     else if (!strcmp(line, "move")) handle_move(argument);
     else if (!strcmp(line, "stop") && !argument) { (void)controller_request(REQ_STOP, POS_UNKNOWN); write_line("OK: stopped"); }
     else if (!strcmp(line, "status") && !argument) console_status();
@@ -120,6 +162,7 @@ void console_drain_events(void) {
         case EV_FAULT_OVERTRAVEL: snprintf(output, sizeof output, "ERR: overtravel"); break;
         case EV_FAULT_STALL: snprintf(output, sizeof output, "ERR: stall"); break;
         case EV_FAULT_DIRECTION: snprintf(output, sizeof output, "ERR: direction"); break;
+        case EV_JOG_COMPLETE: console_adc(); continue;
         default: continue;
         }
 #ifdef LUFTFUGL_DEBUG

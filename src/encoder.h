@@ -13,6 +13,7 @@ bool encoder_take_change(position_t *out);
 bool encoder_in_safe_range(void);
 int16_t encoder_error_to(position_t target);
 uint16_t encoder_nominal(position_t position);
+void encoder_set_nominal(position_t position, uint16_t adc);
 #ifdef LUFTFUGL_DEBUG
 void encoder_sim_enable(bool on);
 bool encoder_sim_active(void);

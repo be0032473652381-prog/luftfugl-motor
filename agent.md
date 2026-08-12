@@ -466,6 +466,9 @@ Responses are plain text, each terminated by `\r\n`.
 |---------|----------|-------------|
 | `pos` | `POS:1` … `POS:5` or `POS:?` | Current confirmed position |
 | `adc` | `ADC raw=<n> avg=<n> pos=<n or ?>` | Report raw and filtered ADC and the classified position. Diagnostic and read-only; commands no motion. |
+| `jog <±counts>` | `OK: jog <±n> from <adc>` | Move by a bounded signed ADC delta at creep speed |
+| `setpos <1-5>` | `OK: pos <n> = <adc>` | Set one station nominal to the current filtered ADC in RAM |
+| `savepos` | Five paste-ready `#define POS_n_ADC <adc>` lines | Report the current station table; does not write flash |
 | `move N` | see §8 | Move to position N (1–5) |
 | `stop` | `OK: stopped` | Immediate brake, abandon target |
 | `status` | `POS:N DIR:FWD\|REV\|STP SPD:0-255 STATE:<state>` | Full state dump |
@@ -497,6 +500,15 @@ Unsolicited progress messages during an active move:
 | Input line exceeds 32 characters | `ERR: line too long`, discard to next newline |
 | Empty line | No response |
 | `adc` in any state | Report the current raw ADC, filtered ADC and instant classification; do not change state or motor outputs |
+| `jog` delta is zero, malformed, or exceeds `JOG_MAX_COUNTS` | `ERR: invalid jog` |
+| `jog` endpoint is outside the safe ADC range | `ERR: at end-stop` |
+| `jog` starts outside the safe ADC range | `ERR: overtravel` |
+| `jog` while another motion is active | `ERR: busy` |
+| `jog` while in `FAULT` | `ERR: fault` |
+| `jog` exceeds `JOG_TIMEOUT_MS` | Brake and emit `ERR: timeout` |
+| `jog` leaves the safe ADC range | Brake, disable the driver, emit `ERR: overtravel`, and enter `FAULT` |
+| `setpos` would make the station table non-ascending or leave `POS_WINDOW` at least one quarter of the smallest gap | `ERR: invalid target`; table unchanged |
+| `setpos` while motion is active or in `FAULT` | `ERR: busy` or `ERR: fault`; table unchanged |
 
 The motor must always come to rest on a **valid position 1–5**, and only ever
 between positions 1 and 5 inclusive. It must never be left parked between

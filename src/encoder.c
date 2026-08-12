@@ -11,6 +11,8 @@ static volatile bool confirmed_changed;
 #ifdef LUFTFUGL_DEBUG
 static volatile bool sim_active;
 static volatile uint16_t sim_value;
+#else
+static uint16_t position_adc[] = {POS_1_ADC, POS_2_ADC, POS_3_ADC, POS_4_ADC, POS_5_ADC};
 #endif
 
 uint16_t encoder_nominal(position_t position)
@@ -19,8 +21,18 @@ uint16_t encoder_nominal(position_t position)
     const volatile uint16_t *active = &cfg.pos_1_adc;
     return position >= POS_MIN && position <= POS_MAX ? active[position - POS_MIN] : 0u;
 #else
-    static const uint16_t compiled[] = {POS_1_ADC, POS_2_ADC, POS_3_ADC, POS_4_ADC, POS_5_ADC};
-    return position >= POS_MIN && position <= POS_MAX ? compiled[position - POS_MIN] : 0u;
+    return position >= POS_MIN && position <= POS_MAX ? position_adc[position - POS_MIN] : 0u;
+#endif
+}
+
+void encoder_set_nominal(position_t position, uint16_t adc)
+{
+    if (position < POS_MIN || position > POS_MAX) return;
+#ifdef LUFTFUGL_DEBUG
+    volatile uint16_t *active = &cfg.pos_1_adc;
+    active[position - POS_MIN] = adc;
+#else
+    position_adc[position - POS_MIN] = adc;
 #endif
 }
 

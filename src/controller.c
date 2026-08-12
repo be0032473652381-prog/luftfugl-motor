@@ -19,11 +19,14 @@ static volatile position_t position, target;
 static direction_t last_direction;
 static volatile request_kind_t mailbox;
 static volatile position_t mailbox_arg;
+static volatile int16_t mailbox_delta;
+static volatile uint16_t mailbox_value;
 static uint32_t deadline_ms, brake_until_ms;
 static uint16_t stall_reference, best_error_magnitude;
 static uint16_t motion_start_adc, motion_target_adc, previous_motion_adc;
 static uint8_t passed_mask;
 static bool endpoint_braking;
+static bool jog_move;
 static bool overtravel_recovery;
 static uint16_t recovery_best_adc;
 static direction_t recovery_direction;
@@ -74,6 +77,7 @@ static void arrive(position_t p, uint32_t now);
 static void enter_fault(event_kind_t event)
 {
     endpoint_braking = false;
+    jog_move = false;
     overtravel_recovery = false;
 #ifdef LUFTFUGL_DEBUG
     if (adc_trace_current < DEBUG_ADC_TRACE_DEPTH) adc_trace[adc_trace_current].fault = (uint8_t)event + 1u;
@@ -119,6 +123,7 @@ static void begin_home(uint32_t now)
     uint16_t target_adc = encoder_nominal(POS_MIN);
     int16_t error = (int16_t)target_adc - (int16_t)current;
     motor_brake();
+    jog_move = false;
     if (error_magnitude(error) <= CFG_POS_WINDOW) {
         target = POS_MIN;
         arrive(POS_MIN, now);
@@ -157,6 +162,7 @@ static void begin_move(position_t tgt, uint32_t now)
             (error < 0 && nominal < current && nominal > target_adc)) ++steps;
     }
     target = tgt;
+    jog_move = false;
     motion_start_adc = current;
     motion_target_adc = target_adc;
     previous_motion_adc = current;
@@ -171,6 +177,28 @@ static void begin_move(position_t tgt, uint32_t now)
     direction_check_ms = now + CFG_STALL_WINDOW_MS;
     motor_enable();
     motor_drive(last_direction, speed_for_error(error, tgt));
+}
+
+static void begin_jog(int16_t delta, uint16_t target_adc, uint32_t now)
+{
+    uint16_t current = encoder_average();
+
+    jog_move = true;
+    target = POS_BETWEEN;
+    motion_start_adc = current;
+    motion_target_adc = target_adc;
+    previous_motion_adc = current;
+    passed_mask = 0u;
+    endpoint_braking = false;
+    last_direction = delta > 0 ? DIR_FWD : DIR_REV;
+    deadline_ms = now + JOG_TIMEOUT_MS;
+    state = ST_MOVING;
+    stall_reference = current;
+    best_error_magnitude = error_magnitude((int16_t)target_adc - (int16_t)current);
+    stall_check_ms = now + CFG_STALL_WINDOW_MS;
+    direction_check_ms = now + CFG_STALL_WINDOW_MS;
+    motor_enable();
+    motor_drive(last_direction, CFG_DUTY_CREEP);
 }
 
 static void arrive(position_t p, uint32_t now)
@@ -195,12 +223,15 @@ void controller_init(void)
     target = POS_UNKNOWN;
     last_direction = DIR_REV;
     mailbox = REQ_NONE;
+    mailbox_delta = 0;
+    mailbox_value = 0u;
     deadline_ms = 0;
     brake_until_ms = 0;
     stall_reference = best_error_magnitude = 0u;
     motion_start_adc = motion_target_adc = previous_motion_adc = 0u;
     passed_mask = 0u;
     endpoint_braking = false;
+    jog_move = false;
     overtravel_recovery = false;
     stall_check_ms = direction_check_ms = 0u;
 #ifdef LUFTFUGL_DEBUG
@@ -229,6 +260,47 @@ move_result_t controller_request(request_kind_t kind, position_t arg)
         (encoder_average() >= encoder_nominal(POS_MAX) - CFG_POS_WINDOW && error > 0)) return MOVE_ENDSTOP;
     mailbox_arg = arg;
     mailbox = kind;
+    return MOVE_OK;
+}
+
+jog_result_t controller_request_jog(int16_t delta, uint16_t *from_adc)
+{
+    uint16_t magnitude = error_magnitude(delta);
+    uint16_t current;
+    int32_t endpoint;
+
+    if (delta == 0 || magnitude > JOG_MAX_COUNTS) return JOG_INVALID;
+    if (state == ST_FAULT) return JOG_FAULT;
+    if (!encoder_in_safe_range()) return JOG_OVERTRAVEL;
+    if (state != ST_IDLE || mailbox != REQ_NONE) return JOG_BUSY;
+    current = encoder_average();
+    endpoint = (int32_t)current + delta;
+    if (endpoint < CFG_ADC_SAFE_MIN || endpoint > CFG_ADC_SAFE_MAX) return JOG_ENDSTOP;
+    if (from_adc) *from_adc = current;
+    mailbox_delta = delta;
+    mailbox_value = (uint16_t)endpoint;
+    mailbox = REQ_JOG;
+    return JOG_OK;
+}
+
+move_result_t controller_request_setpos(position_t pos, uint16_t adc)
+{
+    uint16_t values[POS_MAX];
+
+    if (state == ST_FAULT) return MOVE_FAULT;
+    if (pos < POS_MIN || pos > POS_MAX) return MOVE_INVALID;
+    if (state != ST_IDLE || mailbox != REQ_NONE) return MOVE_BUSY;
+    for (position_t p = POS_MIN; p <= POS_MAX; ++p) values[p - POS_MIN] = encoder_nominal(p);
+    values[pos - POS_MIN] = adc;
+    for (position_t p = POS_MIN; p < POS_MAX; ++p) {
+        uint16_t lower = values[p - POS_MIN];
+        uint16_t upper = values[p];
+        if (lower >= upper || (uint32_t)CFG_POS_WINDOW * 4u >= (uint32_t)upper - lower)
+            return MOVE_INVALID;
+    }
+    mailbox_arg = pos;
+    mailbox_value = adc;
+    mailbox = REQ_SETPOS;
     return MOVE_OK;
 }
 
@@ -339,12 +411,14 @@ void controller_tick(void)
     request_kind_t request = mailbox;
     if (request != REQ_NONE) {
         position_t arg = mailbox_arg;
+        int16_t request_delta = mailbox_delta;
+        uint16_t request_value = mailbox_value;
         mailbox = REQ_NONE;
 #ifdef LUFTFUGL_DEBUG
         adc_move = false; adc_arrival_since = 0u;
 #endif
         if (request == REQ_STOP) {
-            motor_brake(); endpoint_braking = false; deadline_ms = 0; target = POS_UNKNOWN;
+            motor_brake(); endpoint_braking = false; jog_move = false; deadline_ms = 0; target = POS_UNKNOWN;
             if (state != ST_FAULT) state = ST_IDLE;
             if (position == POS_UNKNOWN || position == POS_BETWEEN) console_push_event(EV_STOPPED_UNKNOWN, 0);
         } else if (request == REQ_HOME) {
@@ -353,6 +427,11 @@ void controller_tick(void)
             else enter_fault(EV_FAULT_OVERTRAVEL);
         } else if (request == REQ_MOVE) {
             begin_move(arg, now);
+        } else if (request == REQ_JOG) {
+            if (!encoder_in_safe_range()) enter_fault(EV_FAULT_OVERTRAVEL);
+            else begin_jog(request_delta, request_value, now);
+        } else if (request == REQ_SETPOS) {
+            encoder_set_nominal(arg, request_value);
         }
     }
 
@@ -414,6 +493,14 @@ void controller_tick(void)
 #endif
         if (state == ST_MOVING || state == ST_APPROACH) {
             motor_brake();
+            if (jog_move) {
+                jog_move = false;
+                deadline_ms = 0;
+                target = POS_UNKNOWN;
+                state = ST_IDLE;
+                console_push_event(EV_TIMEOUT, 0);
+                TICK_RETURN();
+            }
 #ifdef LUFTFUGL_DEBUG
             ++counters.moves_timeout;
 #endif
@@ -428,12 +515,25 @@ void controller_tick(void)
         uint16_t magnitude = error_magnitude(error);
         direction_t direction = error > 0 ? DIR_FWD : DIR_REV;
         bool endpoint_target = target == POS_MIN || target == POS_MAX;
+        bool jog_reached = jog_move && (last_direction == DIR_FWD
+            ? current >= motion_target_adc : current <= motion_target_adc);
+
+        if (jog_reached) {
+            motor_brake();
+            jog_move = false;
+            deadline_ms = 0;
+            target = POS_UNKNOWN;
+            position = encoder_instant();
+            state = ST_IDLE;
+            console_push_event(EV_JOG_COMPLETE, 0);
+            TICK_RETURN();
+        }
 
         if (endpoint_target && magnitude <= CFG_POS_WINDOW) endpoint_braking = true;
         else if (magnitude > CFG_POS_WINDOW + CFG_POS_WINDOW / 2u) endpoint_braking = false;
 
         /* Homing needs a fresh reference too, but its crossings are not protocol events. */
-        if (state != ST_HOMING) {
+        if (state != ST_HOMING && !jog_move) {
             if (motion_start_adc < motion_target_adc) {
                 for (position_t p = POS_MIN; p <= POS_MAX; ++p) {
                     uint16_t nominal = encoder_nominal(p);
@@ -466,7 +566,9 @@ void controller_tick(void)
         previous_motion_adc = current;
 
         /* Continuous position, not the last station window, prevents outward limit drive. */
-        if (endpoint_braking ||
+        if (jog_move) {
+            motor_drive(last_direction, CFG_DUTY_CREEP);
+        } else if (endpoint_braking ||
             (current <= encoder_nominal(POS_MIN) + CFG_POS_WINDOW && direction == DIR_REV) ||
             (current >= encoder_nominal(POS_MAX) - CFG_POS_WINDOW && direction == DIR_FWD)) {
             motor_brake();
@@ -510,7 +612,7 @@ void controller_tick(void)
             } else adc_arrival_since = 0u;
         } else {
 #endif
-        if (encoder_confirmed() == target) {
+        if (!jog_move && encoder_confirmed() == target) {
             arrive(target, now);
             TICK_RETURN();
         }

@@ -23,9 +23,9 @@ rest. On a genuine contradiction, stop and ask.
 2. **Do not invent values.** Every constant is already specified. If something
    is genuinely absent, stop and ask.
 3. **Do not add scope.** No commands beyond `agent.md` §7 and
-   `debug-functions.md`; the read-only production `adc` command is explicitly
-   included in §7. No USB stdio, no persistence, no extra dependencies, no
-   package installs.
+   `debug-functions.md`; the production calibration commands `adc`, `jog`,
+   `setpos`, and `savepos` are explicitly included in §7. No USB stdio, no
+   persistence, no extra dependencies, no package installs.
 4. **Do not run the motor.** No `move`, no `home`, no debug motion command, no
    automated smoke test that energises the driver. Bring-up is a staged manual
    procedure.
