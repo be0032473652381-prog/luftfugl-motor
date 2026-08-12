@@ -2,6 +2,7 @@
 #include "controller.h"
 #include "encoder.h"
 #include "hardware/gpio.h"
+#include "hardware/regs/uart.h"
 #include "hardware/structs/uart.h"
 #include "hardware/uart.h"
 #include "motor.h"
@@ -267,8 +268,26 @@ void console_init(void) {
 void console_poll(void) {
   if (uart_get_hw(uart0)->rsr)
     uart_get_hw(uart0)->rsr = 0u;
+#ifdef LUFTFUGL_MONITOR
+  /* A returned copy of the full-screen output must never become command
+     input. Drain it while output is queued or the PL011 is still shifting. */
+  if (dbg_active() &&
+      (dbg_out_pending() || !dbg_rx_ready() ||
+       (uart_get_hw(uart0)->fr & UART_UARTFR_BUSY_BITS))) {
+    while (uart_is_readable(uart0))
+      (void)uart_get_hw(uart0)->dr;
+    return;
+  }
+#endif
   while (uart_is_readable(uart0)) {
-    char c = (char)uart_getc(uart0);
+    uint32_t received = uart_get_hw(uart0)->dr;
+    uint32_t errors = UART_UARTDR_OE_BITS | UART_UARTDR_BE_BITS |
+                      UART_UARTDR_PE_BITS | UART_UARTDR_FE_BITS;
+    if (received & errors) {
+      uart_get_hw(uart0)->rsr = 0u;
+      continue;
+    }
+    char c = (char)(received & UART_UARTDR_DATA_BITS);
 #ifdef LUFTFUGL_MONITOR
     if (dbg_active()) {
       dbg_handle_key(c);
