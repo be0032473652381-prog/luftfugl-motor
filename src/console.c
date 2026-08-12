@@ -6,6 +6,7 @@
 #include "hardware/gpio.h"
 #include "hardware/uart.h"
 #include "controller.h"
+#include "encoder.h"
 #include "motor.h"
 #ifdef LUFTFUGL_DEBUG
 #include "debug.h"
@@ -44,6 +45,12 @@ static void console_status(void) {
     else snprintf(output, sizeof output, "POS:%u DIR:%s SPD:%u STATE:%s", position, direction_name(motor_direction()), motor_duty(), state_name(controller_state()));
     write_line(output);
 }
+static void console_adc(void) {
+    char output[40]; position_t position = encoder_instant();
+    if (position == POS_UNKNOWN || position == POS_BETWEEN) snprintf(output, sizeof output, "ADC raw=%u avg=%u pos=?", encoder_raw(), encoder_average());
+    else snprintf(output, sizeof output, "ADC raw=%u avg=%u pos=%u", encoder_raw(), encoder_average(), position);
+    write_line(output);
+}
 static void handle_move(char *argument) {
     char *end; long target; char output[32]; move_result_t result;
     if (!argument || !*argument) { write_line("ERR: invalid target"); return; }
@@ -70,6 +77,7 @@ static void console_handle_line(char *line) {
     if (argument) { *argument++ = '\0'; while (*argument == ' ') argument++; }
     for (p = line; *p; p++) *p = (char)tolower((unsigned char)*p);
     if (!strcmp(line, "pos") && !argument) print_position("POS:", controller_position());
+    else if (!strcmp(line, "adc") && !argument) console_adc();
     else if (!strcmp(line, "move")) handle_move(argument);
     else if (!strcmp(line, "stop") && !argument) { (void)controller_request(REQ_STOP, POS_UNKNOWN); write_line("OK: stopped"); }
     else if (!strcmp(line, "status") && !argument) console_status();

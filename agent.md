@@ -465,6 +465,7 @@ Responses are plain text, each terminated by `\r\n`.
 | Command | Response | Description |
 |---------|----------|-------------|
 | `pos` | `POS:1` … `POS:5` or `POS:?` | Current confirmed position |
+| `adc` | `ADC raw=<n> avg=<n> pos=<n or ?>` | Report raw and filtered ADC and the classified position. Diagnostic and read-only; commands no motion. |
 | `move N` | see §8 | Move to position N (1–5) |
 | `stop` | `OK: stopped` | Immediate brake, abandon target |
 | `status` | `POS:N DIR:FWD\|REV\|STP SPD:0-255 STATE:<state>` | Full state dump |
@@ -495,6 +496,7 @@ Unsolicited progress messages during an active move:
 | `stop` when already stopped | `OK: stopped` |
 | Input line exceeds 32 characters | `ERR: line too long`, discard to next newline |
 | Empty line | No response |
+| `adc` in any state | Report the current raw ADC, filtered ADC and instant classification; do not change state or motor outputs |
 
 The motor must always come to rest on a **valid position 1–5**, and only ever
 between positions 1 and 5 inclusive. It must never be left parked between
