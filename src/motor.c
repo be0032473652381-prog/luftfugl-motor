@@ -5,9 +5,6 @@
 static direction_t cached_direction;
 static uint8_t cached_duty;
 static uint pwm_slice;
-#ifdef LUFTFUGL_DEBUG
-static bool inhibited;
-#endif
 
 void motor_init(void)
 {
@@ -22,16 +19,10 @@ void motor_init(void)
     pwm_set_enabled(pwm_slice, true);
     cached_direction = DIR_STOP;
     cached_duty = 0;
-#ifdef LUFTFUGL_DEBUG
-    inhibited = false;
-#endif
 }
 
 void motor_enable(void)
 {
-#ifdef LUFTFUGL_DEBUG
-    if (inhibited) { gpio_put(PIN_STBY, false); return; }
-#endif
     gpio_put(PIN_AIN1, false);
     gpio_put(PIN_AIN2, false);
     gpio_put(PIN_STBY, true);
@@ -49,11 +40,8 @@ void motor_disable(void)
 
 void motor_drive(direction_t direction, uint8_t duty)
 {
-#ifdef LUFTFUGL_DEBUG
-    if (inhibited) { gpio_put(PIN_STBY, false); gpio_put(PIN_AIN1, direction == DIR_FWD); gpio_put(PIN_AIN2, direction == DIR_REV); pwm_set_chan_level(pwm_slice, PWM_CHAN_A, 0); cached_direction = direction; cached_duty = duty; return; }
-#endif
     if (direction == DIR_STOP || duty == 0) { motor_brake(); return; }
-    if (duty < CFG_DUTY_MIN) duty = CFG_DUTY_MIN;
+    if (duty < DUTY_MIN) duty = DUTY_MIN;
     gpio_put(PIN_AIN1, direction == DIR_FWD);
     gpio_put(PIN_AIN2, direction == DIR_REV);
     pwm_set_chan_level(pwm_slice, PWM_CHAN_A, duty);
@@ -81,11 +69,3 @@ void motor_coast(void)
 
 direction_t motor_direction(void) { return cached_direction; }
 uint8_t motor_duty(void) { return cached_duty; }
-#ifdef LUFTFUGL_DEBUG
-void motor_set_inhibit(bool on)
-{
-    inhibited = on;
-    if (on) motor_disable();
-}
-bool motor_inhibited(void) { return inhibited; }
-#endif

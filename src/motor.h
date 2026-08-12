@@ -10,8 +10,4 @@ void motor_brake(void);
 void motor_coast(void);
 direction_t motor_direction(void);
 uint8_t motor_duty(void);
-#ifdef LUFTFUGL_DEBUG
-void motor_set_inhibit(bool on);
-bool motor_inhibited(void);
-#endif
 #endif

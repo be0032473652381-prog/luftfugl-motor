@@ -8,9 +8,4 @@ void console_push_event(event_kind_t kind, uint8_t arg);
 void console_drain_events(void);
 void console_watchdog_reset(void);
 void console_timer_alloc_failed(void);
-#ifdef LUFTFUGL_MONITOR
-void console_debug_write(const char *text);
-void console_debug_line(const char *text);
-bool console_event_queue_full(void);
-#endif
 #endif
