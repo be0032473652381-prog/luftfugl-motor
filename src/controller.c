@@ -430,6 +430,40 @@ void controller_tick(void)
         bool endpoint_target = target == POS_MIN || target == POS_MAX;
 
         if (endpoint_target && magnitude <= CFG_POS_WINDOW) endpoint_braking = true;
+        else if (magnitude > CFG_POS_WINDOW + CFG_POS_WINDOW / 2u) endpoint_braking = false;
+
+        /* Homing needs a fresh reference too, but its crossings are not protocol events. */
+        if (state != ST_HOMING) {
+            if (motion_start_adc < motion_target_adc) {
+                for (position_t p = POS_MIN; p <= POS_MAX; ++p) {
+                    uint16_t nominal = encoder_nominal(p);
+                    uint8_t bit = (uint8_t)(1u << (p - POS_MIN));
+                    if (!(passed_mask & bit) && nominal > motion_start_adc && nominal < motion_target_adc &&
+                        previous_motion_adc < nominal && current >= nominal) {
+                        passed_mask |= bit;
+                        console_push_event(EV_PASS, p);
+#ifdef LUFTFUGL_DEBUG
+                        ++counters.pass_events; hist_push(now, p, 0);
+#endif
+                    }
+                }
+            } else {
+                for (position_t p = POS_MAX; p >= POS_MIN; --p) {
+                    uint16_t nominal = encoder_nominal(p);
+                    uint8_t bit = (uint8_t)(1u << (p - POS_MIN));
+                    if (!(passed_mask & bit) && nominal < motion_start_adc && nominal > motion_target_adc &&
+                        previous_motion_adc > nominal && current <= nominal) {
+                        passed_mask |= bit;
+                        console_push_event(EV_PASS, p);
+#ifdef LUFTFUGL_DEBUG
+                        ++counters.pass_events; hist_push(now, p, 0);
+#endif
+                    }
+                    if (p == POS_MIN) break;
+                }
+            }
+        }
+        previous_motion_adc = current;
 
         /* Continuous position, not the last station window, prevents outward limit drive. */
         if (endpoint_braking ||
@@ -452,7 +486,7 @@ void controller_tick(void)
             TICK_RETURN();
         }
 
-        if (!endpoint_braking && motor_duty() > CFG_DUTY_MIN && reached(now, stall_check_ms)) {
+        if (reached(now, stall_check_ms)) {
             uint16_t delta = current > stall_reference ? current - stall_reference : stall_reference - current;
             if (delta < CFG_STALL_DELTA) {
                 enter_fault(EV_FAULT_STALL);
@@ -487,39 +521,7 @@ void controller_tick(void)
     }
 
     switch (state) {
-    case ST_MOVING: {
-        uint16_t current = encoder_average();
-        if (motion_start_adc < motion_target_adc) {
-            for (position_t p = POS_MIN; p <= POS_MAX; ++p) {
-                uint16_t nominal = encoder_nominal(p);
-                uint8_t bit = (uint8_t)(1u << (p - POS_MIN));
-                if (!(passed_mask & bit) && nominal > motion_start_adc && nominal < motion_target_adc &&
-                    previous_motion_adc < nominal && current >= nominal) {
-                    passed_mask |= bit;
-                    console_push_event(EV_PASS, p);
-#ifdef LUFTFUGL_DEBUG
-                    ++counters.pass_events; hist_push(now, p, 0);
-#endif
-                }
-            }
-        } else {
-            for (position_t p = POS_MAX; p >= POS_MIN; --p) {
-                uint16_t nominal = encoder_nominal(p);
-                uint8_t bit = (uint8_t)(1u << (p - POS_MIN));
-                if (!(passed_mask & bit) && nominal < motion_start_adc && nominal > motion_target_adc &&
-                    previous_motion_adc > nominal && current <= nominal) {
-                    passed_mask |= bit;
-                    console_push_event(EV_PASS, p);
-#ifdef LUFTFUGL_DEBUG
-                    ++counters.pass_events; hist_push(now, p, 0);
-#endif
-                }
-                if (p == POS_MIN) break;
-            }
-        }
-        previous_motion_adc = current;
-        break;
-    }
+    case ST_MOVING:
     case ST_APPROACH:
     case ST_HOMING:
         break;
