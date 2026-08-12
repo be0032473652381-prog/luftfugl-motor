@@ -500,12 +500,12 @@ Unsolicited progress messages during an active move:
 | Input line exceeds 32 characters | `ERR: line too long`, discard to next newline |
 | Empty line | No response |
 | `adc` in any state | Report the current raw ADC, filtered ADC and instant classification; do not change state or motor outputs |
-| `jog` delta is zero, malformed, or exceeds `JOG_MAX_COUNTS` | `ERR: invalid jog` |
+| `jog` delta is zero, malformed, or exceeds `JOG_MAX_COUNTS` (500 counts) | `ERR: invalid jog` |
 | `jog` endpoint is outside the safe ADC range | `ERR: at end-stop` |
 | `jog` starts outside the safe ADC range | `ERR: overtravel` |
 | `jog` while another motion is active | `ERR: busy` |
 | `jog` while in `FAULT` | `ERR: fault` |
-| `jog` exceeds `JOG_TIMEOUT_MS` | Brake and emit `ERR: timeout` |
+| `jog` exceeds `JOG_TIMEOUT_MS` (3000 ms) | Brake and emit `ERR: timeout` |
 | `jog` leaves the safe ADC range | Brake, disable the driver, emit `ERR: overtravel`, and enter `FAULT` |
 | `setpos` would make the station table non-ascending or leave `POS_WINDOW` at least one quarter of the smallest gap | `ERR: invalid target`; table unchanged |
 | `setpos` while motion is active or in `FAULT` | `ERR: busy` or `ERR: fault`; table unchanged |
