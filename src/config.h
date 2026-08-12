@@ -121,39 +121,86 @@ typedef uint8_t position_t;
 
 typedef enum { DIR_STOP = 0, DIR_FWD, DIR_REV } direction_t;
 typedef enum {
-    ST_BOOT = 0, ST_IDLE, ST_MOVING, ST_APPROACH, ST_HOMING,
-    ST_FAULT,
+  ST_BOOT = 0,
+  ST_IDLE,
+  ST_MOVING,
+  ST_APPROACH,
+  ST_HOMING,
+  ST_FAULT,
 #ifdef LUFTFUGL_DEBUG
-    ST_DEBUG,
+  ST_DEBUG,
 #endif
 } sys_state_t;
 typedef enum {
-    REQ_NONE = 0, REQ_MOVE, REQ_STOP, REQ_HOME, REQ_JOG, REQ_SETPOS
+  REQ_NONE = 0,
+  REQ_MOVE,
+  REQ_STOP,
+  REQ_HOME,
+  REQ_JOG,
+  REQ_SETPOS,
+  REQ_RESET_POSITIONS
 } request_kind_t;
 typedef enum {
-    MOVE_OK = 0, MOVE_ALREADY, MOVE_INVALID, MOVE_ENDSTOP, MOVE_BUSY,
-    MOVE_POS_UNKNOWN, MOVE_FAULT
+  MOVE_OK = 0,
+  MOVE_ALREADY,
+  MOVE_INVALID,
+  MOVE_ENDSTOP,
+  MOVE_BUSY,
+  MOVE_POS_UNKNOWN,
+  MOVE_FAULT
 } move_result_t;
 typedef enum {
-    JOG_OK = 0, JOG_INVALID, JOG_ENDSTOP, JOG_OVERTRAVEL, JOG_BUSY, JOG_FAULT
+  JOG_OK = 0,
+  JOG_INVALID,
+  JOG_ENDSTOP,
+  JOG_OVERTRAVEL,
+  JOG_BUSY,
+  JOG_FAULT
 } jog_result_t;
 typedef enum {
-    EV_PASS = 0, EV_ARRIVE, EV_TIMEOUT, EV_FAULT_HOME, EV_HOMING,
-    EV_STOPPED_UNKNOWN, EV_FAULT_OVERTRAVEL, EV_FAULT_STALL, EV_FAULT_DIRECTION,
-    EV_JOG_COMPLETE
+  EV_PASS = 0,
+  EV_ARRIVE,
+  EV_TIMEOUT,
+  EV_FAULT_HOME,
+  EV_HOMING,
+  EV_STOPPED_UNKNOWN,
+  EV_FAULT_OVERTRAVEL,
+  EV_FAULT_STALL,
+  EV_FAULT_DIRECTION,
+  EV_JOG_COMPLETE
 } event_kind_t;
 
 #ifdef LUFTFUGL_MONITOR
-typedef enum { DBG_OP_NONE = 0, DBG_OP_ENTER, DBG_OP_EXIT, DBG_OP_DRIVE, DBG_OP_BRAKE, DBG_OP_COAST, DBG_OP_STANDBY, DBG_OP_FAULT_CLEAR, DBG_OP_SIM_ENABLE, DBG_OP_GPIO_SET, DBG_OP_GOTO_ADC } dbg_op_t;
-typedef struct { dbg_op_t op; direction_t dir; uint8_t duty; uint16_t ms; bool flag; uint16_t adc; } dbg_request_t;
+typedef enum {
+  DBG_OP_NONE = 0,
+  DBG_OP_ENTER,
+  DBG_OP_EXIT,
+  DBG_OP_DRIVE,
+  DBG_OP_BRAKE,
+  DBG_OP_COAST,
+  DBG_OP_STANDBY,
+  DBG_OP_FAULT_CLEAR,
+  DBG_OP_SIM_ENABLE,
+  DBG_OP_SIM_SET,
+  DBG_OP_GPIO_SET,
+  DBG_OP_GOTO_ADC
+} dbg_op_t;
+typedef struct {
+  dbg_op_t op;
+  direction_t dir;
+  uint8_t duty;
+  uint16_t ms;
+  bool flag;
+  uint16_t adc;
+} dbg_request_t;
 
 typedef struct {
-    uint8_t duty_normal, duty_approach, duty_creep, duty_min;
-    uint16_t pos_1_adc, pos_2_adc, pos_3_adc, pos_4_adc, pos_5_adc;
-    uint16_t pos_window, approach_counts, adc_safe_min, adc_safe_max;
-    uint16_t stall_delta, stall_window_ms, reverse_delta;
-    uint16_t debounce_ms, brake_hold_ms;
-    uint32_t timeout_step_ms, timeout_home_ms;
+  uint8_t duty_normal, duty_approach, duty_creep, duty_min;
+  uint16_t pos_1_adc, pos_2_adc, pos_3_adc, pos_4_adc, pos_5_adc;
+  uint16_t pos_window, approach_counts, adc_safe_min, adc_safe_max;
+  uint16_t stall_delta, stall_window_ms, reverse_delta;
+  uint16_t debounce_ms, brake_hold_ms;
+  uint32_t timeout_step_ms, timeout_home_ms;
 } cfg_t;
 extern volatile cfg_t cfg;
 void cfg_reset(void);

@@ -1,8 +1,8 @@
 #include "controller.h"
-#include "encoder.h"
-#include "motor.h"
 #include "console.h"
+#include "encoder.h"
 #include "hardware/watchdog.h"
+#include "motor.h"
 #include "pico/time.h"
 #ifdef LUFTFUGL_MONITOR
 #include <string.h>
@@ -46,617 +46,804 @@ static volatile fault_record_t last_fault;
 
 static uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
 #ifdef LUFTFUGL_MONITOR
-static void hist_push(uint32_t ms, position_t pos, uint8_t kind)
-{ history[history_head] = (hist_entry_t){ms, pos, kind}; history_head = (uint8_t)((history_head + 1u) % DEBUG_HISTORY_DEPTH); if (history_used < DEBUG_HISTORY_DEPTH) ++history_used; }
-static void timing_finish(uint32_t start)
-{ uint32_t elapsed = time_us_32() - start; if (!tick_stats.count || elapsed < tick_stats.min_us) tick_stats.min_us = elapsed; if (elapsed > tick_stats.max_us) tick_stats.max_us = elapsed; tick_stats.sum_us += elapsed; ++tick_stats.count; if (elapsed > TICK_PERIOD_US) { ++tick_stats.overruns; ++counters.tick_overruns; } }
+static void hist_push(uint32_t ms, position_t pos, uint8_t kind) {
+  history[history_head] = (hist_entry_t){ms, pos, kind};
+  history_head = (uint8_t)((history_head + 1u) % DEBUG_HISTORY_DEPTH);
+  if (history_used < DEBUG_HISTORY_DEPTH)
+    ++history_used;
+}
+static void timing_finish(uint32_t start) {
+  uint32_t elapsed = time_us_32() - start;
+  if (!tick_stats.count || elapsed < tick_stats.min_us)
+    tick_stats.min_us = elapsed;
+  if (elapsed > tick_stats.max_us)
+    tick_stats.max_us = elapsed;
+  tick_stats.sum_us += elapsed;
+  ++tick_stats.count;
+  if (elapsed > TICK_PERIOD_US) {
+    ++tick_stats.overruns;
+    ++counters.tick_overruns;
+  }
+}
 #endif
-static bool reached(uint32_t now, uint32_t deadline) { return deadline && (int32_t)(now - deadline) >= 0; }
+static bool reached(uint32_t now, uint32_t deadline) {
+  return deadline && (int32_t)(now - deadline) >= 0;
+}
 static bool valid(position_t p) { return p >= POS_MIN && p <= POS_MAX; }
-static uint16_t error_magnitude(int16_t error)
-{
-    return error < 0 ? (uint16_t)-error : (uint16_t)error;
+static uint16_t error_magnitude(int16_t error) {
+  return error < 0 ? (uint16_t)-error : (uint16_t)error;
 }
 
-static uint8_t speed_for_error(int16_t error, position_t tgt)
-{
-    uint16_t magnitude = error_magnitude(error);
-    if (magnitude <= CFG_APPROACH_COUNTS)
-        return tgt == POS_MIN || tgt == POS_MAX ? CFG_DUTY_CREEP : CFG_DUTY_APPROACH;
-    return CFG_DUTY_NORMAL;
+static uint8_t speed_for_error(int16_t error, position_t tgt) {
+  uint16_t magnitude = error_magnitude(error);
+  if (magnitude <= CFG_APPROACH_COUNTS)
+    return tgt == POS_MIN || tgt == POS_MAX ? CFG_DUTY_CREEP
+                                            : CFG_DUTY_APPROACH;
+  return CFG_DUTY_NORMAL;
 }
 
 static void arrive(position_t p, uint32_t now);
 
-static void enter_fault(event_kind_t event)
-{
-    endpoint_braking = false;
-    jog_move = false;
-    overtravel_recovery = false;
+static void enter_fault(event_kind_t event) {
+  endpoint_braking = false;
+  jog_move = false;
+  overtravel_recovery = false;
 #ifdef LUFTFUGL_DEBUG
-    encoder_sim_enable(false); motor_set_inhibit(false);
+  encoder_sim_enable(false);
+  motor_set_inhibit(false);
 #endif
-    motor_brake();
-    motor_disable();
+  motor_brake();
+  motor_disable();
 #ifdef LUFTFUGL_MONITOR
-    uint32_t fault_deadline = deadline_ms;
+  uint32_t fault_deadline = deadline_ms;
 #endif
-    deadline_ms = 0;
-    state = ST_FAULT;
+  deadline_ms = 0;
+  state = ST_FAULT;
 #ifdef LUFTFUGL_MONITOR
-    ++counters.faults;
-    last_fault = (fault_record_t){event, now_ms(), state, position, target, fault_deadline};
+  ++counters.faults;
+  last_fault = (fault_record_t){event,    now_ms(), state,
+                                position, target,   fault_deadline};
 #endif
-    console_push_event(event, 0);
+  console_push_event(event, 0);
 }
 
-static void begin_overtravel_recovery(uint32_t now)
-{
-    uint16_t current = encoder_average();
+static void begin_overtravel_recovery(uint32_t now) {
+  uint16_t current = encoder_average();
 
-    motor_enable();
+  motor_enable();
+  target = POS_MIN;
+  recovery_best_adc = current;
+  recovery_direction = current < CFG_ADC_SAFE_MIN ? DIR_FWD : DIR_REV;
+  last_direction = recovery_direction;
+  overtravel_recovery = true;
+  deadline_ms = now + CFG_TIMEOUT_HOME_MS;
+  state = ST_HOMING;
+  motor_drive(recovery_direction, CFG_DUTY_CREEP);
+  console_push_event(EV_HOMING, 0);
+}
+
+static void begin_home(uint32_t now) {
+  uint16_t current = encoder_average();
+  uint16_t target_adc = encoder_nominal(POS_MIN);
+  int16_t error = (int16_t)target_adc - (int16_t)current;
+  motor_brake();
+  jog_move = false;
+  if (error_magnitude(error) <= CFG_POS_WINDOW) {
     target = POS_MIN;
-    recovery_best_adc = current;
-    recovery_direction = current < CFG_ADC_SAFE_MIN ? DIR_FWD : DIR_REV;
-    last_direction = recovery_direction;
-    overtravel_recovery = true;
-    deadline_ms = now + CFG_TIMEOUT_HOME_MS;
-    state = ST_HOMING;
-    motor_drive(recovery_direction, CFG_DUTY_CREEP);
-    console_push_event(EV_HOMING, 0);
+    arrive(POS_MIN, now);
+    return;
+  }
+  motor_enable();
+  target = POS_MIN;
+  motion_start_adc = current;
+  motion_target_adc = target_adc;
+  previous_motion_adc = current;
+  passed_mask = 0u;
+  endpoint_braking = false;
+  last_direction = error > 0 ? DIR_FWD : DIR_REV;
+  deadline_ms = now + CFG_TIMEOUT_HOME_MS;
+  state = ST_HOMING;
+  stall_reference = current;
+  best_error_magnitude = error_magnitude(error);
+  stall_check_ms = now + CFG_STALL_WINDOW_MS;
+  direction_check_ms = now + CFG_STALL_WINDOW_MS;
+  motor_drive(last_direction, speed_for_error(error, target));
+  console_push_event(EV_HOMING, 0);
 }
 
-static void begin_home(uint32_t now)
-{
-    uint16_t current = encoder_average();
-    uint16_t target_adc = encoder_nominal(POS_MIN);
-    int16_t error = (int16_t)target_adc - (int16_t)current;
-    motor_brake();
-    jog_move = false;
-    if (error_magnitude(error) <= CFG_POS_WINDOW) {
-        target = POS_MIN;
-        arrive(POS_MIN, now);
-        return;
-    }
-    motor_enable();
-    target = POS_MIN;
-    motion_start_adc = current;
-    motion_target_adc = target_adc;
-    previous_motion_adc = current;
-    passed_mask = 0u;
-    endpoint_braking = false;
-    last_direction = error > 0 ? DIR_FWD : DIR_REV;
-    deadline_ms = now + CFG_TIMEOUT_HOME_MS;
-    state = ST_HOMING;
-    stall_reference = current;
-    best_error_magnitude = error_magnitude(error);
-    stall_check_ms = now + CFG_STALL_WINDOW_MS;
-    direction_check_ms = now + CFG_STALL_WINDOW_MS;
-    motor_drive(last_direction, speed_for_error(error, target));
-    console_push_event(EV_HOMING, 0);
+static void begin_move(position_t tgt, uint32_t now) {
+  uint16_t current = encoder_average();
+  uint16_t target_adc = encoder_nominal(tgt);
+  int16_t error = (int16_t)target_adc - (int16_t)current;
+  uint8_t steps = 1u;
+  for (position_t p = POS_MIN; p <= POS_MAX; ++p) {
+    uint16_t nominal = encoder_nominal(p);
+    if ((error > 0 && nominal > current && nominal < target_adc) ||
+        (error < 0 && nominal < current && nominal > target_adc))
+      ++steps;
+  }
+  target = tgt;
+  jog_move = false;
+  motion_start_adc = current;
+  motion_target_adc = target_adc;
+  previous_motion_adc = current;
+  passed_mask = 0u;
+  endpoint_braking = false;
+  last_direction = error > 0 ? DIR_FWD : DIR_REV;
+  deadline_ms = now + (uint32_t)steps * CFG_TIMEOUT_STEP_MS;
+  state =
+      error_magnitude(error) <= CFG_APPROACH_COUNTS ? ST_APPROACH : ST_MOVING;
+  stall_reference = current;
+  best_error_magnitude = error_magnitude(error);
+  stall_check_ms = now + CFG_STALL_WINDOW_MS;
+  direction_check_ms = now + CFG_STALL_WINDOW_MS;
+  motor_enable();
+  motor_drive(last_direction, speed_for_error(error, tgt));
 }
 
-static void begin_move(position_t tgt, uint32_t now)
-{
-    uint16_t current = encoder_average();
-    uint16_t target_adc = encoder_nominal(tgt);
-    int16_t error = (int16_t)target_adc - (int16_t)current;
-    uint8_t steps = 1u;
-    for (position_t p = POS_MIN; p <= POS_MAX; ++p) {
-        uint16_t nominal = encoder_nominal(p);
-        if ((error > 0 && nominal > current && nominal < target_adc) ||
-            (error < 0 && nominal < current && nominal > target_adc)) ++steps;
-    }
-    target = tgt;
-    jog_move = false;
-    motion_start_adc = current;
-    motion_target_adc = target_adc;
-    previous_motion_adc = current;
-    passed_mask = 0u;
-    endpoint_braking = false;
-    last_direction = error > 0 ? DIR_FWD : DIR_REV;
-    deadline_ms = now + (uint32_t)steps * CFG_TIMEOUT_STEP_MS;
-    state = error_magnitude(error) <= CFG_APPROACH_COUNTS ? ST_APPROACH : ST_MOVING;
-    stall_reference = current;
-    best_error_magnitude = error_magnitude(error);
-    stall_check_ms = now + CFG_STALL_WINDOW_MS;
-    direction_check_ms = now + CFG_STALL_WINDOW_MS;
-    motor_enable();
-    motor_drive(last_direction, speed_for_error(error, tgt));
+static void begin_jog(int16_t delta, uint16_t target_adc, uint32_t now) {
+  uint16_t current = encoder_average();
+
+  jog_move = true;
+  target = POS_BETWEEN;
+  motion_start_adc = current;
+  motion_target_adc = target_adc;
+  previous_motion_adc = current;
+  passed_mask = 0u;
+  endpoint_braking = false;
+  last_direction = delta > 0 ? DIR_FWD : DIR_REV;
+  deadline_ms = now + JOG_TIMEOUT_MS;
+  state = ST_MOVING;
+  stall_reference = current;
+  best_error_magnitude =
+      error_magnitude((int16_t)target_adc - (int16_t)current);
+  stall_check_ms = now + CFG_STALL_WINDOW_MS;
+  direction_check_ms = now + CFG_STALL_WINDOW_MS;
+  motor_enable();
+  motor_drive(last_direction, CFG_DUTY_CREEP);
 }
 
-static void begin_jog(int16_t delta, uint16_t target_adc, uint32_t now)
-{
-    uint16_t current = encoder_average();
-
-    jog_move = true;
-    target = POS_BETWEEN;
-    motion_start_adc = current;
-    motion_target_adc = target_adc;
-    previous_motion_adc = current;
-    passed_mask = 0u;
-    endpoint_braking = false;
-    last_direction = delta > 0 ? DIR_FWD : DIR_REV;
-    deadline_ms = now + JOG_TIMEOUT_MS;
-    state = ST_MOVING;
-    stall_reference = current;
-    best_error_magnitude = error_magnitude((int16_t)target_adc - (int16_t)current);
-    stall_check_ms = now + CFG_STALL_WINDOW_MS;
-    direction_check_ms = now + CFG_STALL_WINDOW_MS;
-    motor_enable();
-    motor_drive(last_direction, CFG_DUTY_CREEP);
-}
-
-static void arrive(position_t p, uint32_t now)
-{
+static void arrive(position_t p, uint32_t now) {
 #ifdef LUFTFUGL_MONITOR
-    if (state == ST_MOVING || state == ST_APPROACH) ++counters.moves_ok;
-    hist_push(now, p, 1);
+  if (state == ST_MOVING || state == ST_APPROACH)
+    ++counters.moves_ok;
+  hist_push(now, p, 1);
 #endif
-    motor_brake();
-    endpoint_braking = false;
-    position = p;
-    deadline_ms = 0;
-    brake_until_ms = now + CFG_BRAKE_HOLD_MS;
-    state = ST_IDLE;
-    console_push_event(EV_ARRIVE, p);
+  motor_brake();
+  endpoint_braking = false;
+  position = p;
+  deadline_ms = 0;
+  brake_until_ms = now + CFG_BRAKE_HOLD_MS;
+  state = ST_IDLE;
+  console_push_event(EV_ARRIVE, p);
 }
 
-void controller_init(void)
-{
-    state = ST_BOOT;
-    position = POS_UNKNOWN;
-    target = POS_UNKNOWN;
-    last_direction = DIR_REV;
-    mailbox = REQ_NONE;
-    mailbox_delta = 0;
-    mailbox_value = 0u;
-    deadline_ms = 0;
-    brake_until_ms = 0;
-    stall_reference = best_error_magnitude = 0u;
-    motion_start_adc = motion_target_adc = previous_motion_adc = 0u;
-    passed_mask = 0u;
-    endpoint_braking = false;
-    jog_move = false;
-    overtravel_recovery = false;
-    stall_check_ms = direction_check_ms = 0u;
+void controller_init(void) {
+  state = ST_BOOT;
+  position = POS_UNKNOWN;
+  target = POS_UNKNOWN;
+  last_direction = DIR_REV;
+  mailbox = REQ_NONE;
+  mailbox_delta = 0;
+  mailbox_value = 0u;
+  deadline_ms = 0;
+  brake_until_ms = 0;
+  stall_reference = best_error_magnitude = 0u;
+  motion_start_adc = motion_target_adc = previous_motion_adc = 0u;
+  passed_mask = 0u;
+  endpoint_braking = false;
+  jog_move = false;
+  overtravel_recovery = false;
+  stall_check_ms = direction_check_ms = 0u;
 #ifdef LUFTFUGL_MONITOR
-    adc_move = false; adc_target = 0u; adc_arrival_since = 0u;
-    debug_pending = false; memset((void *)&tick_stats, 0, sizeof tick_stats); memset((void *)history, 0, sizeof history); history_head = history_used = 0; memset((void *)&counters, 0, sizeof counters); memset((void *)&last_fault, 0, sizeof last_fault);
+  adc_move = false;
+  adc_target = 0u;
+  adc_arrival_since = 0u;
+  debug_pending = false;
+  memset((void *)&tick_stats, 0, sizeof tick_stats);
+  memset((void *)history, 0, sizeof history);
+  history_head = history_used = 0;
+  memset((void *)&counters, 0, sizeof counters);
+  memset((void *)&last_fault, 0, sizeof last_fault);
 #endif
 }
 
-move_result_t controller_request(request_kind_t kind, position_t arg)
-{
-    uint32_t now = now_ms();
-    if (kind == REQ_STOP || kind == REQ_HOME) {
-        mailbox_arg = arg;
-        mailbox = kind;
-        return MOVE_OK;
-    }
-    if (state == ST_FAULT) return MOVE_FAULT;
-    if (arg < POS_MIN || arg > POS_MAX) return MOVE_INVALID;
-    if (position == POS_UNKNOWN || !encoder_in_safe_range()) return MOVE_POS_UNKNOWN;
-    if (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING) return MOVE_BUSY;
-    if (brake_until_ms && !reached(now, brake_until_ms)) return MOVE_BUSY;
-    if (arg == position) return MOVE_ALREADY;
-    int16_t error = encoder_error_to(arg);
-    if ((encoder_average() <= encoder_nominal(POS_MIN) + CFG_POS_WINDOW && error < 0) ||
-        (encoder_average() >= encoder_nominal(POS_MAX) - CFG_POS_WINDOW && error > 0)) return MOVE_ENDSTOP;
+move_result_t controller_request(request_kind_t kind, position_t arg) {
+  uint32_t now = now_ms();
+  if (kind == REQ_STOP || kind == REQ_HOME) {
     mailbox_arg = arg;
     mailbox = kind;
     return MOVE_OK;
+  }
+  if (state == ST_FAULT)
+    return MOVE_FAULT;
+  if (arg < POS_MIN || arg > POS_MAX)
+    return MOVE_INVALID;
+  if (position == POS_UNKNOWN || !encoder_in_safe_range())
+    return MOVE_POS_UNKNOWN;
+  if (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING)
+    return MOVE_BUSY;
+  if (brake_until_ms && !reached(now, brake_until_ms))
+    return MOVE_BUSY;
+  if (arg == position)
+    return MOVE_ALREADY;
+  int16_t error = encoder_error_to(arg);
+  if ((encoder_average() <= encoder_nominal(POS_MIN) + CFG_POS_WINDOW &&
+       error < 0) ||
+      (encoder_average() >= encoder_nominal(POS_MAX) - CFG_POS_WINDOW &&
+       error > 0))
+    return MOVE_ENDSTOP;
+  mailbox_arg = arg;
+  mailbox = kind;
+  return MOVE_OK;
 }
 
-jog_result_t controller_request_jog(int16_t delta, uint16_t *from_adc)
-{
-    uint16_t magnitude = error_magnitude(delta);
-    uint16_t current;
-    int32_t endpoint;
+jog_result_t controller_request_jog(int16_t delta, uint16_t *from_adc) {
+  uint16_t magnitude = error_magnitude(delta);
+  uint16_t current;
+  int32_t endpoint;
 
-    if (magnitude < JOG_MIN_COUNTS || magnitude > JOG_MAX_COUNTS) return JOG_INVALID;
-    if (state == ST_FAULT) return JOG_FAULT;
-    if (!encoder_in_safe_range()) return JOG_OVERTRAVEL;
-    if (state != ST_IDLE || mailbox != REQ_NONE) return JOG_BUSY;
-    current = encoder_average();
-    endpoint = (int32_t)current + delta;
-    if (endpoint < CFG_ADC_SAFE_MIN || endpoint > CFG_ADC_SAFE_MAX) return JOG_ENDSTOP;
-    if (from_adc) *from_adc = current;
-    mailbox_delta = delta;
-    mailbox_value = (uint16_t)endpoint;
-    mailbox = REQ_JOG;
-    return JOG_OK;
+  if (magnitude < JOG_MIN_COUNTS || magnitude > JOG_MAX_COUNTS)
+    return JOG_INVALID;
+  if (state == ST_FAULT)
+    return JOG_FAULT;
+  if (!encoder_in_safe_range())
+    return JOG_OVERTRAVEL;
+  if (state != ST_IDLE || mailbox != REQ_NONE)
+    return JOG_BUSY;
+  current = encoder_average();
+  endpoint = (int32_t)current + delta;
+  if (endpoint < CFG_ADC_SAFE_MIN || endpoint > CFG_ADC_SAFE_MAX)
+    return JOG_ENDSTOP;
+  if (from_adc)
+    *from_adc = current;
+  mailbox_delta = delta;
+  mailbox_value = (uint16_t)endpoint;
+  mailbox = REQ_JOG;
+  return JOG_OK;
 }
 
-move_result_t controller_request_setpos(position_t pos, uint16_t adc)
-{
-    uint16_t values[POS_MAX];
+move_result_t controller_request_setpos(position_t pos, uint16_t adc) {
+  uint16_t values[POS_MAX];
 
-    if (state == ST_FAULT) return MOVE_FAULT;
-    if (pos < POS_MIN || pos > POS_MAX) return MOVE_INVALID;
-    if (state != ST_IDLE || mailbox != REQ_NONE) return MOVE_BUSY;
-    for (position_t p = POS_MIN; p <= POS_MAX; ++p) values[p - POS_MIN] = encoder_nominal(p);
-    values[pos - POS_MIN] = adc;
-    for (position_t p = POS_MIN; p < POS_MAX; ++p) {
-        uint16_t lower = values[p - POS_MIN];
-        uint16_t upper = values[p];
-        if (lower >= upper || (uint32_t)CFG_POS_WINDOW * 4u >= (uint32_t)upper - lower)
-            return MOVE_INVALID;
-    }
-    mailbox_arg = pos;
-    mailbox_value = adc;
-    mailbox = REQ_SETPOS;
-    return MOVE_OK;
+  if (state == ST_FAULT)
+    return MOVE_FAULT;
+  if (pos < POS_MIN || pos > POS_MAX)
+    return MOVE_INVALID;
+  if (state != ST_IDLE || mailbox != REQ_NONE)
+    return MOVE_BUSY;
+  for (position_t p = POS_MIN; p <= POS_MAX; ++p)
+    values[p - POS_MIN] = encoder_nominal(p);
+  values[pos - POS_MIN] = adc;
+  for (position_t p = POS_MIN; p < POS_MAX; ++p) {
+    uint16_t lower = values[p - POS_MIN];
+    uint16_t upper = values[p];
+    if (lower >= upper ||
+        (uint32_t)CFG_POS_WINDOW * 4u >= (uint32_t)upper - lower)
+      return MOVE_INVALID;
+  }
+  mailbox_arg = pos;
+  mailbox_value = adc;
+  mailbox = REQ_SETPOS;
+  return MOVE_OK;
+}
+
+move_result_t controller_request_reset_positions(void) {
+  if (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING ||
+      mailbox != REQ_NONE)
+    return MOVE_BUSY;
+  mailbox = REQ_RESET_POSITIONS;
+  return MOVE_OK;
 }
 
 #ifdef LUFTFUGL_MONITOR
-move_result_t controller_debug_goto_adc(uint16_t adc)
-{
-    uint32_t now = now_ms();
-    if (state == ST_FAULT) return MOVE_FAULT;
-    if (!encoder_in_safe_range()) return MOVE_POS_UNKNOWN;
-    if (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING
+move_result_t controller_debug_goto_adc(uint16_t adc) {
+  uint32_t now = now_ms();
+  if (state == ST_FAULT)
+    return MOVE_FAULT;
+  if (!encoder_in_safe_range())
+    return MOVE_POS_UNKNOWN;
+  if (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING
 #ifdef LUFTFUGL_DEBUG
-        || state == ST_DEBUG
+      || state == ST_DEBUG
 #endif
-    ) return MOVE_BUSY;
-    if (brake_until_ms && !reached(now, brake_until_ms)) return MOVE_BUSY;
-    if (adc < CFG_ADC_SAFE_MIN || adc > CFG_ADC_SAFE_MAX) return MOVE_ENDSTOP;
-    uint16_t current = encoder_average();
-    uint16_t delta = current > adc ? current - adc : adc - current;
-    if (delta <= CFG_POS_WINDOW) return MOVE_ALREADY;
-    dbg_request_t req = {.op = DBG_OP_GOTO_ADC, .adc = adc};
-    return controller_debug_request(&req) ? MOVE_OK : MOVE_BUSY;
+  )
+    return MOVE_BUSY;
+  if (brake_until_ms && !reached(now, brake_until_ms))
+    return MOVE_BUSY;
+  if (adc < CFG_ADC_SAFE_MIN || adc > CFG_ADC_SAFE_MAX)
+    return MOVE_ENDSTOP;
+  uint16_t current = encoder_average();
+  uint16_t delta = current > adc ? current - adc : adc - current;
+  if (delta <= CFG_POS_WINDOW)
+    return MOVE_ALREADY;
+  dbg_request_t req = {.op = DBG_OP_GOTO_ADC, .adc = adc};
+  return controller_debug_request(&req) ? MOVE_OK : MOVE_BUSY;
 }
 
-bool controller_debug_request(const dbg_request_t *req)
-{
+bool controller_debug_request(const dbg_request_t *req) {
 #ifdef LUFTFUGL_DEBUG
-    if (debug_pending && req->op != DBG_OP_EXIT && !(req->op == DBG_OP_SIM_ENABLE && !req->flag)) return false;
-    if (req->op != DBG_OP_EXIT && req->op != DBG_OP_FAULT_CLEAR && req->op != DBG_OP_SIM_ENABLE && req->op != DBG_OP_GOTO_ADC &&
-        !(req->op == DBG_OP_ENTER && encoder_sim_active()) && !dbg_motor_armed()) return false;
+  if (debug_pending && req->op != DBG_OP_EXIT &&
+      !(req->op == DBG_OP_SIM_ENABLE && !req->flag))
+    return false;
+  if (req->op != DBG_OP_EXIT && req->op != DBG_OP_FAULT_CLEAR &&
+      req->op != DBG_OP_SIM_ENABLE && req->op != DBG_OP_SIM_SET &&
+      req->op != DBG_OP_GOTO_ADC &&
+      !(req->op == DBG_OP_ENTER && encoder_sim_active()) && !dbg_motor_armed())
+    return false;
 #else
-    if (debug_pending) return false;
-    if (req->op != DBG_OP_EXIT && req->op != DBG_OP_FAULT_CLEAR && req->op != DBG_OP_GOTO_ADC) return false;
+  if (debug_pending)
+    return false;
+  if (req->op != DBG_OP_EXIT && req->op != DBG_OP_FAULT_CLEAR &&
+      req->op != DBG_OP_GOTO_ADC)
+    return false;
 #endif
-    debug_mailbox = *req;
-    debug_pending = true;
-    return true;
+  debug_mailbox = *req;
+  debug_pending = true;
+  return true;
 }
 #endif
 
-void controller_tick(void)
-{
+void controller_tick(void) {
 #ifdef LUFTFUGL_MONITOR
-    uint32_t tick_start = time_us_32();
+  uint32_t tick_start = time_us_32();
 #endif
-    uint32_t now = now_ms();
-    position_t changed;
-    watchdog_update();
-    if (reached(now, brake_until_ms)) brake_until_ms = 0u;
+  uint32_t now = now_ms();
+  position_t changed;
+  watchdog_update();
+  if (reached(now, brake_until_ms))
+    brake_until_ms = 0u;
 #ifdef LUFTFUGL_MONITOR
-    if (debug_pending) {
-        dbg_request_t req = debug_mailbox;
-        debug_pending = false;
-        switch (req.op) {
+  if (debug_pending) {
+    dbg_request_t req = debug_mailbox;
+    debug_pending = false;
+    switch (req.op) {
 #ifdef LUFTFUGL_DEBUG
-        case DBG_OP_ENTER: if (state == ST_IDLE) { state = ST_DEBUG; motor_brake(); } break;
+    case DBG_OP_ENTER:
+      if (state == ST_IDLE) {
+        state = ST_DEBUG;
+        motor_brake();
+      }
+      break;
 #endif
-        case DBG_OP_EXIT:
+    case DBG_OP_EXIT:
 #ifdef LUFTFUGL_DEBUG
-            encoder_sim_enable(false);
-            motor_set_inhibit(false);
+      encoder_sim_enable(false);
+      motor_set_inhibit(false);
 #endif
-            deadline_ms = 0;
-            if (state == ST_FAULT) { motor_brake(); motor_disable(); }
-            else { motor_enable(); motor_brake(); state = ST_IDLE; }
-            break;
-#ifdef LUFTFUGL_DEBUG
-        case DBG_OP_DRIVE: if (state == ST_DEBUG) { motor_drive(req.dir, req.duty); deadline_ms = now + req.ms; } break;
-        case DBG_OP_BRAKE: motor_brake(); deadline_ms = 0; break;
-        case DBG_OP_COAST: if (state == ST_DEBUG) motor_coast(); break;
-        case DBG_OP_STANDBY: if (state == ST_DEBUG) { if (req.flag) motor_enable(); else motor_disable(); } break;
-        case DBG_OP_FAULT_CLEAR: if (state == ST_FAULT) { state = ST_IDLE; position = POS_UNKNOWN; last_direction = DIR_REV; motor_enable(); motor_brake(); } break;
-        case DBG_OP_SIM_ENABLE:
-            if (req.flag) {
-                if (state != ST_FAULT) state = ST_IDLE;
-                deadline_ms = 0;
-                motor_set_inhibit(true);
-                encoder_sim_set(DEBUG_SIM_DEFAULT_ADC);
-                encoder_sim_enable(true);
-            } else {
-                encoder_sim_enable(false);
-                motor_set_inhibit(false);
-                if (state == ST_FAULT) { motor_brake(); motor_disable(); }
-                else { motor_enable(); motor_brake(); }
-            }
-            break;
-        case DBG_OP_GPIO_SET:
-            if (req.duty == DEBUG_GPIO_OP_AIN1) { motor_set_inhibit(true); motor_drive(DIR_FWD, PWM_WRAP); }
-            else if (req.duty == DEBUG_GPIO_OP_AIN2) { motor_set_inhibit(true); motor_drive(DIR_REV, PWM_WRAP); }
-            else if (req.duty == DEBUG_GPIO_OP_STBY) { motor_set_inhibit(false); motor_disable(); motor_enable(); }
-            else { motor_set_inhibit(false); motor_disable(); }
-            break;
-#endif
-        case DBG_OP_GOTO_ADC: {
-            uint16_t current = encoder_average();
-            int16_t error = (int16_t)req.adc - (int16_t)current;
-            adc_move = true; adc_target = req.adc; adc_arrival_since = 0u;
-            target = POS_BETWEEN;
-            motion_start_adc = current; motion_target_adc = req.adc; endpoint_braking = false;
-            previous_motion_adc = current; passed_mask = 0u;
-            last_direction = error > 0 ? DIR_FWD : DIR_REV;
-            deadline_ms = now + CFG_TIMEOUT_HOME_MS;
-            state = error_magnitude(error) <= CFG_APPROACH_COUNTS ? ST_APPROACH : ST_MOVING;
-            stall_reference = current; best_error_magnitude = error_magnitude(error);
-            stall_check_ms = now + CFG_STALL_WINDOW_MS;
-            direction_check_ms = now + CFG_STALL_WINDOW_MS;
-            motor_enable(); motor_drive(last_direction, speed_for_error(error, POS_BETWEEN));
-            break;
-        }
-        default: break;
-        }
-    }
-#endif
-
-    request_kind_t request = mailbox;
-    if (request != REQ_NONE) {
-        position_t arg = mailbox_arg;
-        int16_t request_delta = mailbox_delta;
-        uint16_t request_value = mailbox_value;
-        mailbox = REQ_NONE;
-#ifdef LUFTFUGL_MONITOR
-        adc_move = false; adc_arrival_since = 0u;
-#endif
-        if (request == REQ_STOP) {
-            motor_brake(); endpoint_braking = false; jog_move = false; deadline_ms = 0; target = POS_UNKNOWN;
-            if (state != ST_FAULT) state = ST_IDLE;
-            if (position == POS_UNKNOWN || position == POS_BETWEEN) console_push_event(EV_STOPPED_UNKNOWN, 0);
-        } else if (request == REQ_HOME) {
-            if (encoder_in_safe_range()) begin_home(now);
-            else if (state == ST_FAULT) begin_overtravel_recovery(now);
-            else enter_fault(EV_FAULT_OVERTRAVEL);
-        } else if (request == REQ_MOVE) {
-            begin_move(arg, now);
-        } else if (request == REQ_JOG) {
-            if (!encoder_in_safe_range()) enter_fault(EV_FAULT_OVERTRAVEL);
-            else begin_jog(request_delta, request_value, now);
-        } else if (request == REQ_SETPOS) {
-            encoder_set_nominal(arg, request_value);
-        }
-    }
-
-    if (encoder_take_change(&changed)) {
-        position = changed;
-    }
-
-    if (state == ST_BOOT) {
-        position = encoder_confirmed();
+      deadline_ms = 0;
+      if (state == ST_FAULT) {
+        motor_brake();
+        motor_disable();
+      } else {
         motor_enable();
         motor_brake();
         state = ST_IDLE;
-        if (valid(position)) {
-            console_push_event(EV_ARRIVE, position);
-        } else {
-            position = POS_BETWEEN;
-            console_push_event(EV_STOPPED_UNKNOWN, 0);
-        }
-        if (!encoder_in_safe_range()) enter_fault(EV_FAULT_OVERTRAVEL);
-        TICK_RETURN();
-    }
-
-    if (overtravel_recovery) {
-        uint16_t current = encoder_average();
-        bool moved_outward;
-        /* Compare with the best inward progress so a reversal cannot hide behind the start point. */
-        if (recovery_direction == DIR_FWD) {
-            moved_outward = current < recovery_best_adc &&
-                            recovery_best_adc - current > CFG_REVERSE_DELTA;
-            if (current > recovery_best_adc) recovery_best_adc = current;
-        } else {
-            moved_outward = current > recovery_best_adc &&
-                            current - recovery_best_adc > CFG_REVERSE_DELTA;
-            if (current < recovery_best_adc) recovery_best_adc = current;
-        }
-        if (moved_outward || reached(now, deadline_ms)) {
-            enter_fault(EV_FAULT_OVERTRAVEL);
-        } else if (encoder_in_safe_range()) {
-            overtravel_recovery = false;
-            begin_home(now);
-        } else {
-            motor_drive(recovery_direction, CFG_DUTY_CREEP);
-        }
-        TICK_RETURN();
-    }
-
-    if (state != ST_FAULT
+      }
+      break;
 #ifdef LUFTFUGL_DEBUG
-        && state != ST_DEBUG
-#endif
-        && !encoder_in_safe_range()) {
-        enter_fault(EV_FAULT_OVERTRAVEL);
-        TICK_RETURN();
-    }
-
-    if (reached(now, deadline_ms)) {
-#ifdef LUFTFUGL_DEBUG
-        if (state == ST_DEBUG) { motor_brake(); deadline_ms = 0; TICK_RETURN(); }
-#endif
-        if (state == ST_MOVING || state == ST_APPROACH) {
-            motor_brake();
-            if (jog_move) {
-                jog_move = false;
-                deadline_ms = 0;
-                target = POS_UNKNOWN;
-                state = ST_IDLE;
-                console_push_event(EV_TIMEOUT, 0);
-                TICK_RETURN();
-            }
-#ifdef LUFTFUGL_MONITOR
-            ++counters.moves_timeout;
-#endif
-            console_push_event(EV_TIMEOUT, 0); begin_home(now);
-        } else if (state == ST_HOMING) enter_fault(EV_FAULT_HOME);
-        TICK_RETURN();
-    }
-
-    if (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING) {
-        uint16_t current = encoder_average();
-        int16_t error = (int16_t)motion_target_adc - (int16_t)current;
-        uint16_t magnitude = error_magnitude(error);
-        direction_t direction = error > 0 ? DIR_FWD : DIR_REV;
-        bool endpoint_target = target == POS_MIN || target == POS_MAX;
-        bool jog_reached = jog_move && (last_direction == DIR_FWD
-            ? current >= motion_target_adc : current <= motion_target_adc);
-
-        if (jog_reached) {
-            motor_brake();
-            jog_move = false;
-            deadline_ms = 0;
-            target = POS_UNKNOWN;
-            position = encoder_instant();
-            state = ST_IDLE;
-            console_push_event(EV_JOG_COMPLETE, 0);
-            TICK_RETURN();
-        }
-
-        if (endpoint_target && magnitude <= CFG_POS_WINDOW) endpoint_braking = true;
-        else if (magnitude > CFG_POS_WINDOW + CFG_POS_WINDOW / 2u) endpoint_braking = false;
-
-        /* Homing needs a fresh reference too, but its crossings are not protocol events. */
-        if (state != ST_HOMING && !jog_move) {
-            if (motion_start_adc < motion_target_adc) {
-                for (position_t p = POS_MIN; p <= POS_MAX; ++p) {
-                    uint16_t nominal = encoder_nominal(p);
-                    uint8_t bit = (uint8_t)(1u << (p - POS_MIN));
-                    if (!(passed_mask & bit) && nominal > motion_start_adc && nominal < motion_target_adc &&
-                        previous_motion_adc < nominal && current >= nominal) {
-                        passed_mask |= bit;
-                        console_push_event(EV_PASS, p);
-#ifdef LUFTFUGL_MONITOR
-                        ++counters.pass_events; hist_push(now, p, 0);
-#endif
-                    }
-                }
-            } else {
-                for (position_t p = POS_MAX; p >= POS_MIN; --p) {
-                    uint16_t nominal = encoder_nominal(p);
-                    uint8_t bit = (uint8_t)(1u << (p - POS_MIN));
-                    if (!(passed_mask & bit) && nominal < motion_start_adc && nominal > motion_target_adc &&
-                        previous_motion_adc > nominal && current <= nominal) {
-                        passed_mask |= bit;
-                        console_push_event(EV_PASS, p);
-#ifdef LUFTFUGL_MONITOR
-                        ++counters.pass_events; hist_push(now, p, 0);
-#endif
-                    }
-                    if (p == POS_MIN) break;
-                }
-            }
-        }
-        previous_motion_adc = current;
-
-        /* Continuous position, not the last station window, prevents outward limit drive. */
-        if (jog_move) {
-            motor_drive(last_direction, CFG_DUTY_CREEP);
-        } else if (endpoint_braking ||
-            (current <= encoder_nominal(POS_MIN) + CFG_POS_WINDOW && direction == DIR_REV) ||
-            (current >= encoder_nominal(POS_MAX) - CFG_POS_WINDOW && direction == DIR_FWD)) {
-            motor_brake();
-        } else if (magnitude > CFG_POS_WINDOW) {
-            motor_drive(direction, speed_for_error(error,
-#ifdef LUFTFUGL_MONITOR
-                adc_move ? POS_BETWEEN :
-#endif
-                target));
-        }
-
-        if (!endpoint_braking && magnitude < best_error_magnitude) best_error_magnitude = magnitude;
-        else if (!endpoint_braking && reached(now, direction_check_ms) &&
-                 magnitude > best_error_magnitude &&
-                 magnitude - best_error_magnitude > CFG_REVERSE_DELTA) {
-            enter_fault(EV_FAULT_DIRECTION);
-            TICK_RETURN();
-        }
-
-        if (reached(now, stall_check_ms)) {
-            uint16_t delta = current > stall_reference ? current - stall_reference : stall_reference - current;
-            if (delta < CFG_STALL_DELTA) {
-                enter_fault(EV_FAULT_STALL);
-                TICK_RETURN();
-            }
-            stall_reference = current;
-            stall_check_ms = now + CFG_STALL_WINDOW_MS;
-        }
-
-
-#ifdef LUFTFUGL_MONITOR
-        if (adc_move) {
-            if (magnitude <= CFG_POS_WINDOW) {
-                motor_brake();
-                if (!adc_arrival_since) adc_arrival_since = now;
-                else if ((uint32_t)(now - adc_arrival_since) >= CFG_DEBOUNCE_MS) {
-                    deadline_ms = 0; brake_until_ms = now + CFG_BRAKE_HOLD_MS;
-                    state = ST_IDLE; position = encoder_instant(); adc_move = false;
-                    TICK_RETURN();
-                }
-            } else adc_arrival_since = 0u;
-        } else {
-#endif
-        if (!jog_move && encoder_confirmed() == target) {
-            arrive(target, now);
-            TICK_RETURN();
-        }
-#ifdef LUFTFUGL_MONITOR
-        }
-#endif
-        if (state != ST_HOMING) state = magnitude <= CFG_APPROACH_COUNTS ? ST_APPROACH : ST_MOVING;
-    }
-
-    switch (state) {
-    case ST_MOVING:
-    case ST_APPROACH:
-    case ST_HOMING:
-        break;
-    case ST_IDLE:
+    case DBG_OP_DRIVE:
+      if (state == ST_DEBUG) {
+        motor_drive(req.dir, req.duty);
+        deadline_ms = now + req.ms;
+      }
+      break;
+    case DBG_OP_BRAKE:
+      motor_brake();
+      deadline_ms = 0;
+      break;
+    case DBG_OP_COAST:
+      if (state == ST_DEBUG)
+        motor_coast();
+      break;
+    case DBG_OP_STANDBY:
+      if (state == ST_DEBUG) {
+        if (req.flag)
+          motor_enable();
+        else
+          motor_disable();
+      }
+      break;
+    case DBG_OP_FAULT_CLEAR:
+      if (state == ST_FAULT) {
+        state = ST_IDLE;
+        position = POS_UNKNOWN;
+        last_direction = DIR_REV;
+        motor_enable();
         motor_brake();
-        break;
-    case ST_FAULT:
-        break;
-#ifdef LUFTFUGL_DEBUG
-    case ST_DEBUG:
-        break;
+      }
+      break;
+    case DBG_OP_SIM_ENABLE:
+      if (req.flag) {
+        if (state != ST_FAULT)
+          state = ST_IDLE;
+        deadline_ms = 0;
+        motor_set_inhibit(true);
+        encoder_sim_set(DEBUG_SIM_DEFAULT_ADC);
+        encoder_sim_enable(true);
+      } else {
+        encoder_sim_enable(false);
+        motor_set_inhibit(false);
+        if (state == ST_FAULT) {
+          motor_brake();
+          motor_disable();
+        } else {
+          motor_enable();
+          motor_brake();
+        }
+      }
+      break;
+    case DBG_OP_SIM_SET:
+      if (encoder_sim_active())
+        encoder_sim_set(req.adc);
+      break;
+    case DBG_OP_GPIO_SET:
+      if (req.duty == DEBUG_GPIO_OP_AIN1) {
+        motor_set_inhibit(true);
+        motor_drive(DIR_FWD, PWM_WRAP);
+      } else if (req.duty == DEBUG_GPIO_OP_AIN2) {
+        motor_set_inhibit(true);
+        motor_drive(DIR_REV, PWM_WRAP);
+      } else if (req.duty == DEBUG_GPIO_OP_STBY) {
+        motor_set_inhibit(false);
+        motor_disable();
+        motor_enable();
+      } else {
+        motor_set_inhibit(false);
+        motor_disable();
+      }
+      break;
 #endif
-    default:
-        break;
+    case DBG_OP_GOTO_ADC: {
+      uint16_t current = encoder_average();
+      int16_t error = (int16_t)req.adc - (int16_t)current;
+      adc_move = true;
+      adc_target = req.adc;
+      adc_arrival_since = 0u;
+      target = POS_BETWEEN;
+      motion_start_adc = current;
+      motion_target_adc = req.adc;
+      endpoint_braking = false;
+      previous_motion_adc = current;
+      passed_mask = 0u;
+      last_direction = error > 0 ? DIR_FWD : DIR_REV;
+      deadline_ms = now + CFG_TIMEOUT_HOME_MS;
+      state = error_magnitude(error) <= CFG_APPROACH_COUNTS ? ST_APPROACH
+                                                            : ST_MOVING;
+      stall_reference = current;
+      best_error_magnitude = error_magnitude(error);
+      stall_check_ms = now + CFG_STALL_WINDOW_MS;
+      direction_check_ms = now + CFG_STALL_WINDOW_MS;
+      motor_enable();
+      motor_drive(last_direction, speed_for_error(error, POS_BETWEEN));
+      break;
     }
+    default:
+      break;
+    }
+  }
+#endif
+
+  request_kind_t request = mailbox;
+  if (request != REQ_NONE) {
+    position_t arg = mailbox_arg;
+    int16_t request_delta = mailbox_delta;
+    uint16_t request_value = mailbox_value;
+    mailbox = REQ_NONE;
+#ifdef LUFTFUGL_MONITOR
+    adc_move = false;
+    adc_arrival_since = 0u;
+#endif
+    if (request == REQ_STOP) {
+      motor_brake();
+      endpoint_braking = false;
+      jog_move = false;
+      deadline_ms = 0;
+      target = POS_UNKNOWN;
+      if (state != ST_FAULT)
+        state = ST_IDLE;
+      if (position == POS_UNKNOWN || position == POS_BETWEEN)
+        console_push_event(EV_STOPPED_UNKNOWN, 0);
+    } else if (request == REQ_HOME) {
+      if (encoder_in_safe_range())
+        begin_home(now);
+      else if (state == ST_FAULT)
+        begin_overtravel_recovery(now);
+      else
+        enter_fault(EV_FAULT_OVERTRAVEL);
+    } else if (request == REQ_MOVE) {
+      begin_move(arg, now);
+    } else if (request == REQ_JOG) {
+      if (!encoder_in_safe_range())
+        enter_fault(EV_FAULT_OVERTRAVEL);
+      else
+        begin_jog(request_delta, request_value, now);
+    } else if (request == REQ_SETPOS) {
+      encoder_set_nominal(arg, request_value);
+    } else if (request == REQ_RESET_POSITIONS) {
+      encoder_reset_nominals();
+    }
+  }
+
+  if (encoder_take_change(&changed)) {
+    position = changed;
+  }
+
+  if (state == ST_BOOT) {
+    position = encoder_confirmed();
+    motor_enable();
+    motor_brake();
+    state = ST_IDLE;
+    if (valid(position)) {
+      console_push_event(EV_ARRIVE, position);
+    } else {
+      position = POS_BETWEEN;
+      console_push_event(EV_STOPPED_UNKNOWN, 0);
+    }
+    if (!encoder_in_safe_range())
+      enter_fault(EV_FAULT_OVERTRAVEL);
+    TICK_RETURN();
+  }
+
+  if (overtravel_recovery) {
+    uint16_t current = encoder_average();
+    bool moved_outward;
+    /* Compare with the best inward progress so a reversal cannot hide behind
+     * the start point. */
+    if (recovery_direction == DIR_FWD) {
+      moved_outward = current < recovery_best_adc &&
+                      recovery_best_adc - current > CFG_REVERSE_DELTA;
+      if (current > recovery_best_adc)
+        recovery_best_adc = current;
+    } else {
+      moved_outward = current > recovery_best_adc &&
+                      current - recovery_best_adc > CFG_REVERSE_DELTA;
+      if (current < recovery_best_adc)
+        recovery_best_adc = current;
+    }
+    if (moved_outward || reached(now, deadline_ms)) {
+      enter_fault(EV_FAULT_OVERTRAVEL);
+    } else if (encoder_in_safe_range()) {
+      overtravel_recovery = false;
+      begin_home(now);
+    } else {
+      motor_drive(recovery_direction, CFG_DUTY_CREEP);
+    }
+    TICK_RETURN();
+  }
+
+  if (state != ST_FAULT
+#ifdef LUFTFUGL_DEBUG
+      && state != ST_DEBUG
+#endif
+      && !encoder_in_safe_range()) {
+    enter_fault(EV_FAULT_OVERTRAVEL);
+    TICK_RETURN();
+  }
+
+  if (reached(now, deadline_ms)) {
+#ifdef LUFTFUGL_DEBUG
+    if (state == ST_DEBUG) {
+      motor_brake();
+      deadline_ms = 0;
+      TICK_RETURN();
+    }
+#endif
+    if (state == ST_MOVING || state == ST_APPROACH) {
+      motor_brake();
+      if (jog_move) {
+        jog_move = false;
+        deadline_ms = 0;
+        target = POS_UNKNOWN;
+        state = ST_IDLE;
+        console_push_event(EV_TIMEOUT, 0);
+        TICK_RETURN();
+      }
+#ifdef LUFTFUGL_MONITOR
+      ++counters.moves_timeout;
+#endif
+      console_push_event(EV_TIMEOUT, 0);
+      begin_home(now);
+    } else if (state == ST_HOMING)
+      enter_fault(EV_FAULT_HOME);
+    TICK_RETURN();
+  }
+
+  if (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING) {
+    uint16_t current = encoder_average();
+    int16_t error = (int16_t)motion_target_adc - (int16_t)current;
+    uint16_t magnitude = error_magnitude(error);
+    direction_t direction = error > 0 ? DIR_FWD : DIR_REV;
+    bool endpoint_target = target == POS_MIN || target == POS_MAX;
+    bool jog_reached =
+        jog_move && (last_direction == DIR_FWD ? current >= motion_target_adc
+                                               : current <= motion_target_adc);
+
+    if (jog_reached) {
+      motor_brake();
+      jog_move = false;
+      deadline_ms = 0;
+      target = POS_UNKNOWN;
+      position = encoder_instant();
+      state = ST_IDLE;
+      console_push_event(EV_JOG_COMPLETE, 0);
+      TICK_RETURN();
+    }
+
+    if (endpoint_target && magnitude <= CFG_POS_WINDOW)
+      endpoint_braking = true;
+    else if (magnitude > CFG_POS_WINDOW + CFG_POS_WINDOW / 2u)
+      endpoint_braking = false;
+
+    /* Homing needs a fresh reference too, but its crossings are not protocol
+     * events. */
+    if (state != ST_HOMING && !jog_move) {
+      if (motion_start_adc < motion_target_adc) {
+        for (position_t p = POS_MIN; p <= POS_MAX; ++p) {
+          uint16_t nominal = encoder_nominal(p);
+          uint8_t bit = (uint8_t)(1u << (p - POS_MIN));
+          if (!(passed_mask & bit) && nominal > motion_start_adc &&
+              nominal < motion_target_adc && previous_motion_adc < nominal &&
+              current >= nominal) {
+            passed_mask |= bit;
+            console_push_event(EV_PASS, p);
+#ifdef LUFTFUGL_MONITOR
+            ++counters.pass_events;
+            hist_push(now, p, 0);
+#endif
+          }
+        }
+      } else {
+        for (position_t p = POS_MAX; p >= POS_MIN; --p) {
+          uint16_t nominal = encoder_nominal(p);
+          uint8_t bit = (uint8_t)(1u << (p - POS_MIN));
+          if (!(passed_mask & bit) && nominal < motion_start_adc &&
+              nominal > motion_target_adc && previous_motion_adc > nominal &&
+              current <= nominal) {
+            passed_mask |= bit;
+            console_push_event(EV_PASS, p);
+#ifdef LUFTFUGL_MONITOR
+            ++counters.pass_events;
+            hist_push(now, p, 0);
+#endif
+          }
+          if (p == POS_MIN)
+            break;
+        }
+      }
+    }
+    previous_motion_adc = current;
+
+    /* Continuous position, not the last station window, prevents outward limit
+     * drive. */
+    if (jog_move) {
+      motor_drive(last_direction, CFG_DUTY_CREEP);
+    } else if (endpoint_braking ||
+               (current <= encoder_nominal(POS_MIN) + CFG_POS_WINDOW &&
+                direction == DIR_REV) ||
+               (current >= encoder_nominal(POS_MAX) - CFG_POS_WINDOW &&
+                direction == DIR_FWD)) {
+      motor_brake();
+    } else if (magnitude > CFG_POS_WINDOW) {
+      motor_drive(direction, speed_for_error(error,
+#ifdef LUFTFUGL_MONITOR
+                                             adc_move ? POS_BETWEEN :
+#endif
+                                                      target));
+    }
+
+    if (!endpoint_braking && magnitude < best_error_magnitude)
+      best_error_magnitude = magnitude;
+    else if (!endpoint_braking && reached(now, direction_check_ms) &&
+             magnitude > best_error_magnitude &&
+             magnitude - best_error_magnitude > CFG_REVERSE_DELTA) {
+      enter_fault(EV_FAULT_DIRECTION);
+      TICK_RETURN();
+    }
+
+    if (reached(now, stall_check_ms)) {
+      uint16_t delta = current > stall_reference ? current - stall_reference
+                                                 : stall_reference - current;
+      if (delta < CFG_STALL_DELTA) {
+        enter_fault(EV_FAULT_STALL);
+        TICK_RETURN();
+      }
+      stall_reference = current;
+      stall_check_ms = now + CFG_STALL_WINDOW_MS;
+    }
+
+#ifdef LUFTFUGL_MONITOR
+    if (adc_move) {
+      if (magnitude <= CFG_POS_WINDOW) {
+        motor_brake();
+        if (!adc_arrival_since)
+          adc_arrival_since = now;
+        else if ((uint32_t)(now - adc_arrival_since) >= CFG_DEBOUNCE_MS) {
+          deadline_ms = 0;
+          brake_until_ms = now + CFG_BRAKE_HOLD_MS;
+          state = ST_IDLE;
+          position = encoder_instant();
+          adc_move = false;
+          TICK_RETURN();
+        }
+      } else
+        adc_arrival_since = 0u;
+    } else {
+#endif
+      if (!jog_move && encoder_confirmed() == target) {
+        arrive(target, now);
+        TICK_RETURN();
+      }
+#ifdef LUFTFUGL_MONITOR
+    }
+#endif
+    if (state != ST_HOMING)
+      state = magnitude <= CFG_APPROACH_COUNTS ? ST_APPROACH : ST_MOVING;
+  }
+
+  switch (state) {
+  case ST_MOVING:
+  case ST_APPROACH:
+  case ST_HOMING:
+    break;
+  case ST_IDLE:
+    motor_brake();
+    break;
+  case ST_FAULT:
+    break;
+#ifdef LUFTFUGL_DEBUG
+  case ST_DEBUG:
+    break;
+#endif
+  default:
+    break;
+  }
 #ifdef LUFTFUGL_MONITOR
 tick_done:
-    timing_finish(tick_start);
+  timing_finish(tick_start);
 #endif
 }
 
 sys_state_t controller_state(void) { return state; }
 position_t controller_position(void) { return position; }
 #ifdef LUFTFUGL_MONITOR
-uint16_t controller_target_adc(void) { return adc_move ? adc_target : (valid(target) ? encoder_nominal(target) : 0u); }
+uint16_t controller_target_adc(void) {
+  return adc_move ? adc_target : (valid(target) ? encoder_nominal(target) : 0u);
+}
 uint32_t controller_deadline_ms(void) { return deadline_ms; }
 direction_t controller_last_direction(void) { return last_direction; }
 void controller_timing_get(tick_stats_t *out) { *out = tick_stats; }
-void controller_timing_reset(void) { memset((void *)&tick_stats, 0, sizeof tick_stats); }
+void controller_timing_reset(void) {
+  memset((void *)&tick_stats, 0, sizeof tick_stats);
+}
 uint8_t controller_history_count(void) { return history_used; }
-bool controller_history_get(uint8_t index, hist_entry_t *out) { if (index >= history_used) return false; uint8_t first = (uint8_t)((history_head + DEBUG_HISTORY_DEPTH - history_used) % DEBUG_HISTORY_DEPTH); *out = history[(first + index) % DEBUG_HISTORY_DEPTH]; return true; }
+bool controller_history_get(uint8_t index, hist_entry_t *out) {
+  if (index >= history_used)
+    return false;
+  uint8_t first =
+      (uint8_t)((history_head + DEBUG_HISTORY_DEPTH - history_used) %
+                DEBUG_HISTORY_DEPTH);
+  *out = history[(first + index) % DEBUG_HISTORY_DEPTH];
+  return true;
+}
 void controller_counters_get(dbg_counters_t *out) { *out = counters; }
-void controller_counters_reset(void) { memset((void *)&counters, 0, sizeof counters); }
+void controller_counters_reset(void) {
+  memset((void *)&counters, 0, sizeof counters);
+}
 void controller_fault_get(fault_record_t *out) { *out = last_fault; }
-void controller_motion_checks_get(motion_check_status_t *out)
-{
-    uint16_t current = encoder_average();
-    uint32_t now = now_ms();
-    out->current_delta = current > stall_reference ? current - stall_reference : stall_reference - current;
-    out->window_remaining_ms = reached(now, stall_check_ms) ? 0u : stall_check_ms - now;
-    out->stall_armed = (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING) && motor_duty() > CFG_DUTY_MIN;
-    out->direction_armed = (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING) && reached(now, direction_check_ms);
+void controller_motion_checks_get(motion_check_status_t *out) {
+  uint16_t current = encoder_average();
+  uint32_t now = now_ms();
+  out->current_delta = current > stall_reference ? current - stall_reference
+                                                 : stall_reference - current;
+  out->window_remaining_ms =
+      reached(now, stall_check_ms) ? 0u : stall_check_ms - now;
+  out->stall_armed =
+      (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING) &&
+      motor_duty() > CFG_DUTY_MIN;
+  out->direction_armed =
+      (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING) &&
+      reached(now, direction_check_ms);
 }
 #endif
 position_t controller_target(void) { return target; }
