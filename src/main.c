@@ -9,11 +9,14 @@
 #include "debug.h"
 #endif
 
+static volatile bool tick_has_run;
+
 static bool on_tick(struct repeating_timer *timer)
 {
     (void)timer;
     encoder_tick();
     controller_tick();
+    tick_has_run = true;
     return true;
 }
 
@@ -33,8 +36,12 @@ int main(void)
     dbg_restore_mode(watchdog_reset);
 #endif
     motor_enable();
-    watchdog_enable(100, true);
-    add_repeating_timer_us(-1000, on_tick, NULL, &timer);
+    if (!add_repeating_timer_us(-1000, on_tick, NULL, &timer)) {
+        console_timer_alloc_failed();
+    } else {
+        while (!tick_has_run) tight_loop_contents();
+        watchdog_enable(100, true);
+    }
     for (;;) {
         console_poll();
         console_drain_events();

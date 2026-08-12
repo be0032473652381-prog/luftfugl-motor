@@ -18,20 +18,20 @@
 #define PWM_WRAP 255
 #define PWM_CLKDIV 97.6875f
 
-#define DUTY_NORMAL 200
-#define DUTY_APPROACH 60
-#define DUTY_CREEP 50
-#define DUTY_MIN 45
+#define DUTY_NORMAL 60
+#define DUTY_APPROACH 30
+#define DUTY_CREEP 25
+#define DUTY_MIN 25
 
 #define POS_1_ADC 372
 #define POS_2_ADC 738
 #define POS_3_ADC 1309
 #define POS_4_ADC 2047
 #define POS_5_ADC 2815
-#define POS_WINDOW 40
+#define POS_WINDOW 80
 #define APPROACH_COUNTS 200
 #define ADC_SAFE_MIN 272
-#define ADC_SAFE_MAX 3300
+#define ADC_SAFE_MAX 2915
 #define STALL_DELTA 8
 #define STALL_WINDOW_MS 300
 #define REVERSE_DELTA 30

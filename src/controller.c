@@ -24,6 +24,9 @@ static uint16_t stall_reference, best_error_magnitude;
 static uint16_t motion_start_adc, motion_target_adc, previous_motion_adc;
 static uint8_t passed_mask;
 static bool endpoint_braking;
+static bool overtravel_recovery;
+static uint16_t recovery_best_adc;
+static direction_t recovery_direction;
 static uint32_t stall_check_ms, direction_check_ms;
 #ifdef LUFTFUGL_DEBUG
 static bool adc_move;
@@ -71,6 +74,7 @@ static void arrive(position_t p, uint32_t now);
 static void enter_fault(event_kind_t event)
 {
     endpoint_braking = false;
+    overtravel_recovery = false;
 #ifdef LUFTFUGL_DEBUG
     if (adc_trace_current < DEBUG_ADC_TRACE_DEPTH) adc_trace[adc_trace_current].fault = (uint8_t)event + 1u;
     adc_trace_frozen = true;
@@ -88,6 +92,22 @@ static void enter_fault(event_kind_t event)
     last_fault = (fault_record_t){event, now_ms(), state, position, target, fault_deadline};
 #endif
     console_push_event(event, 0);
+}
+
+static void begin_overtravel_recovery(uint32_t now)
+{
+    uint16_t current = encoder_average();
+
+    motor_enable();
+    target = POS_MIN;
+    recovery_best_adc = current;
+    recovery_direction = current < CFG_ADC_SAFE_MIN ? DIR_FWD : DIR_REV;
+    last_direction = recovery_direction;
+    overtravel_recovery = true;
+    deadline_ms = now + CFG_TIMEOUT_HOME_MS;
+    state = ST_HOMING;
+    motor_drive(recovery_direction, CFG_DUTY_CREEP);
+    console_push_event(EV_HOMING, 0);
 }
 
 static void begin_home(uint32_t now)
@@ -181,6 +201,7 @@ void controller_init(void)
     motion_start_adc = motion_target_adc = previous_motion_adc = 0u;
     passed_mask = 0u;
     endpoint_braking = false;
+    overtravel_recovery = false;
     stall_check_ms = direction_check_ms = 0u;
 #ifdef LUFTFUGL_DEBUG
     adc_move = false; adc_target = 0u; adc_arrival_since = 0u;
@@ -328,6 +349,7 @@ void controller_tick(void)
             if (position == POS_UNKNOWN || position == POS_BETWEEN) console_push_event(EV_STOPPED_UNKNOWN, 0);
         } else if (request == REQ_HOME) {
             if (encoder_in_safe_range()) begin_home(now);
+            else if (state == ST_FAULT) begin_overtravel_recovery(now);
             else enter_fault(EV_FAULT_OVERTRAVEL);
         } else if (request == REQ_MOVE) {
             begin_move(arg, now);
@@ -336,15 +358,6 @@ void controller_tick(void)
 
     if (encoder_take_change(&changed)) {
         position = changed;
-    }
-
-    if (state != ST_FAULT
-#ifdef LUFTFUGL_DEBUG
-        && state != ST_DEBUG
-#endif
-        && !encoder_in_safe_range()) {
-        enter_fault(EV_FAULT_OVERTRAVEL);
-        TICK_RETURN();
     }
 
     if (state == ST_BOOT) {
@@ -358,6 +371,40 @@ void controller_tick(void)
             position = POS_BETWEEN;
             console_push_event(EV_STOPPED_UNKNOWN, 0);
         }
+        if (!encoder_in_safe_range()) enter_fault(EV_FAULT_OVERTRAVEL);
+        TICK_RETURN();
+    }
+
+    if (overtravel_recovery) {
+        uint16_t current = encoder_average();
+        bool moved_outward;
+        /* Compare with the best inward progress so a reversal cannot hide behind the start point. */
+        if (recovery_direction == DIR_FWD) {
+            moved_outward = current < recovery_best_adc &&
+                            recovery_best_adc - current > CFG_REVERSE_DELTA;
+            if (current > recovery_best_adc) recovery_best_adc = current;
+        } else {
+            moved_outward = current > recovery_best_adc &&
+                            current - recovery_best_adc > CFG_REVERSE_DELTA;
+            if (current < recovery_best_adc) recovery_best_adc = current;
+        }
+        if (moved_outward || reached(now, deadline_ms)) {
+            enter_fault(EV_FAULT_OVERTRAVEL);
+        } else if (encoder_in_safe_range()) {
+            overtravel_recovery = false;
+            begin_home(now);
+        } else {
+            motor_drive(recovery_direction, CFG_DUTY_CREEP);
+        }
+        TICK_RETURN();
+    }
+
+    if (state != ST_FAULT
+#ifdef LUFTFUGL_DEBUG
+        && state != ST_DEBUG
+#endif
+        && !encoder_in_safe_range()) {
+        enter_fault(EV_FAULT_OVERTRAVEL);
         TICK_RETURN();
     }
 
