@@ -89,7 +89,7 @@ Both configurations must build clean: `-DLUFTFUGL_DEBUG=ON` and `=OFF`.
 
 ```sh
 openocd -f interface/cmsis-dap.cfg -f target/rp2040.cfg \
-        -c "adapter speed 1000" \
+        -c "adapter speed 100" \
         -c "program build/luftfugl.elf verify reset exit"
 ```
 

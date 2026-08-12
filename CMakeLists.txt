@@ -10,13 +10,21 @@ set(CMAKE_C_STANDARD 11)
 
 pico_sdk_init()
 
+option(LUFTFUGL_DEBUG "Build interactive debug monitor" ON)
+
 add_executable(luftfugl
     src/main.c
     src/motor.c
     src/encoder.c
     src/controller.c
     src/console.c
+    src/debug.c
+    src/config.c
 )
+
+# Development firmware currently exposes the complete monitor in both builds.
+# Keep the option so the shipped-build boundary can be restored later.
+target_compile_definitions(luftfugl PRIVATE LUFTFUGL_MONITOR=1 LUFTFUGL_DEBUG=1)
 
 target_include_directories(luftfugl PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src)
 target_compile_options(luftfugl PRIVATE -Wall -Wextra)

@@ -15,4 +15,10 @@ int16_t encoder_error_to(position_t target);
 uint16_t encoder_nominal(position_t position);
 void encoder_set_nominal(position_t position, uint16_t adc);
 void encoder_reset_nominals(void);
+#ifdef LUFTFUGL_DEBUG
+void encoder_sim_enable(bool on);
+bool encoder_sim_active(void);
+void encoder_sim_set(uint16_t adc);
+uint16_t encoder_sim_value(void);
+#endif
 #endif
