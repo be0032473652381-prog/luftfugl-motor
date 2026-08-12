@@ -5,7 +5,7 @@
 #include "controller.h"
 #include "encoder.h"
 #include "motor.h"
-#ifdef LUFTFUGL_DEBUG
+#ifdef LUFTFUGL_MONITOR
 #include "debug.h"
 #endif
 
@@ -27,14 +27,11 @@ int main(void)
     console_init();
     if (watchdog_reset) console_watchdog_reset();
     motor_init();
-#ifdef LUFTFUGL_DEBUG
+#ifdef LUFTFUGL_MONITOR
     dbg_init();
 #endif
     encoder_init();
     controller_init();
-#ifdef LUFTFUGL_DEBUG
-    dbg_restore_mode(watchdog_reset);
-#endif
     motor_enable();
     if (!add_repeating_timer_us(-1000, on_tick, NULL, &timer)) {
         console_timer_alloc_failed();
@@ -45,8 +42,9 @@ int main(void)
     for (;;) {
         console_poll();
         console_drain_events();
-#ifdef LUFTFUGL_DEBUG
+#ifdef LUFTFUGL_MONITOR
         dbg_poll();
+        dbg_out_drain();
 #endif
         tight_loop_contents();
     }

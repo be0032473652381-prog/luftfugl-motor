@@ -8,7 +8,7 @@
 #include "controller.h"
 #include "encoder.h"
 #include "motor.h"
-#ifdef LUFTFUGL_DEBUG
+#ifdef LUFTFUGL_MONITOR
 #include "debug.h"
 #endif
 typedef struct { event_kind_t kind; uint8_t arg; } event_t;
@@ -22,7 +22,7 @@ static void write_text(const char *text) { while (*text) uart_putc_raw(uart0, *t
 static void write_line(const char *text) { write_text(text); write_text("\r\n"); }
 static const char *state_name(sys_state_t state) {
     static const char *const names[] = {"BOOT", "IDLE", "MOVING", "APPROACH", "HOMING", "FAULT",
-#ifdef LUFTFUGL_DEBUG
+#ifdef LUFTFUGL_MONITOR
         "DEBUG",
 #endif
     };
@@ -51,6 +51,13 @@ static void console_adc(void) {
     else snprintf(output, sizeof output, "ADC raw=%u avg=%u pos=%u", encoder_raw(), encoder_average(), position);
     write_line(output);
 }
+#ifdef LUFTFUGL_MONITOR
+static void format_adc(char *output, size_t size) {
+    position_t position = encoder_instant();
+    if (position == POS_UNKNOWN || position == POS_BETWEEN) snprintf(output, size, "ADC raw=%u avg=%u pos=?", encoder_raw(), encoder_average());
+    else snprintf(output, size, "ADC raw=%u avg=%u pos=%u", encoder_raw(), encoder_average(), position);
+}
+#endif
 static void handle_move(char *argument) {
     char *end; long target; char output[32]; move_result_t result;
     if (!argument || !*argument) { write_line("ERR: invalid target"); return; }
@@ -124,7 +131,7 @@ static void console_handle_line(char *line) {
     else if (!strcmp(line, "stop") && !argument) { (void)controller_request(REQ_STOP, POS_UNKNOWN); write_line("OK: stopped"); }
     else if (!strcmp(line, "status") && !argument) console_status();
     else if (!strcmp(line, "home") && !argument) { (void)controller_request(REQ_HOME, POS_UNKNOWN); write_line("OK: homing"); }
-#ifdef LUFTFUGL_DEBUG
+#ifdef LUFTFUGL_MONITOR
     else if (!strcmp(line, "dbg") && !argument) dbg_enter();
     else if (!strcmp(line, "dbg") && argument && !strcmp(argument, "plain")) dbg_enter_plain();
 #endif
@@ -138,8 +145,9 @@ void console_init(void) {
 }
 void console_poll(void) {
     while (uart_is_readable(uart0)) { char c = (char)uart_getc(uart0);
-#ifdef LUFTFUGL_DEBUG
+#ifdef LUFTFUGL_MONITOR
         if (dbg_active()) { dbg_handle_key(c); continue; }
+        if (dbg_auto_enter(c)) continue;
 #endif
         if (c == '\r') continue;
         if (c == '\n') { if (!discard_line && line_length) { line_buffer[line_length] = '\0'; console_handle_line(line_buffer); } line_length = 0; discard_line = false; }
@@ -162,20 +170,24 @@ void console_drain_events(void) {
         case EV_FAULT_OVERTRAVEL: snprintf(output, sizeof output, "ERR: overtravel"); break;
         case EV_FAULT_STALL: snprintf(output, sizeof output, "ERR: stall"); break;
         case EV_FAULT_DIRECTION: snprintf(output, sizeof output, "ERR: direction"); break;
-        case EV_JOG_COMPLETE: console_adc(); continue;
+        case EV_JOG_COMPLETE:
+#ifdef LUFTFUGL_MONITOR
+            format_adc(output, sizeof output); break;
+#else
+            console_adc(); continue;
+#endif
         default: continue;
         }
-#ifdef LUFTFUGL_DEBUG
-        if (dbg_active() && !dbg_plain_mode()) dbg_log_push(output); else
+#ifdef LUFTFUGL_MONITOR
+        if (dbg_active()) { if (dbg_plain_mode()) console_debug_line(output); else dbg_log_push(output); } else
 #endif
         write_line(output);
     }
 }
 void console_watchdog_reset(void) { write_line("ERR: watchdog reset"); }
 void console_timer_alloc_failed(void) { write_line("ERR: timer alloc failed"); }
-#ifdef LUFTFUGL_DEBUG
-void console_debug_write(const char *text) { write_text(text); }
-void console_debug_line(const char *text) { write_line(text); }
+#ifdef LUFTFUGL_MONITOR
+void console_debug_write(const char *text) { dbg_out_push(text); }
+void console_debug_line(const char *text) { dbg_out_push(text); dbg_out_push("\r\n"); }
 bool console_event_queue_full(void) { return (uint8_t)((event_head + 1u) % EVENT_QUEUE_DEPTH) == event_tail; }
-bool console_debug_try_putc(char c) { if (!uart_is_writable(uart0)) return false; uart_putc_raw(uart0, c); return true; }
 #endif

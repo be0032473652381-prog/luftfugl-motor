@@ -18,10 +18,12 @@ add_executable(luftfugl
     src/encoder.c
     src/controller.c
     src/console.c
+    src/debug.c
+    src/config.c
 )
 
+target_compile_definitions(luftfugl PRIVATE LUFTFUGL_MONITOR=1)
 if(LUFTFUGL_DEBUG)
-    target_sources(luftfugl PRIVATE src/debug.c src/config.c)
     target_compile_definitions(luftfugl PRIVATE LUFTFUGL_DEBUG=1)
 endif()
 
