@@ -125,4 +125,5 @@ void console_watchdog_reset(void) { write_line("ERR: watchdog reset"); }
 void console_debug_write(const char *text) { write_text(text); }
 void console_debug_line(const char *text) { write_line(text); }
 bool console_event_queue_full(void) { return (uint8_t)((event_head + 1u) % EVENT_QUEUE_DEPTH) == event_tail; }
+bool console_debug_try_putc(char c) { if (!uart_is_writable(uart0)) return false; uart_putc_raw(uart0, c); return true; }
 #endif

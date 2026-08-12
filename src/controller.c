@@ -513,12 +513,16 @@ void controller_motion_checks_get(motion_check_status_t *out)
     out->stall_armed = (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING) && motor_duty() > CFG_DUTY_MIN;
     out->direction_armed = (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING) && reached(now, direction_check_ms);
 }
-uint16_t controller_adc_trace_begin_dump(void)
+adc_trace_status_t controller_adc_trace_begin_dump(void)
 {
+    adc_trace_status_t status;
+    status.count = adc_trace_count <= DEBUG_ADC_TRACE_DEPTH ? adc_trace_count : DEBUG_ADC_TRACE_DEPTH;
+    status.head = adc_trace_head < DEBUG_ADC_TRACE_DEPTH ? adc_trace_head : 0u;
+    status.frozen = adc_trace_frozen;
     adc_trace_frozen = true;
-    adc_trace_dump_count = adc_trace_count <= DEBUG_ADC_TRACE_DEPTH ? adc_trace_count : DEBUG_ADC_TRACE_DEPTH;
-    adc_trace_dump_first = (uint16_t)((adc_trace_head + DEBUG_ADC_TRACE_DEPTH - adc_trace_dump_count) % DEBUG_ADC_TRACE_DEPTH);
-    return adc_trace_dump_count;
+    adc_trace_dump_count = status.count;
+    adc_trace_dump_first = (uint16_t)((status.head + DEBUG_ADC_TRACE_DEPTH - adc_trace_dump_count) % DEBUG_ADC_TRACE_DEPTH);
+    return status;
 }
 bool controller_adc_trace_get(uint16_t index, adc_trace_entry_t *out)
 {
