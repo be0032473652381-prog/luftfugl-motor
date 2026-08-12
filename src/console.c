@@ -2,6 +2,7 @@
 #include "controller.h"
 #include "encoder.h"
 #include "hardware/gpio.h"
+#include "hardware/structs/uart.h"
 #include "hardware/uart.h"
 #include "motor.h"
 #include <ctype.h>
@@ -252,8 +253,11 @@ void console_init(void) {
   uart_init(uart0, UART_BAUD);
   gpio_set_function(PIN_UART_TX, GPIO_FUNC_UART);
   gpio_set_function(PIN_UART_RX, GPIO_FUNC_UART);
+  gpio_pull_up(PIN_UART_RX);
   uart_set_format(uart0, 8, 1, UART_PARITY_NONE);
   uart_set_hw_flow(uart0, false, false);
+  uart_set_fifo_enabled(uart0, true);
+  uart_get_hw(uart0)->rsr = 0u;
   line_length = 0;
   discard_line = false;
   event_head = 0;
@@ -261,6 +265,8 @@ void console_init(void) {
   write_line("luftfugl motor fw " FW_VERSION);
 }
 void console_poll(void) {
+  if (uart_get_hw(uart0)->rsr)
+    uart_get_hw(uart0)->rsr = 0u;
   while (uart_is_readable(uart0)) {
     char c = (char)uart_getc(uart0);
 #ifdef LUFTFUGL_MONITOR

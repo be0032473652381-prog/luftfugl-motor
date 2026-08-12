@@ -1002,6 +1002,7 @@ void dbg_event(event_kind_t kind, uint8_t arg) {
                      : kind == EV_FAULT_OVERTRAVEL ? "ERR overtravel"
                      : kind == EV_FAULT_STALL      ? "ERR stall"
                      : kind == EV_FAULT_DIRECTION  ? "ERR direction"
+                     : kind == EV_STOPPED_UNKNOWN  ? "stopped, position unknown"
                                                    : "event";
   snprintf(detail, sizeof detail, "%s%s%u", name,
            (kind == EV_PASS || kind == EV_ARRIVE) ? ":" : "",
@@ -1010,15 +1011,6 @@ void dbg_event(event_kind_t kind, uint8_t arg) {
 }
 
 void dbg_handle_key(char c) {
-  if (c == '.') {
-    (void)controller_request(REQ_STOP, 0);
-    pending = PENDING_NONE;
-    sim_travel_active = false;
-    findmin_phase = 0u;
-    armed = false;
-    result(".", "complete", "immediate brake requested");
-    return;
-  }
   if (c == 27) {
     input_len = 0;
     input_overflow = false;
