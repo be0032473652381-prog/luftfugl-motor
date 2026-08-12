@@ -172,7 +172,7 @@ void console_drain_events(void) {
         case EV_FAULT_DIRECTION: snprintf(output, sizeof output, "ERR: direction"); break;
         case EV_JOG_COMPLETE:
 #ifdef LUFTFUGL_MONITOR
-            format_adc(output, sizeof output); break;
+            dbg_setup_jog_complete(); format_adc(output, sizeof output); break;
 #else
             console_adc(); continue;
 #endif

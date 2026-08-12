@@ -254,7 +254,7 @@ jog_result_t controller_request_jog(int16_t delta, uint16_t *from_adc)
     uint16_t current;
     int32_t endpoint;
 
-    if (delta == 0 || magnitude > JOG_MAX_COUNTS) return JOG_INVALID;
+    if (magnitude < JOG_MIN_COUNTS || magnitude > JOG_MAX_COUNTS) return JOG_INVALID;
     if (state == ST_FAULT) return JOG_FAULT;
     if (!encoder_in_safe_range()) return JOG_OVERTRAVEL;
     if (state != ST_IDLE || mailbox != REQ_NONE) return JOG_BUSY;

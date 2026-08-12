@@ -39,7 +39,8 @@ typedef enum {
   MENU_FAULT,
   MENU_TEST,
   MENU_BENCH,
-  MENU_SIM
+  MENU_SIM,
+  MENU_SETUP
 } menu_t;
 typedef enum {
   PROMPT_NONE,
@@ -82,6 +83,7 @@ static bool active, armed, coupled, streaming, monitoring, capturing,
     echo_enabled;
 static bool plain_mode, menu_focused, jog_mode;
 static uint16_t jog_step;
+static position_t setup_station;
 static uint32_t next_field_refresh, auto_enter_deadline;
 static char out_buf[DEBUG_OUT_BUFFER];
 static volatile uint16_t out_head, out_tail;
@@ -175,6 +177,9 @@ static void dbg_help(void) {
          "key aborts a sequence.");
     break;
 #endif
+  case MENU_SETUP:
+    line("HELP: select 1-5, jog with +/- and save with w; e exports values.");
+    break;
   default:
     break;
   }
@@ -249,7 +254,8 @@ void dbg_log_push(const char *text) {
 
 bool dbg_plain_mode(void) { return plain_mode; }
 void dbg_screen_init(void) {
-  console_debug_write("\033[2J\033[H\033[?25l\033[15;24r");
+  out_head = out_tail = 0u;
+  console_debug_write("\033[2J\033[H\033[?25l");
 }
 void dbg_screen_teardown(void) {
   console_debug_write("\033[1;24r\033[?25h\033[2J\033[H");
@@ -313,9 +319,12 @@ static void draw_menu_area(void) {
         " SIM: e enable  v adc  b position  t travel  p park  l limit  s sweep";
     break;
 #endif
+  case MENU_SETUP:
+    items = " SETUP: 1-5 select  +/- jog  [/] step  w save  e export";
+    break;
   default:
 #ifdef LUFTFUGL_DEBUG
-    items = " m menus: S status  E encoder  M manual  C calibrate";
+    items = " m menus: S status  E encoder  M manual  C calibrate  P setup";
 #else
     items = " m menus: S status  E encoder  C calibrate  F faults  T selftest  "
             "B bench";
@@ -336,7 +345,6 @@ static void draw_menu_area(void) {
 }
 
 void dbg_frame_draw(void) {
-  console_debug_write("\033[2J\033[H");
   dbg_field_write(1, 1, " luftfugl " FW_VERSION "          POSITION CONTROL");
   dbg_field_write(1, 61, "up");
   dbg_field_write(3, 1, "");
@@ -502,7 +510,7 @@ void dbg_menu_focus(char key) {
     return;
   }
   menu_focused = false;
-  draw_menu_area();
+  dbg_render();
 }
 void dbg_pos_goto(position_t p) {
   move_result_t r = controller_request(REQ_MOVE, p);
@@ -536,22 +544,66 @@ void dbg_pos_jog(int16_t counts) {
 }
 void dbg_pos_step_size(int8_t direction) {
   static const uint16_t steps[] = {DEBUG_JOG_STEP_1, DEBUG_JOG_STEP_2,
-                                   DEBUG_JOG_STEP_3, DEBUG_JOG_STEP_4};
+                                   DEBUG_JOG_STEP_3, DEBUG_JOG_STEP_4,
+                                   DEBUG_JOG_STEP_5, DEBUG_JOG_STEP_6};
   uint8_t i = 0;
-  while (i < 4u && steps[i] != jog_step)
+  while (i < 6u && steps[i] != jog_step)
     ++i;
-  i = direction > 0 ? (uint8_t)((i + 1u) % 4u) : (uint8_t)((i + 3u) % 4u);
+  i = direction > 0 ? (uint8_t)((i + 1u) % 6u) : (uint8_t)((i + 5u) % 6u);
   jog_step = steps[i];
   char b[40];
   snprintf(b, sizeof b, "jog step %u counts", jog_step);
   line(b);
 }
 
+static void setup_report(void) {
+  char b[64];
+  snprintf(b, sizeof b, "ADC raw=%u avg=%u selected=%u", encoder_raw(),
+           encoder_average(), setup_station);
+  line(b);
+}
+
+static void setup_save(void) {
+  uint16_t values[POS_MAX];
+  uint16_t adc = encoder_average();
+  for (position_t p = POS_MIN; p <= POS_MAX; ++p)
+    values[p - POS_MIN] = encoder_nominal(p);
+  values[setup_station - POS_MIN] = adc;
+  for (position_t p = POS_MIN; p < POS_MAX; ++p) {
+    uint16_t gap;
+    if (values[p - POS_MIN] >= values[p]) {
+      line("ERR: invalid target: station values must be strictly ascending");
+      setup_report();
+      return;
+    }
+    gap = (uint16_t)(values[p] - values[p - POS_MIN]);
+    if ((uint32_t)CFG_POS_WINDOW * 4u >= gap) {
+      line("ERR: invalid target: POS_WINDOW must be below quarter gap");
+      setup_report();
+      return;
+    }
+  }
+  if (controller_request_setpos(setup_station, adc) != MOVE_OK) {
+    line("ERR: invalid target");
+    setup_report();
+    return;
+  }
+  char b[40];
+  snprintf(b, sizeof b, "OK: pos %u = %u", setup_station, adc);
+  line(b);
+  setup_report();
+}
+
+void dbg_setup_jog_complete(void) {
+  if (active && menu == MENU_SETUP)
+    setup_report();
+}
+
 void dbg_out_push(const char *text) {
   while (*text) {
     uint16_t next = (uint16_t)((out_head + 1u) % DEBUG_OUT_BUFFER);
     if (next == out_tail)
-      out_tail = (uint16_t)((out_tail + 1u) % DEBUG_OUT_BUFFER);
+      return;
     out_buf[out_head] = *text++;
     out_head = next;
   }
@@ -570,6 +622,7 @@ void dbg_init(void) {
   plain_mode = false;
   menu_focused = jog_mode = false;
   jog_step = DEBUG_JOG_STEP_DEFAULT;
+  setup_station = POS_MIN;
   next_field_refresh = 0;
   menu = MENU_ROOT;
   prompt = PROMPT_NONE;
@@ -590,8 +643,7 @@ static void enter_mode(bool plain) {
   if (plain)
     dbg_render();
   else {
-    dbg_screen_init();
-    dbg_frame_draw();
+    dbg_render();
     dbg_log_push("debug entered; ANSI/VT100 80x24 minimum");
   }
 }
@@ -645,6 +697,7 @@ void dbg_render_header(void) {
 void dbg_render(void) {
   char b[DEBUG_MENU_BUFFER_SIZE];
   if (!plain_mode) {
+    dbg_screen_init();
     dbg_frame_draw();
     return;
   }
@@ -659,7 +712,8 @@ void dbg_render(void) {
         "........... %s\r\n 5  configuration ......... defaults/overrides\r\n "
         "6  faults & history ...... state %s\r\n 7  self-test ............. "
         "static ready\r\n 8  bench tests ........... bare-board ready\r\n 9  "
-        "simulation ............ %s\r\n w  what can run now\r\n x  exit",
+        "simulation ............ %s\r\n P  position setup\r\n w  what can run "
+        "now\r\n x  exit",
         streaming ? "ON" : "OFF", encoder_average(),
         armed ? "ARMED" : "needs UNCOUPLED",
         coupled ? "COUPLED" : "needs COUPLED", state_text(controller_state()),
@@ -771,6 +825,15 @@ void dbg_render(void) {
     line(b);
     break;
 #endif
+  case MENU_SETUP:
+    snprintf(
+        b, sizeof b,
+        " selected station ........ %u\r\n jog step ............... %u "
+        "counts\r\n"
+        " + forward   - back   [/] step\r\n 1-5 select   w save   e export",
+        setup_station, jog_step);
+    line(b);
+    break;
   default:
     break;
   }
@@ -980,6 +1043,39 @@ void dbg_handle_key(char c) {
     else if (c >= 32 && c <= 126) {
       char e[2] = {c, 0};
       console_debug_write(e);
+    }
+  }
+  if (c == 'P') {
+    menu = MENU_SETUP;
+    dbg_render();
+    return;
+  }
+  if (menu == MENU_SETUP) {
+    if (c >= '1' && c <= '5') {
+      setup_station = (position_t)(c - '0');
+      setup_report();
+      if (!plain_mode)
+        draw_menu_area();
+      return;
+    }
+    if (c == '+' || c == '-') {
+      dbg_pos_jog(c == '+' ? (int16_t)jog_step : -(int16_t)jog_step);
+      setup_report();
+      return;
+    }
+    if (c == '[' || c == ']') {
+      dbg_pos_step_size(c == ']' ? 1 : -1);
+      if (!plain_mode)
+        draw_menu_area();
+      return;
+    }
+    if (c == 'w') {
+      setup_save();
+      return;
+    }
+    if (c == 'e') {
+      dbg_cfg_export();
+      return;
     }
   }
   if (!plain_mode) {

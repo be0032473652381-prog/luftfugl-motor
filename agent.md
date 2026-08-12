@@ -500,7 +500,7 @@ Unsolicited progress messages during an active move:
 | Input line exceeds 32 characters | `ERR: line too long`, discard to next newline |
 | Empty line | No response |
 | `adc` in any state | Report the current raw ADC, filtered ADC and instant classification; do not change state or motor outputs |
-| `jog` delta is zero, malformed, or exceeds `JOG_MAX_COUNTS` (500 counts) | `ERR: invalid jog` |
+| `jog` delta is malformed, below `JOG_MIN_COUNTS` (10 counts), or exceeds `JOG_MAX_COUNTS` (500 counts) | `ERR: invalid jog` |
 | `jog` endpoint is outside the safe ADC range | `ERR: at end-stop` |
 | `jog` starts outside the safe ADC range | `ERR: overtravel` |
 | `jog` while another motion is active | `ERR: busy` |
@@ -509,6 +509,11 @@ Unsolicited progress messages during an active move:
 | `jog` leaves the safe ADC range | Brake, disable the driver, emit `ERR: overtravel`, and enter `FAULT` |
 | `setpos` would make the station table non-ascending or leave `POS_WINDOW` at least one quarter of the smallest gap | `ERR: invalid target`; table unchanged |
 | `setpos` while motion is active or in `FAULT` | `ERR: busy` or `ERR: fault`; table unchanged |
+
+The fixed-screen `P` position-setup menu is available from the root and every
+submenu. It selects stations with `1`–`5`, jogs with `+`/`-`, cycles 10, 25,
+100, 250 and 500-count steps with `[`/`]`, saves with `w`, and exports the
+five paste-ready position definitions with `e`. Its default step is 100 counts.
 
 The motor must always come to rest on a **valid position 1–5**, and only ever
 between positions 1 and 5 inclusive. It must never be left parked between
