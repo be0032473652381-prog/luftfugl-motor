@@ -283,7 +283,7 @@ jog_result_t controller_request_jog(int16_t delta, uint16_t *from_adc) {
   uint16_t current;
   int32_t endpoint;
 
-  if (magnitude < JOG_MIN_COUNTS || magnitude > JOG_MAX_COUNTS)
+  if (magnitude < JOG_MIN_COUNTS || magnitude > CFG_JOG_MAX_COUNTS)
     return JOG_INVALID;
   if (state == ST_FAULT)
     return JOG_FAULT;
@@ -591,12 +591,14 @@ void controller_tick(void) {
     /* Compare with the best inward progress so a reversal cannot hide behind
      * the start point. */
     if (recovery_direction == DIR_FWD) {
-      moved_outward = current < recovery_best_adc &&
+      moved_outward = CFG_REVERSE_DELTA != 0u &&
+                      current < recovery_best_adc &&
                       recovery_best_adc - current > CFG_REVERSE_DELTA;
       if (current > recovery_best_adc)
         recovery_best_adc = current;
     } else {
-      moved_outward = current > recovery_best_adc &&
+      moved_outward = CFG_REVERSE_DELTA != 0u &&
+                      current > recovery_best_adc &&
                       current - recovery_best_adc > CFG_REVERSE_DELTA;
       if (current < recovery_best_adc)
         recovery_best_adc = current;

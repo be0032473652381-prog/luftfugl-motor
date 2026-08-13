@@ -181,8 +181,8 @@ static void handle_jog(char *argument) {
   delta = strtol(argument, &end, 10);
   while (isspace((unsigned char)*end))
     end++;
-  if (end == argument || *end || delta < -JOG_MAX_COUNTS ||
-      delta > JOG_MAX_COUNTS) {
+  if (end == argument || *end || delta < -(long)CFG_JOG_MAX_COUNTS ||
+      delta > (long)CFG_JOG_MAX_COUNTS) {
     write_line("ERR: invalid jog");
     return;
   }

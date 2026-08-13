@@ -199,6 +199,7 @@ typedef struct {
   uint16_t pos_window, approach_counts, adc_safe_min, adc_safe_max;
   uint16_t stall_delta, stall_window_ms, reverse_delta;
   uint16_t debounce_ms, brake_hold_ms;
+  uint16_t jog_max_counts;
   uint32_t timeout_step_ms, timeout_home_ms;
 } cfg_t;
 extern volatile cfg_t cfg;
@@ -221,6 +222,7 @@ void cfg_reset(void);
 #define CFG_REVERSE_DELTA (cfg.reverse_delta)
 #define CFG_DEBOUNCE_MS (cfg.debounce_ms)
 #define CFG_BRAKE_HOLD_MS (cfg.brake_hold_ms)
+#define CFG_JOG_MAX_COUNTS (cfg.jog_max_counts)
 #define CFG_TIMEOUT_STEP_MS (cfg.timeout_step_ms)
 #define CFG_TIMEOUT_HOME_MS (cfg.timeout_home_ms)
 #else
@@ -242,6 +244,7 @@ void cfg_reset(void);
 #define CFG_REVERSE_DELTA REVERSE_DELTA
 #define CFG_DEBOUNCE_MS DEBOUNCE_MS
 #define CFG_BRAKE_HOLD_MS BRAKE_HOLD_MS
+#define CFG_JOG_MAX_COUNTS JOG_MAX_COUNTS
 #define CFG_TIMEOUT_STEP_MS TIMEOUT_STEP_MS
 #define CFG_TIMEOUT_HOME_MS TIMEOUT_HOME_MS
 #endif

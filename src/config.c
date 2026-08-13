@@ -22,6 +22,7 @@ void cfg_reset(void)
     cfg.reverse_delta = REVERSE_DELTA;
     cfg.debounce_ms = DEBOUNCE_MS;
     cfg.brake_hold_ms = BRAKE_HOLD_MS;
+    cfg.jog_max_counts = JOG_MAX_COUNTS;
     cfg.timeout_step_ms = TIMEOUT_STEP_MS;
     cfg.timeout_home_ms = TIMEOUT_HOME_MS;
 }

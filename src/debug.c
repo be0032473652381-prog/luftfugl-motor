@@ -449,10 +449,10 @@ static bool goto_issue_step(const char *command) {
   int32_t delta = remaining / steps_left;
   if (delta == 0)
     delta = remaining > 0 ? JOG_MIN_COUNTS : -(int32_t)JOG_MIN_COUNTS;
-  if (delta > JOG_MAX_COUNTS)
-    delta = JOG_MAX_COUNTS;
-  if (delta < -(int32_t)JOG_MAX_COUNTS)
-    delta = -(int32_t)JOG_MAX_COUNTS;
+  if (delta > CFG_JOG_MAX_COUNTS)
+    delta = CFG_JOG_MAX_COUNTS;
+  if (delta < -(int32_t)CFG_JOG_MAX_COUNTS)
+    delta = -(int32_t)CFG_JOG_MAX_COUNTS;
   uint16_t from;
   jog_result_t request = controller_request_jog((int16_t)delta, &from);
   if (request != JOG_OK) {
@@ -483,7 +483,7 @@ static void print_limits(const char *command) {
   snprintf(lines[5], sizeof lines[5], "  current         %u           %s deg", current, angle);
   print_angle(angle, sizeof angle, CFG_POS_WINDOW);
   snprintf(lines[6], sizeof lines[6], "  position window %u counts      %s deg either side of a station", CFG_POS_WINDOW, angle);
-  snprintf(lines[7], sizeof lines[7], "  jog range       %u .. %u counts", JOG_MIN_COUNTS, JOG_MAX_COUNTS);
+  snprintf(lines[7], sizeof lines[7], "  jog range       %u .. %u counts", JOG_MIN_COUNTS, CFG_JOG_MAX_COUNTS);
   if (CFG_REVERSE_DELTA == 0u)
     snprintf(lines[8], sizeof lines[8], "  direction check disabled");
   else
@@ -893,10 +893,10 @@ static void submit(char *typed) {
       result(original, "rejected", "below minimum 10 counts; try \"jog +10\"");
       return;
     }
-    if (labs(value) > JOG_MAX_COUNTS) {
+    if (labs(value) > CFG_JOG_MAX_COUNTS) {
       char detail[80];
-      snprintf(detail, sizeof detail, "%ld is too far, the most is 500",
-               labs(value));
+      snprintf(detail, sizeof detail, "%ld is too far, the most is %u",
+               labs(value), CFG_JOG_MAX_COUNTS);
       result(original, "rejected", detail);
       return;
     }
@@ -1012,7 +1012,9 @@ static void submit(char *typed) {
       return;
     }
     goto_target = (uint16_t)value;
-    goto_steps = (uint8_t)((magnitude + JOG_MAX_COUNTS - 1u) / JOG_MAX_COUNTS);
+    goto_steps =
+        (uint8_t)((magnitude + CFG_JOG_MAX_COUNTS - 1u) /
+                  CFG_JOG_MAX_COUNTS);
     goto_step = 0u;
     remember_pending(PENDING_GOTO, original);
     char detail[80];
