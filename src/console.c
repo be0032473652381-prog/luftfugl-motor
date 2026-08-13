@@ -2,10 +2,7 @@
 #include "controller.h"
 #include "encoder.h"
 #include "hardware/gpio.h"
-#include "hardware/regs/uart.h"
-#include "hardware/structs/uart.h"
 #include "hardware/uart.h"
-#include "hardware/irq.h"
 #include "motor.h"
 #include "pico/time.h"
 #include <ctype.h>
@@ -30,37 +27,8 @@ static volatile uint32_t rx_overruns;
 static volatile uint32_t poll_calls;
 static volatile uint32_t poll_max_gap_us;
 static volatile uint32_t tx_spin_us;
+static volatile uint32_t renderer_rx_discards;
 static uint32_t last_poll_us;
-static volatile char rx_ring[128];
-static volatile uint8_t rx_head;
-static volatile uint8_t rx_tail;
-#ifdef LUFTFUGL_MONITOR
-static volatile bool debug_tx_active;
-static uint8_t debug_escape_state;
-#endif
-
-static void console_uart_rx_irq(void) {
-  while (uart_is_readable(uart0)) {
-    uint32_t received = uart_get_hw(uart0)->dr;
-    ++rx_chars;
-    if (received & (UART_UARTDR_OE_BITS | UART_UARTDR_BE_BITS |
-                    UART_UARTDR_PE_BITS | UART_UARTDR_FE_BITS)) {
-      ++rx_overruns;
-      uart_get_hw(uart0)->rsr = 0u;
-      continue;
-    }
-#ifdef LUFTFUGL_MONITOR
-    if (debug_tx_active)
-      continue;
-#endif
-    uint8_t next = (uint8_t)((rx_head + 1u) % sizeof rx_ring);
-    if (next != rx_tail) {
-      rx_ring[rx_head] = (char)(received & UART_UARTDR_DATA_BITS);
-      rx_head = next;
-    }
-  }
-}
-
 static void write_text(const char *text) {
   while (*text) {
     uint32_t started = time_us_32();
@@ -291,6 +259,27 @@ static void console_handle_line(char *line) {
   else
     write_line("ERR: unknown command");
 }
+
+static void console_prod_char(char c) {
+  if (c == '\r')
+    return;
+  if (c == '\n') {
+    if (!discard_line && line_length) {
+      line_buffer[line_length] = '\0';
+      console_handle_line(line_buffer);
+    }
+    line_length = 0;
+    discard_line = false;
+  } else if (!discard_line) {
+    if (line_length < CONSOLE_LINE_MAX)
+      line_buffer[line_length++] = c;
+    else {
+      write_line("ERR: line too long");
+      discard_line = true;
+    }
+  }
+}
+
 void console_init(void) {
   uart_init(uart0, UART_BAUD);
   gpio_set_function(PIN_UART_TX, GPIO_FUNC_UART);
@@ -299,7 +288,6 @@ void console_init(void) {
   uart_set_format(uart0, 8, 1, UART_PARITY_NONE);
   uart_set_hw_flow(uart0, false, false);
   uart_set_fifo_enabled(uart0, true);
-  uart_get_hw(uart0)->rsr = 0u;
   line_length = 0;
   discard_line = false;
   event_head = 0;
@@ -309,25 +297,12 @@ void console_init(void) {
   poll_calls = 0u;
   poll_max_gap_us = 0u;
   tx_spin_us = 0u;
+  renderer_rx_discards = 0u;
   last_poll_us = 0u;
-  rx_head = 0u;
-  rx_tail = 0u;
-#ifdef LUFTFUGL_MONITOR
-  debug_tx_active = false;
-  debug_escape_state = 0u;
-#endif
-  irq_set_exclusive_handler(UART0_IRQ, console_uart_rx_irq);
-  irq_set_enabled(UART0_IRQ, true);
-  uart_set_irq_enables(uart0, true, false);
   write_line("luftfugl motor fw " FW_VERSION);
 }
 void console_poll(void) {
   uint32_t now = time_us_32();
-#ifdef LUFTFUGL_MONITOR
-  if (debug_tx_active &&
-      !(uart_get_hw(uart0)->fr & UART_UARTFR_BUSY_BITS))
-    debug_tx_active = false;
-#endif
   if (last_poll_us != 0u) {
     uint32_t gap = now - last_poll_us;
     if (gap > poll_max_gap_us)
@@ -335,83 +310,10 @@ void console_poll(void) {
   }
   last_poll_us = now;
   ++poll_calls;
-  while (rx_tail != rx_head) {
-    char c = rx_ring[rx_tail];
-    rx_tail = (uint8_t)((rx_tail + 1u) % sizeof rx_ring);
-#ifdef LUFTFUGL_MONITOR
-    if (dbg_active()) {
-      unsigned char byte = (unsigned char)c;
-      if (debug_escape_state) {
-        if (debug_escape_state == 1u)
-          debug_escape_state = byte == '[' ? 2u : 0u;
-        else if (byte >= 0x40u && byte <= 0x7eu)
-          debug_escape_state = 0u;
-        continue;
-      }
-      if (byte == 0x1bu) {
-        debug_escape_state = 1u;
-        continue;
-      }
-      if (!((byte >= 32u && byte <= 126u) || c == '\b' || byte == 127u ||
-            c == '\r' || c == '\n'))
-        continue;
-    } else {
-      debug_escape_state = 0u;
-    }
-#endif
-#ifdef LUFTFUGL_TRACE_INPUT
-    dbg_trace_input_in(c);
-#endif
-#ifdef LUFTFUGL_MONITOR
-    if (dbg_active()) {
-      dbg_handle_key(c);
-      continue;
-    }
-#endif
-    if (c == '\r') {
-#ifdef LUFTFUGL_TRACE_INPUT
-      dbg_trace_input_out(c, "DISCARD_CR", NULL);
-#endif
-      continue;
-    }
-    if (c == '\n') {
-      if (!discard_line && line_length) {
-        line_buffer[line_length] = '\0';
-#ifdef LUFTFUGL_TRACE_INPUT
-        char submitted[CONSOLE_LINE_MAX + 1u];
-        memcpy(submitted, line_buffer, line_length + 1u);
-#endif
-        console_handle_line(line_buffer);
-#ifdef LUFTFUGL_TRACE_INPUT
-        dbg_trace_input_out(c, "PROD_PARSER", submitted);
-#endif
-      }
-#ifdef LUFTFUGL_TRACE_INPUT
-      else
-        dbg_trace_input_out(c,
-                            discard_line ? "DISCARD_OVERFLOW" : "IGNORED_EMPTY",
-                            NULL);
-#endif
-      line_length = 0;
-      discard_line = false;
-    } else if (!discard_line) {
-      if (line_length < CONSOLE_LINE_MAX) {
-        line_buffer[line_length++] = c;
-#ifdef LUFTFUGL_TRACE_INPUT
-        dbg_trace_input_out(c, "PROD_PARSER", NULL);
-#endif
-      } else {
-        write_line("ERR: line too long");
-        discard_line = true;
-#ifdef LUFTFUGL_TRACE_INPUT
-        dbg_trace_input_out(c, "DISCARD_OVERFLOW", NULL);
-#endif
-      }
-    }
-#ifdef LUFTFUGL_TRACE_INPUT
-    else
-      dbg_trace_input_out(c, "DISCARD_OVERFLOW", NULL);
-#endif
+  while (uart_is_readable(uart0)) {
+    char c = uart_getc(uart0);
+    if (dbg_active()) dbg_input_char(c);
+    else console_prod_char(c);
   }
 }
 void console_push_event(event_kind_t kind, uint8_t arg) {
@@ -492,5 +394,5 @@ void console_diag_format(char *output, size_t output_size) {
 void console_diag_note_tx_spin(uint32_t elapsed_us) {
   tx_spin_us += elapsed_us;
 }
-void console_diag_note_debug_tx(void) { debug_tx_active = true; }
+uint32_t console_renderer_rx_discards(void) { return renderer_rx_discards; }
 #endif
