@@ -321,29 +321,59 @@ void console_poll(void) {
   while (rx_tail != rx_head) {
     char c = rx_ring[rx_tail];
     rx_tail = (uint8_t)((rx_tail + 1u) % sizeof rx_ring);
+#ifdef LUFTFUGL_TRACE_INPUT
+    dbg_trace_input_in(c);
+#endif
 #ifdef LUFTFUGL_MONITOR
     if (dbg_active()) {
       dbg_handle_key(c);
       continue;
     }
 #endif
-    if (c == '\r')
+    if (c == '\r') {
+#ifdef LUFTFUGL_TRACE_INPUT
+      dbg_trace_input_out(c, "DISCARD_CR", NULL);
+#endif
       continue;
+    }
     if (c == '\n') {
       if (!discard_line && line_length) {
         line_buffer[line_length] = '\0';
+#ifdef LUFTFUGL_TRACE_INPUT
+        char submitted[CONSOLE_LINE_MAX + 1u];
+        memcpy(submitted, line_buffer, line_length + 1u);
+#endif
         console_handle_line(line_buffer);
+#ifdef LUFTFUGL_TRACE_INPUT
+        dbg_trace_input_out(c, "PROD_PARSER", submitted);
+#endif
       }
+#ifdef LUFTFUGL_TRACE_INPUT
+      else
+        dbg_trace_input_out(c,
+                            discard_line ? "DISCARD_OVERFLOW" : "IGNORED_EMPTY",
+                            NULL);
+#endif
       line_length = 0;
       discard_line = false;
     } else if (!discard_line) {
-      if (line_length < CONSOLE_LINE_MAX)
+      if (line_length < CONSOLE_LINE_MAX) {
         line_buffer[line_length++] = c;
-      else {
+#ifdef LUFTFUGL_TRACE_INPUT
+        dbg_trace_input_out(c, "PROD_PARSER", NULL);
+#endif
+      } else {
         write_line("ERR: line too long");
         discard_line = true;
+#ifdef LUFTFUGL_TRACE_INPUT
+        dbg_trace_input_out(c, "DISCARD_OVERFLOW", NULL);
+#endif
       }
     }
+#ifdef LUFTFUGL_TRACE_INPUT
+    else
+      dbg_trace_input_out(c, "DISCARD_OVERFLOW", NULL);
+#endif
   }
 }
 void console_push_event(event_kind_t kind, uint8_t arg) {

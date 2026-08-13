@@ -11,6 +11,7 @@ set(CMAKE_C_STANDARD 11)
 pico_sdk_init()
 
 option(LUFTFUGL_DEBUG "Build interactive debug monitor" ON)
+option(LUFTFUGL_TRACE_INPUT "Trace every received console character" OFF)
 
 add_executable(luftfugl
     src/main.c
@@ -25,6 +26,9 @@ add_executable(luftfugl
 # Development firmware currently exposes the complete monitor in both builds.
 # Keep the option so the shipped-build boundary can be restored later.
 target_compile_definitions(luftfugl PRIVATE LUFTFUGL_MONITOR=1 LUFTFUGL_DEBUG=1)
+if(LUFTFUGL_TRACE_INPUT)
+    target_compile_definitions(luftfugl PRIVATE LUFTFUGL_TRACE_INPUT=1)
+endif()
 
 target_include_directories(luftfugl PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src)
 target_compile_options(luftfugl PRIVATE -Wall -Wextra)

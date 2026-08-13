@@ -50,6 +50,57 @@ static direction_t findmin_direction;
 static uint16_t findmin_min, findmin_max, findmin_start, findmin_noise;
 static uint32_t findmin_deadline;
 
+#ifdef LUFTFUGL_TRACE_INPUT
+static void trace_raw(const char *text) {
+  while (*text)
+    uart_putc_raw(uart0, *text++);
+}
+
+static void trace_char(char *text, size_t size, char c) {
+  unsigned char byte = (unsigned char)c;
+  if (c == '\r')
+    snprintf(text, size, "\\r");
+  else if (c == '\n')
+    snprintf(text, size, "\\n");
+  else if (c == '\t')
+    snprintf(text, size, "\\t");
+  else if (c == '\\')
+    snprintf(text, size, "\\\\");
+  else if (c == '\'')
+    snprintf(text, size, "\\\'");
+  else if (byte >= 32u && byte <= 126u)
+    snprintf(text, size, "%c", c);
+  else
+    snprintf(text, size, "\\x%02x", byte);
+}
+
+void dbg_trace_input_in(char c) {
+  char printable[8], line[112];
+  trace_char(printable, sizeof printable, c);
+  /* The current console has no prompt or asynchronous action enum. */
+  snprintf(line, sizeof line,
+           "\r\nIN  0x%02x '%s' active=%u plain=%u prompt=0 len=%u action=0\r\n",
+           (unsigned char)c, printable, active ? 1u : 0u,
+           plain_mode ? 1u : 0u, input_len);
+  trace_raw(line);
+}
+
+void dbg_trace_input_out(char c, const char *consumed_by,
+                         const char *submitted) {
+  char printable[8], line[160];
+  trace_char(printable, sizeof printable, c);
+  if (submitted)
+    snprintf(line, sizeof line,
+             "\r\nOUT 0x%02x '%s' consumed_by=%s line=\"%s\"\r\n",
+             (unsigned char)c, printable, consumed_by, submitted);
+  else
+    snprintf(line, sizeof line,
+             "\r\nOUT 0x%02x '%s' consumed_by=%s len=%u\r\n",
+             (unsigned char)c, printable, consumed_by, input_len);
+  trace_raw(line);
+}
+#endif
+
 static const char *const welcome[] = {
     " Welcome. To set up the five stations:",
     "   1. Type \"sel 1\" to choose station 1",
@@ -77,6 +128,9 @@ static uint16_t out_free(void) {
 }
 
 void dbg_out_push(const char *text) {
+#ifdef LUFTFUGL_TRACE_INPUT
+  (void)text;
+#else
   size_t length = strlen(text);
   if (length > out_free())
     return;
@@ -85,6 +139,7 @@ void dbg_out_push(const char *text) {
     out_buf[out_head] = *text++;
     out_head = next;
   }
+#endif
 }
 
 void dbg_out_drain(void) {
@@ -231,6 +286,7 @@ void dbg_fields_refresh(void) {
   field(9, line);
 }
 
+#ifndef LUFTFUGL_TRACE_INPUT
 static void command_line_draw(void) {
   char line[DEBUG_COMMAND_MAX + 4u];
   if (plain_mode)
@@ -240,6 +296,7 @@ static void command_line_draw(void) {
   dbg_out_push(line);
   dbg_out_push("\033[K\033[u");
 }
+#endif
 
 void dbg_render(void) {
   if (plain_mode)
@@ -250,6 +307,7 @@ void dbg_render(void) {
   frame_phase = 1u;
 }
 
+#ifndef LUFTFUGL_TRACE_INPUT
 static bool status_frame_complete(void) {
   static const uint8_t rows[] = {1, 3, 4, 5, 7, 8, 9};
   for (size_t i = 0; i < sizeof rows / sizeof rows[0]; ++i)
@@ -292,6 +350,7 @@ static void frame_continue(void) {
   frame_phase = 0u;
   welcome_line = 0u;
 }
+#endif
 
 static bool parse_long(const char *text, long *value) {
   char *end;
@@ -1027,25 +1086,43 @@ void dbg_handle_key(char c) {
     input_len = 0;
     input_overflow = false;
     command_dirty = true;
+#ifdef LUFTFUGL_TRACE_INPUT
+    dbg_trace_input_out(c, "ESCAPE", NULL);
+#endif
     return;
   }
   if (c == '\n' && swallow_lf) {
     swallow_lf = false;
+#ifdef LUFTFUGL_TRACE_INPUT
+    dbg_trace_input_out(c, "DISCARD_LF", NULL);
+#endif
     return;
   }
   if (c != '\n')
     swallow_lf = false;
   if (c == '\r' || c == '\n') {
     swallow_lf = c == '\r';
-    if (!input_len && !input_overflow)
+    if (!input_len && !input_overflow) {
+#ifdef LUFTFUGL_TRACE_INPUT
+      dbg_trace_input_out(c, "IGNORED_EMPTY", NULL);
+#endif
       return;
+    }
     input[input_len] = '\0';
+#ifdef LUFTFUGL_TRACE_INPUT
+    char submitted[DEBUG_COMMAND_MAX + 1u];
+    memcpy(submitted, input, input_len + 1u);
+#endif
     if (plain_mode)
       dbg_out_push("\r\n");
     if (input_overflow)
       result(input, "rejected", "line too long");
     else
       submit(input);
+#ifdef LUFTFUGL_TRACE_INPUT
+    dbg_trace_input_out(c, input_overflow ? "DISCARD_OVERFLOW" : "SUBMIT",
+                        submitted);
+#endif
     input_len = 0;
     input_overflow = false;
     command_dirty = true;
@@ -1055,6 +1132,9 @@ void dbg_handle_key(char c) {
     if (input_len)
       --input_len;
     command_dirty = true;
+#ifdef LUFTFUGL_TRACE_INPUT
+    dbg_trace_input_out(c, "BACKSPACE", NULL);
+#endif
     return;
   }
   if (c >= 32 && c <= 126) {
@@ -1067,7 +1147,15 @@ void dbg_handle_key(char c) {
       dbg_out_push(text);
     } else
       command_dirty = true;
+#ifdef LUFTFUGL_TRACE_INPUT
+    dbg_trace_input_out(c, input_overflow ? "DISCARD_OVERFLOW" : "CMDLINE",
+                        NULL);
+#endif
   }
+#ifdef LUFTFUGL_TRACE_INPUT
+  else
+    dbg_trace_input_out(c, "NOWHERE", NULL);
+#endif
 }
 
 void dbg_init(void) {
@@ -1095,6 +1183,7 @@ static void enter(bool plain) {
   input_overflow = false;
   command_dirty = false;
   first_command = true;
+#ifndef LUFTFUGL_TRACE_INPUT
   if (!plain)
     dbg_render();
   else {
@@ -1103,6 +1192,7 @@ static void enter(bool plain) {
       dbg_out_push("\r\n");
     }
   }
+#endif
 }
 void dbg_enter(void) { enter(false); }
 void dbg_enter_plain(void) { enter(true); }
@@ -1145,6 +1235,7 @@ void dbg_poll(void) {
       pending = PENDING_NONE;
     }
   }
+#ifndef LUFTFUGL_TRACE_INPUT
   if (active && !plain_mode && frame_phase)
     frame_continue();
   if (active && !plain_mode && !frame_phase && command_dirty &&
@@ -1165,6 +1256,7 @@ void dbg_poll(void) {
     dbg_fields_refresh();
     next_refresh = now + DEBUG_REFRESH_MS;
   }
+#endif
   if (active)
     dbg_out_drain();
 }

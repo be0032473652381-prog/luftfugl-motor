@@ -12,6 +12,10 @@ void dbg_exit(void);
 bool dbg_active(void);
 bool dbg_plain_mode(void);
 void dbg_handle_key(char c);
+#ifdef LUFTFUGL_TRACE_INPUT
+void dbg_trace_input_in(char c);
+void dbg_trace_input_out(char c, const char *consumed_by, const char *line);
+#endif
 void dbg_poll(void);
 void dbg_render(void);
 void dbg_fields_refresh(void);
