@@ -99,6 +99,24 @@ void dbg_trace_input_out(char c, const char *consumed_by,
              (unsigned char)c, printable, consumed_by, input_len);
   trace_raw(line);
 }
+
+static void trace_dispatch(const char *line, const char *command) {
+  char output[144];
+  if (command)
+    snprintf(output, sizeof output,
+             "\r\nDISPATCH line=\"%s\" matched=YES handler=cmd_%s\r\n",
+             line, command);
+  else
+    snprintf(output, sizeof output,
+             "\r\nDISPATCH line=\"%s\" matched=NO\r\n", line);
+  trace_raw(output);
+}
+
+static void trace_result(const char *message) {
+  char output[192];
+  snprintf(output, sizeof output, "\r\nRESULT   \"%s\"\r\n", message);
+  trace_raw(output);
+}
 #endif
 
 static const char *const welcome[] = {
@@ -162,6 +180,9 @@ static void result(const char *command, const char *outcome,
     snprintf(message, sizeof message, "%s: %s", outcome, detail);
   else
     snprintf(message, sizeof message, "%s", detail);
+#ifdef LUFTFUGL_TRACE_INPUT
+  trace_result(message);
+#endif
   if (plain_mode) {
     snprintf(line, sizeof line, " %02lu:%02lu:%02lu  %-12s %s",
              (unsigned long)(seconds / 3600u),
@@ -634,6 +655,9 @@ static void submit(char *typed) {
       dbg_out_push("\033[s\033[18;1H\033[J\033[u");
   }
   const char *command = resolve(word);
+#ifdef LUFTFUGL_TRACE_INPUT
+  trace_dispatch(original, command);
+#endif
   arg = strtok_r(NULL, "", &save);
   while (arg && isspace((unsigned char)*arg))
     ++arg;
