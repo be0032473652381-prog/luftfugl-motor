@@ -5,7 +5,9 @@
 #include "hardware/regs/uart.h"
 #include "hardware/structs/uart.h"
 #include "hardware/uart.h"
+#include "hardware/irq.h"
 #include "motor.h"
+#include "pico/time.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,9 +25,39 @@ static bool discard_line;
 static volatile event_t event_queue[EVENT_QUEUE_DEPTH];
 static volatile uint8_t event_head;
 static volatile uint8_t event_tail;
+static volatile uint32_t rx_chars;
+static volatile uint32_t rx_overruns;
+static volatile uint32_t poll_calls;
+static volatile uint32_t poll_max_gap_us;
+static volatile uint32_t tx_spin_us;
+static uint32_t last_poll_us;
+static volatile char rx_ring[128];
+static volatile uint8_t rx_head;
+static volatile uint8_t rx_tail;
+
+static void console_uart_rx_irq(void) {
+  while (uart_is_readable(uart0)) {
+    uint32_t received = uart_get_hw(uart0)->dr;
+    ++rx_chars;
+    if (received & (UART_UARTDR_OE_BITS | UART_UARTDR_BE_BITS |
+                    UART_UARTDR_PE_BITS | UART_UARTDR_FE_BITS)) {
+      ++rx_overruns;
+      uart_get_hw(uart0)->rsr = 0u;
+      continue;
+    }
+    uint8_t next = (uint8_t)((rx_head + 1u) % sizeof rx_ring);
+    if (next != rx_tail) {
+      rx_ring[rx_head] = (char)(received & UART_UARTDR_DATA_BITS);
+      rx_head = next;
+    }
+  }
+}
+
 static void write_text(const char *text) {
   while (*text) {
+    uint32_t started = time_us_32();
     uart_putc_raw(uart0, *text++);
+    tx_spin_us += time_us_32() - started;
   }
 }
 static void write_line(const char *text) {
@@ -264,20 +296,31 @@ void console_init(void) {
   discard_line = false;
   event_head = 0;
   event_tail = 0;
+  rx_chars = 0u;
+  rx_overruns = 0u;
+  poll_calls = 0u;
+  poll_max_gap_us = 0u;
+  tx_spin_us = 0u;
+  last_poll_us = 0u;
+  rx_head = 0u;
+  rx_tail = 0u;
+  irq_set_exclusive_handler(UART0_IRQ, console_uart_rx_irq);
+  irq_set_enabled(UART0_IRQ, true);
+  uart_set_irq_enables(uart0, true, false);
   write_line("luftfugl motor fw " FW_VERSION);
 }
 void console_poll(void) {
-  if (uart_get_hw(uart0)->rsr)
-    uart_get_hw(uart0)->rsr = 0u;
-  while (uart_is_readable(uart0)) {
-    uint32_t received = uart_get_hw(uart0)->dr;
-    uint32_t errors = UART_UARTDR_OE_BITS | UART_UARTDR_BE_BITS |
-                      UART_UARTDR_PE_BITS | UART_UARTDR_FE_BITS;
-    if (received & errors) {
-      uart_get_hw(uart0)->rsr = 0u;
-      continue;
-    }
-    char c = (char)(received & UART_UARTDR_DATA_BITS);
+  uint32_t now = time_us_32();
+  if (last_poll_us != 0u) {
+    uint32_t gap = now - last_poll_us;
+    if (gap > poll_max_gap_us)
+      poll_max_gap_us = gap;
+  }
+  last_poll_us = now;
+  ++poll_calls;
+  while (rx_tail != rx_head) {
+    char c = rx_ring[rx_tail];
+    rx_tail = (uint8_t)((rx_tail + 1u) % sizeof rx_ring);
 #ifdef LUFTFUGL_MONITOR
     if (dbg_active()) {
       dbg_handle_key(c);
@@ -369,5 +412,16 @@ void console_debug_line(const char *text) {
 }
 bool console_event_queue_full(void) {
   return (uint8_t)((event_head + 1u) % EVENT_QUEUE_DEPTH) == event_tail;
+}
+void console_diag_format(char *output, size_t output_size) {
+  snprintf(output, output_size,
+           "rx_chars=%lu rx_overruns=%lu poll_calls=%lu "
+           "poll_max_gap_us=%lu tx_spin_us=%lu",
+           (unsigned long)rx_chars, (unsigned long)rx_overruns,
+           (unsigned long)poll_calls, (unsigned long)poll_max_gap_us,
+           (unsigned long)tx_spin_us);
+}
+void console_diag_note_tx_spin(uint32_t elapsed_us) {
+  tx_spin_us += elapsed_us;
 }
 #endif

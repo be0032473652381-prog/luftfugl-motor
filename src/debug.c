@@ -89,7 +89,9 @@ void dbg_out_push(const char *text) {
 
 void dbg_out_drain(void) {
   while (out_tail != out_head && uart_is_writable(uart0)) {
+    uint32_t started = time_us_32();
     uart_putc_raw(uart0, out_buf[out_tail]);
+    console_diag_note_tx_spin(time_us_32() - started);
     out_tail = (uint16_t)((out_tail + 1u) % DEBUG_OUT_BUFFER);
   }
 }
@@ -480,6 +482,8 @@ typedef struct {
 static const help_entry_t help_entries[] = {
     {"help", "help jog", "one command name, or none",
      "Shows examples, limits and plain-language notes."},
+    {"diag", "diag", "read-only",
+     "Shows temporary UART receive and main-loop timing counters."},
     {"sel", "sel 3", "station 1 to 5",
      "Chooses which station save will update."},
     {"jog", "jog +100", "10 to 500 counts",
@@ -582,6 +586,7 @@ static void submit(char *typed) {
     return;
   }
   if (arg && (!strcmp(command, "status") || !strcmp(command, "adc") ||
+              !strcmp(command, "diag") ||
               !strcmp(command, "stations") || !strcmp(command, "export") ||
               !strcmp(command, "home") || !strcmp(command, "stop") ||
               !strcmp(command, "clearfault") || !strcmp(command, "arm") ||
@@ -611,6 +616,10 @@ static void submit(char *typed) {
       for (size_t i = sizeof help_entries / sizeof help_entries[0]; i-- > 0;)
         result(help_entries[i].name, "complete", help_entries[i].example);
     }
+  } else if (!strcmp(command, "diag")) {
+    char d[192];
+    console_diag_format(d, sizeof d);
+    result(original, "complete", d);
   } else if (!strcmp(command, "status")) {
     char d[96];
     snprintf(d, sizeof d, "state %s pos %u target %u dir %s duty %u adc %u",
