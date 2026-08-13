@@ -902,8 +902,8 @@ static const help_entry_t help_entries[] = {
     {"adc", "adc", "read-only", "Shows raw, filtered and classified sensing."},
     {"angle", "angle", "read-only",
      "Shows the filtered ADC reading converted to degrees."},
-    {"led", "led auto", "on, off, auto, or no argument",
-     "GP18; dusty rose RGB 235,160,160; WS2812B data is sent in GRB order."},
+    {"led", "led rgbw on", "on, off, auto, rgbw on/off, or no argument",
+     "GP18; RGB 235,160,160; sends GRBW with W=0 in RGBW mode, or GRB in RGB mode."},
     {"selftest", "selftest", "no motion",
      "Checks configuration, ADC and the 1 kHz tick."},
     {"tick", "tick", "read-only", "Shows loop timing and watchdog health."},
@@ -1069,8 +1069,10 @@ static void submit(char *typed) {
       position_t station = encoder_confirmed();
       if (led_mode() == LED_MODE_AUTO) {
         if (station >= POS_MIN && station <= POS_MAX)
-          snprintf(detail, sizeof detail, "station 5: %s    (currently at station %u)",
-                   led_is_on() ? "on" : "off", station);
+          snprintf(detail, sizeof detail,
+                   "station 5: %s    (currently at station %u; %s)",
+                   led_is_on() ? "on" : "off", station,
+                   led_rgbw() ? "RGBW" : "RGB");
         else
           snprintf(detail, sizeof detail, "station 5: %s    (position unknown)",
                    led_is_on() ? "on" : "off");
@@ -1088,8 +1090,15 @@ static void submit(char *typed) {
     } else if (!strcmp(arg, "auto")) {
       led_set_mode(LED_MODE_AUTO);
       result(original, "complete", "following station 5");
+    } else if (!strcmp(arg, "rgbw on")) {
+      led_set_rgbw(true);
+      result(original, "complete", "RGBW enabled; sending G,R,B,W with W=0");
+    } else if (!strcmp(arg, "rgbw off")) {
+      led_set_rgbw(false);
+      result(original, "complete", "RGBW disabled; sending G,R,B");
     } else
-      result(original, "rejected", "usage: led on, led off, led auto, or led");
+      result(original, "rejected",
+             "usage: led on/off/auto, led rgbw on/off, or led");
   } else if (!strcmp(command, "jog")) {
     if (arg && !strcmp(arg, "+"))
       value = jog_step;

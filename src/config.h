@@ -16,6 +16,7 @@
 #define PIN_UART_RX 21
 #define PIN_LED_DATA 18
 #define LED_COUNT 1
+#define LED_RGBW 1
 
 #define LED_STATION5_R 235
 #define LED_STATION5_G 160

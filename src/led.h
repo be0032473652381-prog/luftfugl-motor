@@ -11,6 +11,8 @@ void led_update(void);
 void led_set_mode(led_mode_t mode);
 led_mode_t led_mode(void);
 bool led_is_on(void);
+bool led_rgbw(void);
+void led_set_rgbw(bool enabled);
 unsigned int led_pio_index(void);
 unsigned int led_state_machine(void);
 unsigned int led_program_offset(void);
