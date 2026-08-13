@@ -15,10 +15,11 @@ static uint32_t raw_colour;
 static led_mode_t mode;
 static bool rgbw_enabled;
 
-static uint32_t colour_word(uint8_t r, uint8_t g, uint8_t b) {
-  r = (uint8_t)(((uint16_t)r * LED_BRIGHTNESS_PERCENT + 50u) / 100u);
-  g = (uint8_t)(((uint16_t)g * LED_BRIGHTNESS_PERCENT + 50u) / 100u);
-  b = (uint8_t)(((uint16_t)b * LED_BRIGHTNESS_PERCENT + 50u) / 100u);
+static uint32_t colour_word(uint8_t r, uint8_t g, uint8_t b,
+                            uint8_t brightness_percent) {
+  r = (uint8_t)(((uint16_t)r * brightness_percent + 50u) / 100u);
+  g = (uint8_t)(((uint16_t)g * brightness_percent + 50u) / 100u);
+  b = (uint8_t)(((uint16_t)b * brightness_percent + 50u) / 100u);
   if (rgbw_enabled) {
     /* SK6812 wire order is GRBW. White stays zero to preserve each RGB hue. */
     uint8_t w = 0u;
@@ -31,23 +32,28 @@ static uint32_t colour_word(uint8_t r, uint8_t g, uint8_t b) {
 }
 
 static uint32_t station5_rose(void) {
-  return colour_word(LED_STATION5_R, LED_STATION5_G, LED_STATION5_B);
+  return colour_word(LED_STATION5_R, LED_STATION5_G, LED_STATION5_B,
+                     LED_HAZARD_BRIGHTNESS_PERCENT);
 }
 
 static uint32_t station4_peach(void) {
-  return colour_word(LED_STATION4_R, LED_STATION4_G, LED_STATION4_B);
+  return colour_word(LED_STATION4_R, LED_STATION4_G, LED_STATION4_B,
+                     LED_STATION_BRIGHTNESS_PERCENT);
 }
 
 static uint32_t station3_butter(void) {
-  return colour_word(LED_STATION3_R, LED_STATION3_G, LED_STATION3_B);
+  return colour_word(LED_STATION3_R, LED_STATION3_G, LED_STATION3_B,
+                     LED_STATION_BRIGHTNESS_PERCENT);
 }
 
 static uint32_t station2_seafoam(void) {
-  return colour_word(LED_STATION2_R, LED_STATION2_G, LED_STATION2_B);
+  return colour_word(LED_STATION2_R, LED_STATION2_G, LED_STATION2_B,
+                     LED_STATION_BRIGHTNESS_PERCENT);
 }
 
 static uint32_t station1_mint(void) {
-  return colour_word(LED_STATION1_R, LED_STATION1_G, LED_STATION1_B);
+  return colour_word(LED_STATION1_R, LED_STATION1_G, LED_STATION1_B,
+                     LED_STATION_BRIGHTNESS_PERCENT);
 }
 
 static uint32_t requested_colour(void) {
