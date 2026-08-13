@@ -3,6 +3,7 @@
 #include "config.h"
 #include "encoder.h"
 #include "hardware/pio.h"
+#include "pico/time.h"
 #include "ws2812.pio.h"
 
 #include <limits.h>
@@ -44,8 +45,11 @@ static uint32_t requested_colour(void) {
   position_t station = encoder_confirmed();
   if (station == 4u)
     return station4_peach();
-  if (station == POS_MAX)
-    return station5_rose();
+  if (station == POS_MAX) {
+    uint32_t phase = to_ms_since_boot(get_absolute_time()) %
+                     LED_HAZARD_PERIOD_MS;
+    return phase < LED_HAZARD_ON_MS ? station5_rose() : 0u;
+  }
   return 0u;
 }
 
