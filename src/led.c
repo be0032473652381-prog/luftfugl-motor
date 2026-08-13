@@ -14,28 +14,39 @@ static uint32_t raw_colour;
 static led_mode_t mode;
 static bool rgbw_enabled;
 
-static uint32_t dusty_rose(void) {
+static uint32_t colour_word(uint8_t r, uint8_t g, uint8_t b) {
   if (rgbw_enabled) {
-    /* SK6812 wire order is GRBW. White stays zero to preserve the RGB hue. */
+    /* SK6812 wire order is GRBW. White stays zero to preserve each RGB hue. */
     uint8_t w = 0u;
-    return ((uint32_t)LED_STATION5_G << 24) |
-           ((uint32_t)LED_STATION5_R << 16) |
-           ((uint32_t)LED_STATION5_B << 8) | w;
+    return ((uint32_t)g << 24) | ((uint32_t)r << 16) |
+           ((uint32_t)b << 8) | w;
   }
   /* WS2812B wire order is GRB; the PIO shifts the upper 24 bits first. */
-  uint32_t grb = ((uint32_t)LED_STATION5_G << 16) |
-                 ((uint32_t)LED_STATION5_R << 8) | LED_STATION5_B;
+  uint32_t grb = ((uint32_t)g << 16) | ((uint32_t)r << 8) | b;
   return grb << 8;
+}
+
+static uint32_t station5_rose(void) {
+  return colour_word(LED_STATION5_R, LED_STATION5_G, LED_STATION5_B);
+}
+
+static uint32_t station4_peach(void) {
+  return colour_word(LED_STATION4_R, LED_STATION4_G, LED_STATION4_B);
 }
 
 static uint32_t requested_colour(void) {
   if (mode == LED_MODE_FORCED_RAW)
     return rgbw_enabled ? raw_colour : raw_colour << 8;
   if (mode == LED_MODE_FORCED_ON)
-    return dusty_rose();
+    return station5_rose();
   if (mode == LED_MODE_FORCED_OFF)
     return 0u;
-  return encoder_confirmed() == POS_MAX ? dusty_rose() : 0u;
+  position_t station = encoder_confirmed();
+  if (station == 4u)
+    return station4_peach();
+  if (station == POS_MAX)
+    return station5_rose();
+  return 0u;
 }
 
 void led_init(void) {

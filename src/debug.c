@@ -903,7 +903,7 @@ static const help_entry_t help_entries[] = {
     {"angle", "angle", "read-only",
      "Shows the filtered ADC reading converted to degrees."},
     {"led", "led raw ff000000", "on/off/auto, rgbw on/off, or a wire-order hex word",
-     "GP18; station 5 is rose RGB 96,24,32; raw uses GGRRBBWW or GGRRBB."},
+     "GP18; station 4 peach 96,48,20; station 5 rose 96,24,32; W=0."},
     {"selftest", "selftest", "no motion",
      "Checks configuration, ADC and the 1 kHz tick."},
     {"tick", "tick", "read-only", "Shows loop timing and watchdog health."},
@@ -1070,7 +1070,7 @@ static void submit(char *typed) {
       if (led_mode() == LED_MODE_AUTO) {
         if (station >= POS_MIN && station <= POS_MAX)
           snprintf(detail, sizeof detail,
-                   "station 5: %s    (station %u; %s; GP18)",
+                   "automatic: %s    (station %u; %s; GP18)",
                    led_is_on() ? "on" : "off", station,
                    led_rgbw() ? "RGBW" : "RGB");
         else
@@ -1093,7 +1093,7 @@ static void submit(char *typed) {
       result(original, "complete", "forced off");
     } else if (!strcmp(arg, "auto")) {
       led_set_mode(LED_MODE_AUTO);
-      result(original, "complete", "following station 5");
+      result(original, "complete", "following station 4 peach / station 5 rose");
     } else if (!strcmp(arg, "rgbw on")) {
       led_set_rgbw(true);
       result(original, "complete", "RGBW enabled; sending G,R,B,W with W=0");
