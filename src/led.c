@@ -9,6 +9,7 @@
 
 static PIO led_pio;
 static uint led_sm, led_offset;
+static uint data_pin;
 static uint32_t last_colour;
 static led_mode_t mode;
 static bool rgbw_enabled;
@@ -39,8 +40,9 @@ void led_init(void) {
   led_pio = pio0;
   led_sm = pio_claim_unused_sm(led_pio, true);
   led_offset = pio_add_program(led_pio, &ws2812_program);
+  data_pin = PIN_LED_DATA;
   rgbw_enabled = LED_RGBW != 0;
-  ws2812_program_init(led_pio, led_sm, led_offset, PIN_LED_DATA, 800000.0f,
+  ws2812_program_init(led_pio, led_sm, led_offset, data_pin, 800000.0f,
                       rgbw_enabled);
   mode = LED_MODE_AUTO;
   last_colour = UINT32_MAX;
@@ -70,10 +72,29 @@ void led_set_rgbw(bool enabled) {
   pio_sm_clear_fifos(led_pio, led_sm);
   pio_sm_restart(led_pio, led_sm);
   rgbw_enabled = enabled;
-  ws2812_program_init(led_pio, led_sm, led_offset, PIN_LED_DATA, 800000.0f,
+  ws2812_program_init(led_pio, led_sm, led_offset, data_pin, 800000.0f,
                       rgbw_enabled);
   last_colour = UINT32_MAX;
   led_update();
+}
+unsigned int led_pin(void) { return data_pin; }
+bool led_set_pin(unsigned int pin) {
+  if (pin != PIN_LED_DATA && pin != 23u)
+    return false;
+  if (pin == data_pin)
+    return true;
+  pio_sm_set_enabled(led_pio, led_sm, false);
+  pio_sm_clear_fifos(led_pio, led_sm);
+  pio_sm_restart(led_pio, led_sm);
+  gpio_init(data_pin);
+  gpio_set_dir(data_pin, GPIO_OUT);
+  gpio_put(data_pin, false);
+  data_pin = pin;
+  ws2812_program_init(led_pio, led_sm, led_offset, data_pin, 800000.0f,
+                      rgbw_enabled);
+  last_colour = UINT32_MAX;
+  led_update();
+  return true;
 }
 uint led_pio_index(void) { return led_pio == pio0 ? 0u : 1u; }
 uint led_state_machine(void) { return led_sm; }

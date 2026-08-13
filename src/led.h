@@ -13,6 +13,8 @@ led_mode_t led_mode(void);
 bool led_is_on(void);
 bool led_rgbw(void);
 void led_set_rgbw(bool enabled);
+unsigned int led_pin(void);
+bool led_set_pin(unsigned int pin);
 unsigned int led_pio_index(void);
 unsigned int led_state_machine(void);
 unsigned int led_program_offset(void);

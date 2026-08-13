@@ -902,8 +902,8 @@ static const help_entry_t help_entries[] = {
     {"adc", "adc", "read-only", "Shows raw, filtered and classified sensing."},
     {"angle", "angle", "read-only",
      "Shows the filtered ADC reading converted to degrees."},
-    {"led", "led rgbw on", "on, off, auto, rgbw on/off, or no argument",
-     "GP18; RGB 235,160,160; sends GRBW with W=0 in RGBW mode, or GRB in RGB mode."},
+    {"led", "led pin 23", "on/off/auto, rgbw on/off, pin 18/23, or no argument",
+     "GP18 external or GP23 onboard; RGB 235,160,160; GRBW has W=0."},
     {"selftest", "selftest", "no motion",
      "Checks configuration, ADC and the 1 kHz tick."},
     {"tick", "tick", "read-only", "Shows loop timing and watchdog health."},
@@ -1070,9 +1070,9 @@ static void submit(char *typed) {
       if (led_mode() == LED_MODE_AUTO) {
         if (station >= POS_MIN && station <= POS_MAX)
           snprintf(detail, sizeof detail,
-                   "station 5: %s    (currently at station %u; %s)",
+                   "station 5: %s    (station %u; %s; GP%u)",
                    led_is_on() ? "on" : "off", station,
-                   led_rgbw() ? "RGBW" : "RGB");
+                   led_rgbw() ? "RGBW" : "RGB", led_pin());
         else
           snprintf(detail, sizeof detail, "station 5: %s    (position unknown)",
                    led_is_on() ? "on" : "off");
@@ -1096,9 +1096,15 @@ static void submit(char *typed) {
     } else if (!strcmp(arg, "rgbw off")) {
       led_set_rgbw(false);
       result(original, "complete", "RGBW disabled; sending G,R,B");
+    } else if (!strcmp(arg, "pin 18")) {
+      (void)led_set_pin(18u);
+      result(original, "complete", "data output moved to GP18 external LED");
+    } else if (!strcmp(arg, "pin 23")) {
+      (void)led_set_pin(23u);
+      result(original, "complete", "data output moved to GP23 onboard LED");
     } else
       result(original, "rejected",
-             "usage: led on/off/auto, led rgbw on/off, or led");
+             "usage: led on/off/auto, led rgbw on/off, led pin 18/23, or led");
   } else if (!strcmp(command, "jog")) {
     if (arg && !strcmp(arg, "+"))
       value = jog_step;
