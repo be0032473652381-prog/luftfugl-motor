@@ -26,10 +26,10 @@ static uint16_t motion_start_adc, motion_target_adc, previous_motion_adc;
 static uint16_t jog_remaining;
 static uint8_t passed_mask;
 static bool jog_move, target_braking;
+static uint32_t target_brake_since;
 #ifdef LUFTFUGL_MONITOR
 static bool adc_move;
 static uint16_t adc_target;
-static uint32_t adc_arrival_since;
 static volatile bool debug_pending;
 static volatile dbg_request_t debug_mailbox;
 static volatile tick_stats_t tick_stats;
@@ -100,6 +100,7 @@ static void begin_home(uint32_t now) {
   motor_brake();
   jog_move = false;
   target_braking = false;
+  target_brake_since = 0u;
 #ifdef LUFTFUGL_MONITOR
   motion_trace_reset(now);
 #endif
@@ -130,6 +131,7 @@ static void begin_move(position_t tgt) {
   target = tgt;
   jog_move = false;
   target_braking = false;
+  target_brake_since = 0u;
   motion_start_adc = current;
   motion_target_adc = target_adc;
   previous_motion_adc = current;
@@ -149,6 +151,7 @@ static void begin_jog(int16_t delta, uint16_t target_adc) {
 
   jog_move = true;
   target_braking = false;
+  target_brake_since = 0u;
   target = POS_BETWEEN;
   motion_start_adc = current;
   motion_target_adc = target_adc;
@@ -187,10 +190,10 @@ void controller_init(void) {
   passed_mask = 0u;
   jog_move = false;
   target_braking = false;
+  target_brake_since = 0u;
 #ifdef LUFTFUGL_MONITOR
   adc_move = false;
   adc_target = 0u;
-  adc_arrival_since = 0u;
   debug_pending = false;
   memset((void *)&tick_stats, 0, sizeof tick_stats);
   memset((void *)&counters, 0, sizeof counters);
@@ -408,8 +411,8 @@ void controller_tick(void) {
       motion_trace_reset(now);
       adc_move = true;
       target_braking = false;
+      target_brake_since = 0u;
       adc_target = req.adc;
-      adc_arrival_since = 0u;
       target = POS_BETWEEN;
       motion_start_adc = current;
       motion_target_adc = req.adc;
@@ -436,7 +439,6 @@ void controller_tick(void) {
     mailbox = REQ_NONE;
 #ifdef LUFTFUGL_MONITOR
     adc_move = false;
-    adc_arrival_since = 0u;
 #endif
     if (request == REQ_STOP) {
       motor_brake();
@@ -559,8 +561,10 @@ void controller_tick(void) {
     if (jog_move) {
       motor_drive(last_direction, CFG_DUTY_CREEP);
     } else {
-      if (magnitude <= CFG_POS_WINDOW)
+      if (!target_braking && magnitude <= CFG_POS_WINDOW) {
         target_braking = true;
+        target_brake_since = now;
+      }
       /* Once the target window has been reached, reversing to chase filtered
          drift creates a limit cycle. Hold the short brake until confirmation. */
       if (target_braking)
@@ -575,23 +579,21 @@ void controller_tick(void) {
 
 #ifdef LUFTFUGL_MONITOR
     if (adc_move) {
-      if (magnitude <= CFG_POS_WINDOW) {
-        motor_brake();
-        if (!adc_arrival_since)
-          adc_arrival_since = now;
-        else if ((uint32_t)(now - adc_arrival_since) >= CFG_DEBOUNCE_MS) {
-          brake_until_ms = now + CFG_BRAKE_HOLD_MS;
-          state = ST_IDLE;
-          position = encoder_instant();
-          adc_move = false;
-          console_push_event(EV_JOG_COMPLETE, 0);
-          TICK_RETURN();
-        }
-      } else
-        adc_arrival_since = 0u;
+      if (target_braking &&
+          (uint32_t)(now - target_brake_since) >= CFG_DEBOUNCE_MS) {
+        brake_until_ms = now + CFG_BRAKE_HOLD_MS;
+        state = ST_IDLE;
+        position = encoder_instant();
+        adc_move = false;
+        console_push_event(EV_JOG_COMPLETE, 0);
+        TICK_RETURN();
+      }
     } else {
 #endif
-      if (!jog_move && encoder_confirmed() == target) {
+      if (!jog_move &&
+          (encoder_confirmed() == target ||
+           (target_braking &&
+            (uint32_t)(now - target_brake_since) >= CFG_DEBOUNCE_MS))) {
         arrive(target, now);
         TICK_RETURN();
       }
