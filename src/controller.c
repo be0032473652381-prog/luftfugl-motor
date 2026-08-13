@@ -34,6 +34,9 @@ static volatile bool debug_pending;
 static volatile dbg_request_t debug_mailbox;
 static volatile tick_stats_t tick_stats;
 static volatile dbg_counters_t counters;
+static volatile motion_trace_entry_t motion_trace[DEBUG_HISTORY_DEPTH];
+static volatile uint8_t motion_trace_head, motion_trace_used;
+static uint32_t motion_trace_next_ms;
 #ifdef LUFTFUGL_DEBUG
 static uint32_t debug_drive_until_ms;
 #endif
@@ -53,6 +56,24 @@ static void timing_finish(uint32_t start) {
     ++tick_stats.overruns;
     ++counters.tick_overruns;
   }
+}
+static void motion_trace_reset(uint32_t now) {
+  motion_trace_head = motion_trace_used = 0u;
+  motion_trace_next_ms = now;
+}
+static void motion_trace_sample(uint32_t now) {
+  if ((int32_t)(now - motion_trace_next_ms) < 0)
+    return;
+  motion_trace[motion_trace_head] =
+      (motion_trace_entry_t){.ms = now,
+                             .adc = encoder_average(),
+                             .direction = motor_direction(),
+                             .duty = motor_duty()};
+  motion_trace_head =
+      (uint8_t)((motion_trace_head + 1u) % DEBUG_HISTORY_DEPTH);
+  if (motion_trace_used < DEBUG_HISTORY_DEPTH)
+    ++motion_trace_used;
+  motion_trace_next_ms = now + DEBUG_MOTION_TRACE_PERIOD_MS;
 }
 #endif
 static bool reached(uint32_t now, uint32_t deadline) {
@@ -78,6 +99,9 @@ static void begin_home(uint32_t now) {
   int16_t error = (int16_t)target_adc - (int16_t)current;
   motor_brake();
   jog_move = false;
+#ifdef LUFTFUGL_MONITOR
+  motion_trace_reset(now);
+#endif
   if (error_magnitude(error) <= CFG_POS_WINDOW) {
     target = POS_MIN;
     arrive(POS_MIN, now);
@@ -99,6 +123,9 @@ static void begin_move(position_t tgt) {
   uint16_t current = encoder_average();
   uint16_t target_adc = encoder_nominal(tgt);
   int16_t error = (int16_t)target_adc - (int16_t)current;
+#ifdef LUFTFUGL_MONITOR
+  motion_trace_reset(now_ms());
+#endif
   target = tgt;
   jog_move = false;
   motion_start_adc = current;
@@ -114,6 +141,9 @@ static void begin_move(position_t tgt) {
 
 static void begin_jog(int16_t delta, uint16_t target_adc) {
   uint16_t current = encoder_average();
+#ifdef LUFTFUGL_MONITOR
+  motion_trace_reset(now_ms());
+#endif
 
   jog_move = true;
   target = POS_BETWEEN;
@@ -160,6 +190,9 @@ void controller_init(void) {
   debug_pending = false;
   memset((void *)&tick_stats, 0, sizeof tick_stats);
   memset((void *)&counters, 0, sizeof counters);
+  memset((void *)motion_trace, 0, sizeof motion_trace);
+  motion_trace_head = motion_trace_used = 0u;
+  motion_trace_next_ms = 0u;
 #ifdef LUFTFUGL_DEBUG
   debug_drive_until_ms = 0u;
 #endif
@@ -368,6 +401,7 @@ void controller_tick(void) {
     case DBG_OP_GOTO_ADC: {
       uint16_t current = encoder_average();
       int16_t error = (int16_t)req.adc - (int16_t)current;
+      motion_trace_reset(now);
       adc_move = true;
       adc_target = req.adc;
       adc_arrival_since = 0u;
@@ -526,6 +560,10 @@ void controller_tick(void) {
     }
 
 #ifdef LUFTFUGL_MONITOR
+    motion_trace_sample(now);
+#endif
+
+#ifdef LUFTFUGL_MONITOR
     if (adc_move) {
       if (magnitude <= CFG_POS_WINDOW) {
         motor_brake();
@@ -589,6 +627,17 @@ void controller_timing_reset(void) {
 void controller_counters_get(dbg_counters_t *out) { *out = counters; }
 void controller_counters_reset(void) {
   memset((void *)&counters, 0, sizeof counters);
+}
+uint8_t controller_motion_trace_count(void) { return motion_trace_used; }
+bool controller_motion_trace_get(uint8_t index, motion_trace_entry_t *out) {
+  uint8_t used = motion_trace_used;
+  uint8_t head = motion_trace_head;
+  if (index >= used)
+    return false;
+  uint8_t first =
+      (uint8_t)((head + DEBUG_HISTORY_DEPTH - used) % DEBUG_HISTORY_DEPTH);
+  *out = motion_trace[(first + index) % DEBUG_HISTORY_DEPTH];
+  return true;
 }
 #endif
 position_t controller_target(void) { return target; }

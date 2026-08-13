@@ -23,12 +23,12 @@
 #define DUTY_CREEP 25
 #define DUTY_MIN 25
 
-#define POS_1_ADC 114  /*  10 deg */
-#define POS_2_ADC 455  /*  40 deg */
-#define POS_3_ADC 796  /*  70 deg */
-#define POS_4_ADC 1138 /* 100 deg */
-#define POS_5_ADC 1479 /* 130 deg */
-#define POS_WINDOW 80
+#define POS_1_ADC 200  /*  17.6 deg */
+#define POS_2_ADC 525  /*  46.2 deg */
+#define POS_3_ADC 850  /*  74.7 deg */
+#define POS_4_ADC 1175 /* 103.3 deg */
+#define POS_5_ADC 1500 /* 131.9 deg */
+#define POS_WINDOW 60
 #define APPROACH_COUNTS 100
 
 #define TICK_HZ 1000
@@ -66,6 +66,7 @@
 #define DEBUG_OVERSHOOT_TEST_COUNT 6u
 #define DEBUG_NOMINAL_P3 POS_3_ADC
 #define DEBUG_HISTORY_DEPTH 64u
+#define DEBUG_MOTION_TRACE_PERIOD_MS 50u
 #define DEBUG_OUT_BUFFER 2048u
 #define DEBUG_SELFTEST_ADC_SAMPLES 10u
 #define DEBUG_SELFTEST_SAMPLE_PERIOD_MS 1u

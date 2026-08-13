@@ -52,6 +52,7 @@ static uint8_t findmin_phase, findmin_duty;
 static direction_t findmin_direction;
 static uint16_t findmin_min, findmin_max, findmin_start, findmin_noise;
 static uint32_t findmin_deadline;
+static uint8_t trace_dump_index, trace_dump_count;
 
 #ifdef LUFTFUGL_TRACE_OUTPUT
 static uint32_t output_bytes_pushed, output_bytes_dropped, output_bytes_drained;
@@ -663,6 +664,8 @@ static const help_entry_t help_entries[] = {
     {"selftest", "selftest", "no motion",
      "Checks configuration, ADC and the 1 kHz tick."},
     {"tick", "tick", "read-only", "Shows loop timing and watchdog health."},
+    {"trace", "trace", "read-only",
+     "Dumps the latest move at 50 ms intervals: time, ADC, direction and duty."},
     {"pins", "pins", "read-only", "Shows live motor and sensor pin levels."},
     {"pwm", "pwm", "read-only",
      "Shows PWM configuration and calculated frequency."},
@@ -764,6 +767,7 @@ static void submit(char *typed) {
               !strcmp(command, "arm") ||
               !strcmp(command, "disarm") || !strcmp(command, "selftest") ||
               !strcmp(command, "tick") ||
+              !strcmp(command, "trace") ||
               !strcmp(command, "pins") || !strcmp(command, "pwm") ||
               !strcmp(command, "findmin") || !strcmp(command, "plain") ||
               !strcmp(command, "bootsel") || !strcmp(command, "exit"))) {
@@ -979,6 +983,17 @@ static void submit(char *typed) {
              (unsigned long)timing.min_us, (unsigned long)average,
              (unsigned long)timing.max_us, (unsigned long)timing.overruns);
     result(original, "complete", detail);
+  } else if (!strcmp(command, "trace")) {
+    trace_dump_index = 0u;
+    trace_dump_count = controller_motion_trace_count();
+    if (!trace_dump_count)
+      result(original, "complete", "no move samples recorded");
+    else {
+      char detail[64];
+      snprintf(detail, sizeof detail, "dumping %u samples at 50 ms intervals",
+               trace_dump_count);
+      result(original, "complete", detail);
+    }
   } else if (!strcmp(command, "pins")) {
     char detail[112];
     snprintf(
@@ -1280,6 +1295,7 @@ void dbg_init(void) {
   pending = PENDING_NONE;
   sim_travel_active = false;
   findmin_phase = 0u;
+  trace_dump_index = trace_dump_count = 0u;
   first_command = true;
   frame_phase = 0u;
   welcome_line = (uint8_t)(sizeof welcome / sizeof welcome[0]);
@@ -1322,6 +1338,18 @@ bool dbg_plain_mode(void) { return plain_mode; }
 bool dbg_motor_armed(void) { return armed; }
 void dbg_poll(void) {
   uint32_t now = ms_now();
+  if (trace_dump_index < trace_dump_count && !dbg_out_pending()) {
+    motion_trace_entry_t entry;
+    if (controller_motion_trace_get(trace_dump_index, &entry)) {
+      char detail[96];
+      snprintf(detail, sizeof detail,
+               "sample %u t=%lums adc=%u dir=%s duty=%u",
+               (unsigned)(trace_dump_index + 1u), (unsigned long)entry.ms,
+               entry.adc, dir_text(entry.direction), entry.duty);
+      result("trace", "complete", detail);
+    }
+    ++trace_dump_index;
+  }
   findmin_poll(now);
   if (sim_travel_active) {
     uint32_t elapsed = now - sim_travel_started;

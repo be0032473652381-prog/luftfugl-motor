@@ -19,6 +19,12 @@ typedef struct {
 typedef struct {
   uint32_t moves_ok, pass_events, tick_overruns;
 } dbg_counters_t;
+typedef struct {
+  uint32_t ms;
+  uint16_t adc;
+  direction_t direction;
+  uint8_t duty;
+} motion_trace_entry_t;
 bool controller_debug_request(const dbg_request_t *req);
 move_result_t controller_debug_goto_adc(uint16_t adc);
 uint16_t controller_target_adc(void);
@@ -27,5 +33,7 @@ void controller_timing_get(tick_stats_t *out);
 void controller_timing_reset(void);
 void controller_counters_get(dbg_counters_t *out);
 void controller_counters_reset(void);
+uint8_t controller_motion_trace_count(void);
+bool controller_motion_trace_get(uint8_t index, motion_trace_entry_t *out);
 #endif
 #endif
