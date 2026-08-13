@@ -16,6 +16,9 @@ static led_mode_t mode;
 static bool rgbw_enabled;
 
 static uint32_t colour_word(uint8_t r, uint8_t g, uint8_t b) {
+  r = (uint8_t)(((uint16_t)r * LED_BRIGHTNESS_PERCENT + 50u) / 100u);
+  g = (uint8_t)(((uint16_t)g * LED_BRIGHTNESS_PERCENT + 50u) / 100u);
+  b = (uint8_t)(((uint16_t)b * LED_BRIGHTNESS_PERCENT + 50u) / 100u);
   if (rgbw_enabled) {
     /* SK6812 wire order is GRBW. White stays zero to preserve each RGB hue. */
     uint8_t w = 0u;
