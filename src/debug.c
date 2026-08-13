@@ -43,11 +43,10 @@ static uint32_t next_refresh;
 static pending_t pending;
 static char pending_text[DEBUG_COMMAND_MAX + 1u];
 static char status_shadow[9][81];
-static bool first_command;
-static uint8_t welcome_line;
 static uint8_t frame_phase;
 static bool frame_measuring;
 static uint32_t frame_bytes_current, frame_bytes_last, frame_draw_count;
+static uint16_t field_bytes_last;
 static bool sim_travel_active;
 static uint16_t sim_travel_from, sim_travel_to;
 static uint32_t sim_travel_started, sim_travel_duration;
@@ -147,15 +146,6 @@ static void trace_result(const char *message) {
 }
 #endif
 
-static const char *const welcome[] = {
-    " Welcome. To set up the five stations:",
-    "   1. Type \"sel 1\" to choose station 1",
-    "   2. Use \"jog +100\" or \"jog -100\" until it is where you want it",
-    "   3. Type \"save\" to store it",
-    "   4. Repeat for stations 2 to 5",
-    "   5. Type \"export\" and copy the lines into config.h",
-    " Type \"help\" at any time."};
-
 static uint32_t ms_now(void) { return to_ms_since_boot(get_absolute_time()); }
 static void print_angle(char *text, size_t size, uint16_t counts);
 static const char *state_text(sys_state_t state) {
@@ -229,7 +219,7 @@ static void result(const char *command, const char *outcome,
     dbg_out_push(line);
     dbg_out_push("\r\n");
   } else {
-    snprintf(line, sizeof line, " %02lu:%02lu:%02lu  %-12.12s %.51s",
+    snprintf(line, sizeof line, "  %02lu:%02lu:%02lu  %-12.12s %-48.48s",
              (unsigned long)(seconds / 3600u),
              (unsigned long)((seconds / 60u) % 60u),
              (unsigned long)(seconds % 60u), command, message);
@@ -259,23 +249,9 @@ static void field(uint8_t row, const char *text) {
   dbg_out_push(esc);
   dbg_out_push(text);
   dbg_out_push("\033[K\033[u");
+  field_bytes_last = (uint16_t)(strlen(esc) + strlen(text) + 8u);
   strncpy(status_shadow[row - 1u], text, 80u);
   status_shadow[row - 1u][80] = '\0';
-}
-
-static void position_text(char *text, size_t size, uint16_t adc) {
-  position_t position = encoder_instant();
-  if (position >= POS_MIN && position <= POS_MAX) {
-    snprintf(text, size, "station %u", position);
-    return;
-  }
-  for (position_t p = POS_MIN; p < POS_MAX; ++p) {
-    if (adc > encoder_nominal(p) && adc < encoder_nominal(p + 1u)) {
-      snprintf(text, size, "between %u and %u", p, p + 1u);
-      return;
-    }
-  }
-  snprintf(text, size, "unknown");
 }
 
 static const char *guidance(uint16_t adc) {
@@ -286,7 +262,7 @@ static const char *guidance(uint16_t adc) {
     uint16_t target_adc = controller_target_adc();
     uint16_t distance = adc > target_adc ? adc - target_adc : target_adc - adc;
     if (target >= POS_MIN && target <= POS_MAX)
-      snprintf(text, sizeof text, "moving to station %u, %u counts to go", target,
+      snprintf(text, sizeof text, "moving to station %u - %u counts to go", target,
                distance);
     else
       snprintf(text, sizeof text, "moving to adc %u, %u counts to go", target_adc,
@@ -300,7 +276,7 @@ static const char *guidance(uint16_t adc) {
   int16_t error = (int16_t)encoder_nominal(selected_station) - (int16_t)adc;
   if (error > (int16_t)CFG_POS_WINDOW || error < -(int16_t)CFG_POS_WINDOW) {
     uint16_t distance = error < 0 ? (uint16_t)-error : (uint16_t)error;
-    snprintf(text, sizeof text, "jog toward station %u, %u counts to go",
+    snprintf(text, sizeof text, "jog toward station %u - %u counts to go",
              selected_station, distance);
     return text;
   }
@@ -311,23 +287,19 @@ static const char *guidance(uint16_t adc) {
 
 void dbg_fields_refresh(void) {
   char line[81];
-  char position[24];
   uint32_t seconds = ms_now() / 1000u;
   uint16_t adc = encoder_average();
   uint16_t target_adc = controller_target_adc();
-  snprintf(line, sizeof line,
-           " luftfugl " FW_VERSION
-           "                                      up %02lu:%02lu:%02lu",
+  snprintf(line, sizeof line, "%-56s up %02lu:%02lu:%02lu", "luftfugl 2.0",
            (unsigned long)(seconds / 3600u),
            (unsigned long)((seconds / 60u) % 60u),
            (unsigned long)(seconds % 60u));
   field(1, line);
-  position_text(position, sizeof position, adc);
   char angle[12];
   print_angle(angle, sizeof angle, adc);
   snprintf(line, sizeof line,
-           " STATE %-8.8s POS %-15.15s ADC %-4u ANGLE %-5.5s DIR %.7s",
-           state_text(controller_state()), position, adc, angle,
+           "  STATE %-10.10s ADC %-6u ANGLE %-7.7s DIR %-8.8s",
+           state_text(controller_state()), adc, angle,
            motor_direction() == DIR_FWD   ? "forward"
            : motor_direction() == DIR_REV ? "back"
                                           : "stopped");
@@ -338,7 +310,7 @@ void dbg_fields_refresh(void) {
     snprintf(error, sizeof error, "%+d", (int16_t)target_adc - (int16_t)adc);
   }
   snprintf(line, sizeof line,
-           " TARGET %-9s ERR %-8s DUTY %-3u STEP %-3u SEL %s", target, error,
+           "  TARGET %-9.9s ERR %-6.6s DUTY %-6u STEP %-5u SEL %-5.5s", target, error,
            motor_duty(), jog_step,
            selected_station >= POS_MIN && selected_station <= POS_MAX ?
                (selected_station == 1   ? "1"
@@ -348,21 +320,34 @@ void dbg_fields_refresh(void) {
                                         : "5")
                                                                       : "none");
   field(4, line);
-  snprintf(line, sizeof line,
-           " STATIONS  1:%u  2:%u  3:%u  4:%u  5:%u        LIMITS none",
+  snprintf(line, sizeof line, "  1:%-9u 2:%-9u 3:%-9u 4:%-9u 5:%-9u",
            encoder_nominal(1), encoder_nominal(2), encoder_nominal(3),
            encoder_nominal(4), encoder_nominal(5));
   field(5, line);
-  snprintf(line, sizeof line, "           %s", guidance(adc));
+  char a1[12], a2[12], a3[12], a4[12], a5[12], value[8];
+  print_angle(value, sizeof value, encoder_nominal(1));
+  snprintf(a1, sizeof a1, "%s deg", value);
+  print_angle(value, sizeof value, encoder_nominal(2));
+  snprintf(a2, sizeof a2, "%s deg", value);
+  print_angle(value, sizeof value, encoder_nominal(3));
+  snprintf(a3, sizeof a3, "%s deg", value);
+  print_angle(value, sizeof value, encoder_nominal(4));
+  snprintf(a4, sizeof a4, "%s deg", value);
+  print_angle(value, sizeof value, encoder_nominal(5));
+  snprintf(a5, sizeof a5, "%s deg", value);
+  snprintf(line, sizeof line, "    %-9.9s   %-9.9s   %-9.9s   %-9.9s   %-9.9s",
+           a1, a2, a3, a4, a5);
   field(6, line);
+  snprintf(line, sizeof line, "  > %-74.74s", guidance(adc));
+  field(7, line);
 }
 
 #ifndef LUFTFUGL_TRACE_INPUT
 static void command_line_draw(void) {
-  char line[DEBUG_COMMAND_MAX + 4u];
+  char line[80];
   if (plain_mode)
     return;
-  snprintf(line, sizeof line, "> %.*s", input_len, input);
+  snprintf(line, sizeof line, "  > %-70.70s", input);
   dbg_out_push("\033[s\033[20;1H");
   dbg_out_push(line);
   dbg_out_push("\033[K\033[u");
@@ -382,7 +367,7 @@ void dbg_render(void) {
 
 #ifndef LUFTFUGL_TRACE_INPUT
 static bool status_frame_complete(void) {
-  static const uint8_t rows[] = {1, 3, 4, 5, 6};
+  static const uint8_t rows[] = {1, 3, 4, 5, 6, 7};
   for (size_t i = 0; i < sizeof rows / sizeof rows[0]; ++i)
     if (!status_shadow[rows[i] - 1u][0])
       return false;
@@ -391,26 +376,21 @@ static bool status_frame_complete(void) {
 
 static void frame_continue(void) {
   static const char *const pieces[] = {
-      "\033[2;1H---------------------------------------------------------------"
-      "----------------",
-      "\033[7;1H---------------------------------------------------------------"
-      "----------------",
-      "\033[8;1H adc reading now        stop stop now          sel 1 choose station",
-      "\033[9;1H angle angle now       status everything      save 3 store station",
-      "\033[10;1H stations five values  limits range/window    export config.h lines",
-      "\033[11;1H jog +100 move forward jog -100 move back     cfg list/change settings",
-      "\033[12;1H step 250 set jog size  pos 3 go to station    pins pin states",
-      "\033[13;1H goto 1260 go to adc    move 2 go to station   pwm pwm frequency",
-      "\033[14;1H home go to station 1   tick loop timing       selftest run checks",
-      "\033[15;1H reset restart board    trace last move        sim on simulation",
-      "\033[16;1H arm allow manual       disarm close manual    drive fwd 25 200 pulse",
-      "\033[17;1H findmin find duty      help jog command help  diag uart diagnostics",
-      "\033[18;1H bootsel usb loader      plain line mode        exit leave console",
-      "\033[19;1H--------------------------------------------------------------"
-      "----------------",
-      "\033[20;1H Command: ",
-      "\033[21;1H--------------------------------------------------------------"
-      "----------------"};
+      "\033[2;1H───────────────────────────────────────────────────────────────────────────────",
+      "\033[8;1H───────────────────────────────────────────────────────────────────────────────",
+      "\033[9;1H  adc       angle     status    stations  limits    cfg       diag",
+      "\033[10;1H  jog       step      pos       move      goto      home      stop",
+      "\033[11;1H  sel       save      export    reset     bootsel   plain     exit",
+      "\033[12;1H  selftest  pins      pwm       tick      trace     findmin   help",
+      "\033[13;1H  arm       disarm    drive     sim",
+      "\033[14;1H  jog +100                 pos 3                    goto 1260",
+      "\033[15;1H  step 250                 sel 1                    cfg DUTY_NORMAL 30",
+      "\033[16;1H  cfg POS_WINDOW 60        move 2                   drive fwd 25 200",
+      "\033[17;1H  help jog                 sim on                   save 3",
+      "\033[18;1H  export                   selftest                 reset",
+      "\033[19;1H───────────────────────────────────────────────────────────────────────────────",
+      "\033[20;1H  > ",
+      "\033[21;1H───────────────────────────────────────────────────────────────────────────────"};
   if (!frame_phase || out_free() < 120u)
     return;
   if (frame_phase <= sizeof pieces / sizeof pieces[0]) {
@@ -428,7 +408,6 @@ static void frame_continue(void) {
   ++frame_draw_count;
   frame_measuring = false;
   frame_phase = 0u;
-  welcome_line = 0u;
 }
 #endif
 
@@ -956,12 +935,6 @@ static void submit(char *typed) {
   word = strtok_r(typed, " \t", &save);
   if (!word)
     return;
-  if (first_command) {
-    first_command = false;
-    welcome_line = (uint8_t)(sizeof welcome / sizeof welcome[0]);
-    if (!plain_mode)
-      dbg_out_push("\033[s\033[22;1H\033[J\033[u");
-  }
   const char *command = resolve(word, candidates, sizeof candidates);
 #ifdef LUFTFUGL_TRACE_INPUT
   trace_dispatch(original, command);
@@ -1018,9 +991,9 @@ static void submit(char *typed) {
     console_diag_format(d, sizeof d);
     result(original, "complete", d);
     snprintf(d, sizeof d,
-             "frame_bytes=%lu frame_draws=%lu command_region_redraws=%lu",
-             (unsigned long)frame_bytes_last, (unsigned long)frame_draw_count,
-             (unsigned long)frame_draw_count);
+             "frame_bytes=%lu field_bytes=%u frame_draws=%lu static_redraws=%lu",
+             (unsigned long)frame_bytes_last, field_bytes_last,
+             (unsigned long)frame_draw_count, (unsigned long)frame_draw_count);
     result("", "complete", d);
   } else if (!strcmp(command, "status")) {
     char d[96];
@@ -1528,11 +1501,10 @@ void dbg_init(void) {
   sim_travel_active = false;
   findmin_phase = 0u;
   trace_dump_index = trace_dump_count = 0u;
-  first_command = true;
   frame_phase = 0u;
   frame_measuring = false;
   frame_bytes_current = frame_bytes_last = frame_draw_count = 0u;
-  welcome_line = (uint8_t)(sizeof welcome / sizeof welcome[0]);
+  field_bytes_last = 0u;
   next_refresh = 0u;
   memset(status_shadow, 0, sizeof status_shadow);
 }
@@ -1542,16 +1514,9 @@ static void enter(bool plain) {
   input_len = 0;
   input_overflow = false;
   command_dirty = false;
-  first_command = true;
 #ifndef LUFTFUGL_TRACE_INPUT
   if (!plain)
     dbg_render();
-  else {
-    for (size_t i = 0; i < sizeof welcome / sizeof welcome[0]; ++i) {
-      dbg_out_push(welcome[i]);
-      dbg_out_push("\r\n");
-    }
-  }
 #endif
 }
 void dbg_enter(void) { enter(false); }
@@ -1614,14 +1579,6 @@ void dbg_poll(void) {
       out_free() > DEBUG_COMMAND_MAX + 32u) {
     command_line_draw();
     command_dirty = false;
-  }
-  if (active && !plain_mode && !frame_phase &&
-      welcome_line < sizeof welcome / sizeof welcome[0] && out_free() > 100u) {
-    char cursor[20];
-    snprintf(cursor, sizeof cursor, "\033[%u;1H", 18u + welcome_line);
-    dbg_out_push(cursor);
-    dbg_out_push(welcome[welcome_line++]);
-    dbg_out_push("\033[K");
   }
   if (active && !plain_mode && !frame_phase &&
       (int32_t)(now - next_refresh) >= 0) {
