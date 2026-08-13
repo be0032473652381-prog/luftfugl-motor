@@ -8,7 +8,9 @@
 #include "hardware/pwm.h"
 #include "hardware/structs/pwm.h"
 #include "hardware/uart.h"
+#include "hardware/watchdog.h"
 #include "motor.h"
+#include "pico/bootrom.h"
 #include "pico/time.h"
 #include <ctype.h>
 #include <stdio.h>
@@ -715,8 +717,10 @@ static const help_entry_t help_entries[] = {
      "One count is about 0.09 degrees; values come from the live configuration."},
     {"export", "export", "read-only",
      "Prints values ready to paste into config.h."},
-    {"reset", "reset stations", "literal word stations",
-     "Restores the five compiled station values."},
+    {"reset", "reset", "no arguments; reset stations restores calibration",
+     "Restarts from flash; prints resetting before rebooting."},
+    {"bootsel", "bootsel", "no arguments",
+     "Restarts into the USB bootloader for recovery."},
     {"move", "move 2", "station 1 to 5", "Uses closed-loop position control."},
     {"pos", "pos 3", "station 1 to 5",
      "Alias for move; uses closed-loop position control and limit checks."},
@@ -836,7 +840,7 @@ static void submit(char *typed) {
               !strcmp(command, "faults") || !strcmp(command, "tick") ||
               !strcmp(command, "pins") || !strcmp(command, "pwm") ||
               !strcmp(command, "findmin") || !strcmp(command, "plain") ||
-              !strcmp(command, "exit"))) {
+              !strcmp(command, "bootsel") || !strcmp(command, "exit"))) {
     result(original, "rejected", "unexpected argument; try help <command>");
     return;
   }
@@ -954,14 +958,33 @@ static void submit(char *typed) {
   else if (!strcmp(command, "limits"))
     print_limits(original);
   else if (!strcmp(command, "reset")) {
-    if (!arg || strcmp(arg, "stations")) {
-      result(original, "rejected", "type \"reset stations\"");
+    if (!arg) {
+      while (dbg_out_pending())
+        dbg_out_drain();
+      const char *message = "resetting...\r\n";
+      while (*message)
+        uart_putc_raw(uart1, *message++);
+      uart_tx_wait_blocking(uart1);
+      watchdog_reboot(0, 0, 0);
+      return;
+    }
+    if (strcmp(arg, "stations")) {
+      result(original, "rejected", "type \"reset\" or \"reset stations\"");
       return;
     }
     if (controller_request_reset_positions() == MOVE_OK)
       result(original, "complete", "compiled station values restored");
     else
       result(original, "rejected", "controller is moving; type \"stop\" first");
+  } else if (!strcmp(command, "bootsel")) {
+    while (dbg_out_pending())
+      dbg_out_drain();
+    const char *message = "entering USB bootloader...\r\n";
+    while (*message)
+      uart_putc_raw(uart1, *message++);
+    uart_tx_wait_blocking(uart1);
+    reset_usb_boot(0, 0);
+    return;
   } else if (!strcmp(command, "export"))
     export_positions(original);
   else if (!strcmp(command, "move") || !strcmp(command, "pos")) {
