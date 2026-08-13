@@ -17,9 +17,10 @@ typedef struct {
   uint32_t count, overruns;
 } tick_stats_t;
 typedef struct {
-  uint32_t ms;
+  uint32_t ms, tick;
   position_t pos;
   uint8_t kind;
+  uint16_t magnitude, best_error_magnitude;
 } hist_entry_t;
 typedef struct {
   uint32_t moves_ok, moves_timeout, faults, limit_rejects, pass_events,

@@ -52,6 +52,7 @@ static uint8_t findmin_phase, findmin_duty;
 static direction_t findmin_direction;
 static uint16_t findmin_min, findmin_max, findmin_start, findmin_noise;
 static uint32_t findmin_deadline;
+static uint8_t direction_dump_index, direction_dump_end;
 
 #ifdef LUFTFUGL_TRACE_OUTPUT
 static uint32_t output_bytes_pushed, output_bytes_dropped, output_bytes_drained;
@@ -1261,6 +1262,18 @@ static void submit(char *typed) {
 
 void dbg_event(event_kind_t kind, uint8_t arg) {
   char detail[64];
+  if (kind == EV_FAULT_DIRECTION) {
+    uint8_t start = controller_history_count();
+    uint8_t samples = 0u;
+    direction_dump_end = start;
+    while (start && samples < 40u) {
+      hist_entry_t entry;
+      --start;
+      if (controller_history_get(start, &entry) && entry.kind >= 2u)
+        ++samples;
+    }
+    direction_dump_index = start;
+  }
   if (kind == EV_JOG_COMPLETE && pending == PENDING_GOTO) {
     snprintf(detail, sizeof detail, "step %u of %u, adc %u", goto_step,
              goto_steps, encoder_average());
@@ -1409,6 +1422,7 @@ void dbg_init(void) {
   pending = PENDING_NONE;
   sim_travel_active = false;
   findmin_phase = 0u;
+  direction_dump_index = direction_dump_end = 0u;
   first_command = true;
   frame_phase = 0u;
   welcome_line = (uint8_t)(sizeof welcome / sizeof welcome[0]);
@@ -1451,6 +1465,22 @@ bool dbg_plain_mode(void) { return plain_mode; }
 bool dbg_motor_armed(void) { return armed; }
 void dbg_poll(void) {
   uint32_t now = ms_now();
+  if (direction_dump_index < direction_dump_end && !dbg_out_pending()) {
+    hist_entry_t entry;
+    while (direction_dump_index < direction_dump_end) {
+      bool available = controller_history_get(direction_dump_index++, &entry);
+      if (available && entry.kind >= 2u) {
+        char line[112];
+        snprintf(line, sizeof line,
+                 "\r\nDIRTRACE tick=%lu magnitude=%u best=%u%s\r\n",
+                 (unsigned long)entry.tick, entry.magnitude,
+                 entry.best_error_magnitude,
+                 entry.kind == 3u ? " FAULT" : "");
+        dbg_out_push(line);
+        break;
+      }
+    }
+  }
   findmin_poll(now);
   if (sim_travel_active) {
     uint32_t elapsed = now - sim_travel_started;

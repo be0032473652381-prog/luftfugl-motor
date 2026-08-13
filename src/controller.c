@@ -47,7 +47,22 @@ static volatile fault_record_t last_fault;
 static uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
 #ifdef LUFTFUGL_MONITOR
 static void hist_push(uint32_t ms, position_t pos, uint8_t kind) {
-  history[history_head] = (hist_entry_t){ms, pos, kind};
+  history[history_head] = (hist_entry_t){
+      .ms = ms, .tick = tick_stats.count, .pos = pos, .kind = kind};
+  history_head = (uint8_t)((history_head + 1u) % DEBUG_HISTORY_DEPTH);
+  if (history_used < DEBUG_HISTORY_DEPTH)
+    ++history_used;
+}
+static void hist_clear(void) { history_head = history_used = 0u; }
+static void hist_push_direction(uint32_t ms, uint16_t magnitude, uint16_t best,
+                                bool fault) {
+  history[history_head] =
+      (hist_entry_t){.ms = ms,
+                     .tick = tick_stats.count,
+                     .pos = target,
+                     .kind = fault ? 3u : 2u,
+                     .magnitude = magnitude,
+                     .best_error_magnitude = best};
   history_head = (uint8_t)((history_head + 1u) % DEBUG_HISTORY_DEPTH);
   if (history_used < DEBUG_HISTORY_DEPTH)
     ++history_used;
@@ -163,6 +178,10 @@ static void begin_move(position_t tgt, uint32_t now) {
       ++steps;
   }
   target = tgt;
+#ifdef LUFTFUGL_MONITOR
+  if (tgt == POS_MAX)
+    hist_clear();
+#endif
   jog_move = false;
   motion_start_adc = current;
   motion_target_adc = target_adc;
@@ -734,12 +753,19 @@ void controller_tick(void) {
                                                       target));
     }
 
+    bool direction_fault = false;
     if (!endpoint_braking && magnitude < best_error_magnitude)
       best_error_magnitude = magnitude;
     else if (CFG_REVERSE_DELTA != 0u && !endpoint_braking &&
              reached(now, direction_check_ms) &&
              magnitude > best_error_magnitude &&
-             magnitude - best_error_magnitude > CFG_REVERSE_DELTA) {
+             magnitude - best_error_magnitude > CFG_REVERSE_DELTA)
+      direction_fault = true;
+#ifdef LUFTFUGL_MONITOR
+    if (target == POS_MAX && !jog_move)
+      hist_push_direction(now, magnitude, best_error_magnitude, direction_fault);
+#endif
+    if (direction_fault) {
       enter_fault(EV_FAULT_DIRECTION);
       TICK_RETURN();
     }
