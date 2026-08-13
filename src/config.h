@@ -56,9 +56,19 @@
 
 #define TICK_HZ 1000
 #define TICK_PERIOD_US 1000u
-#define FILTER_DEPTH 5
-#define DEBOUNCE_MS 12
+#define ADC_SAMPLE_HZ 100u
+#define ADC_SAMPLE_PERIOD_TICKS (TICK_HZ / ADC_SAMPLE_HZ)
+#define ADC_SAMPLE_PERIOD_MS 10u
+#define FILTER_DEPTH 7
+#define DEBOUNCE_MS 20
 #define BRAKE_HOLD_MS 100
+
+#if TICK_HZ % ADC_SAMPLE_HZ != 0
+#error "ADC sample rate must divide the controller tick rate"
+#endif
+#if FILTER_DEPTH < 3
+#error "Trimmed position filter requires at least three samples"
+#endif
 
 #define CONSOLE_LINE_MAX 32
 #define EVENT_QUEUE_DEPTH 8
@@ -101,7 +111,8 @@
 #define DEBUG_TICK_HEALTH_WINDOW_MS 2000u
 #define DEBUG_SIM_DEFAULT_ADC POS_1_ADC
 #define DEBUG_SIM_MIN_POSITION_MS DEBOUNCE_MS
-#define DEBUG_SIM_SWEEP_SETTLE_MS (FILTER_DEPTH + DEBOUNCE_MS)
+#define DEBUG_SIM_SWEEP_SETTLE_MS \
+  (FILTER_DEPTH * ADC_SAMPLE_PERIOD_MS + DEBOUNCE_MS)
 #define DEBUG_MENU_BUFFER_SIZE 512u
 #define DEBUG_HEADER_BUFFER_SIZE 256u
 #define DEBUG_PWM_DIV_MASK 0x0fffu
