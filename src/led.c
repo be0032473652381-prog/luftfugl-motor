@@ -61,6 +61,9 @@ void led_update(void) {
 
 void led_set_mode(led_mode_t new_mode) {
   mode = new_mode;
+  /* An explicit command must reach hardware even if it was reconnected while
+     the cached logical colour already matched the request. */
+  last_colour = UINT32_MAX;
   led_update();
 }
 
@@ -82,6 +85,7 @@ void led_set_rgbw(bool enabled) {
 void led_set_raw(uint32_t wire_word) {
   raw_colour = wire_word;
   mode = LED_MODE_FORCED_RAW;
+  last_colour = UINT32_MAX;
   led_update();
 }
 uint led_pio_index(void) { return led_pio == pio0 ? 0u : 1u; }
