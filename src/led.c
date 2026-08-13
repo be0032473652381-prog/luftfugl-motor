@@ -39,6 +39,10 @@ static uint32_t station3_butter(void) {
   return colour_word(LED_STATION3_R, LED_STATION3_G, LED_STATION3_B);
 }
 
+static uint32_t station2_seafoam(void) {
+  return colour_word(LED_STATION2_R, LED_STATION2_G, LED_STATION2_B);
+}
+
 static uint32_t requested_colour(void) {
   if (mode == LED_MODE_FORCED_RAW)
     return rgbw_enabled ? raw_colour : raw_colour << 8;
@@ -47,6 +51,8 @@ static uint32_t requested_colour(void) {
   if (mode == LED_MODE_FORCED_OFF)
     return 0u;
   position_t station = encoder_confirmed();
+  if (station == 2u)
+    return station2_seafoam();
   if (station == 3u)
     return station3_butter();
   if (station == 4u)
