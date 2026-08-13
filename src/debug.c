@@ -33,6 +33,7 @@ static bool active, plain_mode, echo_enabled, input_overflow, swallow_lf;
 static bool command_dirty;
 static bool armed;
 static position_t selected_station;
+static uint8_t saved_station_mask;
 static uint16_t jog_step;
 static char input[DEBUG_COMMAND_MAX + 1u];
 static uint8_t input_len;
@@ -45,6 +46,8 @@ static char status_shadow[9][81];
 static bool first_command;
 static uint8_t welcome_line;
 static uint8_t frame_phase;
+static bool frame_measuring;
+static uint32_t frame_bytes_current, frame_bytes_last, frame_draw_count;
 static bool sim_travel_active;
 static uint16_t sim_travel_from, sim_travel_to;
 static uint32_t sim_travel_started, sim_travel_duration;
@@ -154,6 +157,7 @@ static const char *const welcome[] = {
     " Type \"help\" at any time."};
 
 static uint32_t ms_now(void) { return to_ms_since_boot(get_absolute_time()); }
+static void print_angle(char *text, size_t size, uint16_t counts);
 static const char *state_text(sys_state_t state) {
   static const char *const names[] = {"BOOT", "IDLE", "MOVING", "APPROACH",
                                       "HOMING", "DEBUG"};
@@ -183,6 +187,8 @@ void dbg_out_push(const char *text) {
     out_buf[out_head] = *text++;
     out_head = next;
   }
+  if (frame_measuring)
+    frame_bytes_current += (uint32_t)length;
 #ifdef LUFTFUGL_TRACE_OUTPUT
   output_bytes_pushed += (uint32_t)length;
 #endif
@@ -228,7 +234,7 @@ static void result(const char *command, const char *outcome,
              (unsigned long)((seconds / 60u) % 60u),
              (unsigned long)(seconds % 60u), command, message);
     /* Insert at the top; the terminal shifts older results down one row. */
-    dbg_out_push("\033[s\033[18;1H\033[L");
+    dbg_out_push("\033[s\033[22;1H\033[L");
     dbg_out_push(line);
     dbg_out_push("\033[K\033[u");
   }
@@ -274,15 +280,31 @@ static void position_text(char *text, size_t size, uint16_t adc) {
 
 static const char *guidance(uint16_t adc) {
   static char text[80];
+  position_t target = controller_target();
+  if (controller_state() == ST_MOVING || controller_state() == ST_APPROACH ||
+      controller_state() == ST_HOMING) {
+    uint16_t target_adc = controller_target_adc();
+    uint16_t distance = adc > target_adc ? adc - target_adc : target_adc - adc;
+    if (target >= POS_MIN && target <= POS_MAX)
+      snprintf(text, sizeof text, "moving to station %u, %u counts to go", target,
+               distance);
+    else
+      snprintf(text, sizeof text, "moving to adc %u, %u counts to go", target_adc,
+               distance);
+    return text;
+  }
+  if (saved_station_mask == 0x1fu)
+    return "type \"export\" and copy the lines into config.h";
   if (selected_station < POS_MIN || selected_station > POS_MAX)
     return "type \"sel 1\" to start setting up station 1";
   int16_t error = (int16_t)encoder_nominal(selected_station) - (int16_t)adc;
-  if (error > (int16_t)CFG_POS_WINDOW)
-    return "jog forward to reach it";
-  if (error < -(int16_t)CFG_POS_WINDOW)
-    return "jog back to reach it";
-  snprintf(text, sizeof text,
-           "you are at station %u - type \"save\" to store it",
+  if (error > (int16_t)CFG_POS_WINDOW || error < -(int16_t)CFG_POS_WINDOW) {
+    uint16_t distance = error < 0 ? (uint16_t)-error : (uint16_t)error;
+    snprintf(text, sizeof text, "jog toward station %u, %u counts to go",
+             selected_station, distance);
+    return text;
+  }
+  snprintf(text, sizeof text, "at station %u - type \"save\" to store it",
            selected_station);
   return text;
 }
@@ -301,42 +323,38 @@ void dbg_fields_refresh(void) {
            (unsigned long)(seconds % 60u));
   field(1, line);
   position_text(position, sizeof position, adc);
-  snprintf(line, sizeof line, "  STATE   %-12s  POSITION  %-20s ADC  %u",
-           state_text(controller_state()), position, adc);
+  char angle[12];
+  print_angle(angle, sizeof angle, adc);
+  snprintf(line, sizeof line,
+           " STATE %-8.8s POS %-15.15s ADC %-4u ANGLE %-5.5s DIR %.7s",
+           state_text(controller_state()), position, adc, angle,
+           motor_direction() == DIR_FWD   ? "forward"
+           : motor_direction() == DIR_REV ? "back"
+                                          : "stopped");
   field(3, line);
   char target[12] = "--", error[12] = "--";
   if (controller_target() >= POS_MIN && controller_target() <= POS_MAX) {
     snprintf(target, sizeof target, "station %u", controller_target());
     snprintf(error, sizeof error, "%+d", (int16_t)target_adc - (int16_t)adc);
   }
-  snprintf(line, sizeof line, "  TARGET  %-12s  ERROR     %-20s STEP %u counts",
-           target, error, jog_step);
-  field(4, line);
-  snprintf(line, sizeof line, "  LIMITS  %-12s  DUTY      %-20u DIR  %s",
-           "none", motor_duty(),
-           motor_direction() == DIR_FWD   ? "forward"
-           : motor_direction() == DIR_REV ? "back"
-                                          : "stopped");
-  field(5, line);
   snprintf(line, sizeof line,
-           "  STATIONS   1:%u%s  2:%u%s  3:%u%s  4:%u%s  5:%u%s",
-           encoder_nominal(1), selected_station == 1 ? " ▶" : "",
-           encoder_nominal(2), selected_station == 2 ? " ▶" : "",
-           encoder_nominal(3), selected_station == 3 ? " ▶" : "",
-           encoder_nominal(4), selected_station == 4 ? " ▶" : "",
-           encoder_nominal(5), selected_station == 5 ? " ▶" : "");
-  field(7, line);
-  if (selected_station >= POS_MIN && selected_station <= POS_MAX) {
-    int16_t off = (int16_t)adc - (int16_t)encoder_nominal(selected_station);
-    snprintf(
-        line, sizeof line,
-        "             selected: %u     stored %u     now %u     off by %+d",
-        selected_station, encoder_nominal(selected_station), adc, off);
-  } else
-    snprintf(line, sizeof line, "             selected: none     now %u", adc);
-  field(8, line);
-  snprintf(line, sizeof line, "             %s", guidance(adc));
-  field(9, line);
+           " TARGET %-9s ERR %-8s DUTY %-3u STEP %-3u SEL %s", target, error,
+           motor_duty(), jog_step,
+           selected_station >= POS_MIN && selected_station <= POS_MAX ?
+               (selected_station == 1   ? "1"
+                : selected_station == 2 ? "2"
+                : selected_station == 3 ? "3"
+                : selected_station == 4 ? "4"
+                                        : "5")
+                                                                      : "none");
+  field(4, line);
+  snprintf(line, sizeof line,
+           " STATIONS  1:%u  2:%u  3:%u  4:%u  5:%u        LIMITS none",
+           encoder_nominal(1), encoder_nominal(2), encoder_nominal(3),
+           encoder_nominal(4), encoder_nominal(5));
+  field(5, line);
+  snprintf(line, sizeof line, "           %s", guidance(adc));
+  field(6, line);
 }
 
 #ifndef LUFTFUGL_TRACE_INPUT
@@ -345,7 +363,7 @@ static void command_line_draw(void) {
   if (plain_mode)
     return;
   snprintf(line, sizeof line, "> %.*s", input_len, input);
-  dbg_out_push("\033[s\033[16;1H");
+  dbg_out_push("\033[s\033[20;1H");
   dbg_out_push(line);
   dbg_out_push("\033[K\033[u");
 }
@@ -355,6 +373,8 @@ void dbg_render(void) {
   if (plain_mode)
     return;
   out_head = out_tail = 0u;
+  frame_bytes_current = 0u;
+  frame_measuring = true;
   dbg_out_push("\033[2J\033[H\033[?25l");
   memset(status_shadow, 0, sizeof status_shadow);
   frame_phase = 1u;
@@ -362,7 +382,7 @@ void dbg_render(void) {
 
 #ifndef LUFTFUGL_TRACE_INPUT
 static bool status_frame_complete(void) {
-  static const uint8_t rows[] = {1, 3, 4, 5, 7, 8, 9};
+  static const uint8_t rows[] = {1, 3, 4, 5, 6};
   for (size_t i = 0; i < sizeof rows / sizeof rows[0]; ++i)
     if (!status_shadow[rows[i] - 1u][0])
       return false;
@@ -373,18 +393,23 @@ static void frame_continue(void) {
   static const char *const pieces[] = {
       "\033[2;1H---------------------------------------------------------------"
       "----------------",
-      "\033[10;1H--------------------------------------------------------------"
+      "\033[7;1H---------------------------------------------------------------"
       "----------------",
-      "\033[11;1H COMMANDS                      type \"help\" for the full "
-      "list",
-      "\033[12;1H   pos 3      go to station 3             goto 1260  go to reading 1260",
-      "\033[13;1H   limits     show adc range              stations   show station table",
-      "\033[14;1H   save       store selected station      export     print "
-      "all stations",
-      "\033[15;1H--------------------------------------------------------------"
+      "\033[8;1H adc reading now        stop stop now          sel 1 choose station",
+      "\033[9;1H angle angle now       status everything      save 3 store station",
+      "\033[10;1H stations five values  limits range/window    export config.h lines",
+      "\033[11;1H jog +100 move forward jog -100 move back     cfg list/change settings",
+      "\033[12;1H step 250 set jog size  pos 3 go to station    pins pin states",
+      "\033[13;1H goto 1260 go to adc    move 2 go to station   pwm pwm frequency",
+      "\033[14;1H home go to station 1   tick loop timing       selftest run checks",
+      "\033[15;1H reset restart board    trace last move        sim on simulation",
+      "\033[16;1H arm allow manual       disarm close manual    drive fwd 25 200 pulse",
+      "\033[17;1H findmin find duty      help jog command help  diag uart diagnostics",
+      "\033[18;1H bootsel usb loader      plain line mode        exit leave console",
+      "\033[19;1H--------------------------------------------------------------"
       "----------------",
-      "\033[16;1H COMMAND  > ",
-      "\033[17;1H--------------------------------------------------------------"
+      "\033[20;1H Command: ",
+      "\033[21;1H--------------------------------------------------------------"
       "----------------"};
   if (!frame_phase || out_free() < 120u)
     return;
@@ -398,7 +423,10 @@ static void frame_continue(void) {
     return;
   }
   /* Scrolling setup is the final sequence of the frame draw. */
-  dbg_out_push("\033[18;24r\033[18;1H");
+  dbg_out_push("\033[22;24r\033[22;1H");
+  frame_bytes_last = frame_bytes_current;
+  ++frame_draw_count;
+  frame_measuring = false;
   frame_phase = 0u;
   welcome_line = 0u;
 }
@@ -504,6 +532,7 @@ static bool save_position(position_t station, const char *command) {
   char detail[48];
   snprintf(detail, sizeof detail, "station %u saved, now %u", station, adc);
   result(command, "complete", detail);
+  saved_station_mask |= (uint8_t)(1u << (station - POS_MIN));
   return true;
 }
 
@@ -931,7 +960,7 @@ static void submit(char *typed) {
     first_command = false;
     welcome_line = (uint8_t)(sizeof welcome / sizeof welcome[0]);
     if (!plain_mode)
-      dbg_out_push("\033[s\033[18;1H\033[J\033[u");
+      dbg_out_push("\033[s\033[22;1H\033[J\033[u");
   }
   const char *command = resolve(word, candidates, sizeof candidates);
 #ifdef LUFTFUGL_TRACE_INPUT
@@ -988,6 +1017,11 @@ static void submit(char *typed) {
     char d[192];
     console_diag_format(d, sizeof d);
     result(original, "complete", d);
+    snprintf(d, sizeof d,
+             "frame_bytes=%lu frame_draws=%lu command_region_redraws=%lu",
+             (unsigned long)frame_bytes_last, (unsigned long)frame_draw_count,
+             (unsigned long)frame_draw_count);
+    result("", "complete", d);
   } else if (!strcmp(command, "status")) {
     char d[96];
     snprintf(d, sizeof d, "state %s pos %u target %u dir %s duty %u adc %u",
@@ -1092,9 +1126,10 @@ static void submit(char *typed) {
       result(original, "rejected", "type \"reset\" or \"reset stations\"");
       return;
     }
-    if (controller_request_reset_positions() == MOVE_OK)
+    if (controller_request_reset_positions() == MOVE_OK) {
+      saved_station_mask = 0u;
       result(original, "complete", "compiled station values restored");
-    else
+    } else
       result(original, "rejected", "controller is moving; type \"stop\" first");
   } else if (!strcmp(command, "bootsel")) {
     while (dbg_out_pending())
@@ -1485,6 +1520,7 @@ void dbg_init(void) {
       false;
   command_dirty = false;
   selected_station = POS_UNKNOWN;
+  saved_station_mask = 0u;
   jog_step = 100u;
   input_len = 0;
   out_head = out_tail = 0u;
@@ -1494,6 +1530,8 @@ void dbg_init(void) {
   trace_dump_index = trace_dump_count = 0u;
   first_command = true;
   frame_phase = 0u;
+  frame_measuring = false;
+  frame_bytes_current = frame_bytes_last = frame_draw_count = 0u;
   welcome_line = (uint8_t)(sizeof welcome / sizeof welcome[0]);
   next_refresh = 0u;
   memset(status_shadow, 0, sizeof status_shadow);
