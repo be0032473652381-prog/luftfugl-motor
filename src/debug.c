@@ -903,7 +903,7 @@ static const help_entry_t help_entries[] = {
     {"angle", "angle", "read-only",
      "Shows the filtered ADC reading converted to degrees."},
     {"led", "led raw ff000000", "on/off/auto, rgbw on/off, or a wire-order hex word",
-     "GP18; station 3 butter; station 4 orange-peach; station 5 red-rose hazard."},
+     "GP18; station 3 deep yellow; station 4 pink; station 5 red-rose hazard."},
     {"selftest", "selftest", "no motion",
      "Checks configuration, ADC and the 1 kHz tick."},
     {"tick", "tick", "read-only", "Shows loop timing and watchdog health."},
