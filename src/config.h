@@ -12,8 +12,8 @@
 #define PIN_STBY 15
 #define PIN_SENSE 26
 #define ADC_CHANNEL 0
-#define PIN_UART_TX 0
-#define PIN_UART_RX 1
+#define PIN_UART_TX 20
+#define PIN_UART_RX 21
 
 #define PWM_WRAP 255
 #define PWM_CLKDIV 97.6875f
@@ -52,8 +52,6 @@
 #define UART_BAUD 115200
 
 #define ADC_MAX_VALUE 4095u
-#define ADC_PER_360_DEG 4095u
-#define DEGREE_TENTHS_PER_TURN 3600u
 #ifdef LUFTFUGL_MONITOR
 #define DEBUG_INTERLOCK_TIMEOUT_MS 120000u
 #define DEBUG_STREAM_MIN_HZ 1u

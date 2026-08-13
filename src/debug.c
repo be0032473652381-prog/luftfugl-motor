@@ -11,36 +11,36 @@
 #include "motor.h"
 #include "pico/time.h"
 #include <ctype.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define CMD_MAX 48
-#define CMD_ROW 16u
+#define DEBUG_COMMAND_MAX 48u
 #define DEBUG_REFRESH_MS 1000u
 
 typedef enum {
   PENDING_NONE,
   PENDING_JOG,
-  PENDING_SEQUENCE,
   PENDING_MOVE,
   PENDING_HOME,
   PENDING_SIM
 } pending_t;
 
-static bool active, plain_mode;
+static bool active, plain_mode, echo_enabled, input_overflow, swallow_lf;
+static bool command_dirty;
 static bool armed;
 static position_t selected_station;
 static uint16_t jog_step;
-static char cmd[CMD_MAX + 1];
-static uint8_t cmd_len;
+static char input[DEBUG_COMMAND_MAX + 1u];
+static uint8_t input_len;
 static char out_buf[DEBUG_OUT_BUFFER];
 static volatile uint16_t out_head, out_tail;
 static uint32_t next_refresh;
 static pending_t pending;
-static char pending_text[CMD_MAX + 1u];
+static char pending_text[DEBUG_COMMAND_MAX + 1u];
 static char status_shadow[9][81];
+static bool first_command;
+static uint8_t welcome_line;
 static uint8_t frame_phase;
 static bool sim_travel_active;
 static uint16_t sim_travel_from, sim_travel_to;
@@ -49,9 +49,6 @@ static uint8_t findmin_phase, findmin_duty;
 static direction_t findmin_direction;
 static uint16_t findmin_min, findmin_max, findmin_start, findmin_noise;
 static uint32_t findmin_deadline;
-static uint16_t seq_target_adc;
-static uint8_t seq_step, seq_total;
-static char seq_label[16];
 
 #ifdef LUFTFUGL_TRACE_OUTPUT
 static uint32_t output_bytes_pushed, output_bytes_dropped, output_bytes_drained;
@@ -67,12 +64,90 @@ static void trace_output_snapshot(void) {
            (unsigned long)output_bytes_pushed,
            (unsigned long)output_bytes_dropped,
            (unsigned long)output_bytes_drained, queued, out_head, out_tail,
-           uart_is_writable(uart0) ? 1u : 0u);
+           uart_is_writable(uart1) ? 1u : 0u);
   const char *cursor = line;
   while (*cursor)
-    uart_putc_raw(uart0, *cursor++);
+    uart_putc_raw(uart1, *cursor++);
 }
 #endif
+
+#ifdef LUFTFUGL_TRACE_INPUT
+static void trace_raw(const char *text) {
+  while (*text)
+    uart_putc_raw(uart1, *text++);
+}
+
+static void trace_char(char *text, size_t size, char c) {
+  unsigned char byte = (unsigned char)c;
+  if (c == '\r')
+    snprintf(text, size, "\\r");
+  else if (c == '\n')
+    snprintf(text, size, "\\n");
+  else if (c == '\t')
+    snprintf(text, size, "\\t");
+  else if (c == '\\')
+    snprintf(text, size, "\\\\");
+  else if (c == '\'')
+    snprintf(text, size, "\\\'");
+  else if (byte >= 32u && byte <= 126u)
+    snprintf(text, size, "%c", c);
+  else
+    snprintf(text, size, "\\x%02x", byte);
+}
+
+void dbg_trace_input_in(char c) {
+  char printable[8], line[112];
+  trace_char(printable, sizeof printable, c);
+  /* The current console has no prompt or asynchronous action enum. */
+  snprintf(line, sizeof line,
+           "\r\nIN  0x%02x '%s' active=%u plain=%u prompt=0 len=%u action=0\r\n",
+           (unsigned char)c, printable, active ? 1u : 0u,
+           plain_mode ? 1u : 0u, input_len);
+  trace_raw(line);
+}
+
+void dbg_trace_input_out(char c, const char *consumed_by,
+                         const char *submitted) {
+  char printable[8], line[160];
+  trace_char(printable, sizeof printable, c);
+  if (submitted)
+    snprintf(line, sizeof line,
+             "\r\nOUT 0x%02x '%s' consumed_by=%s line=\"%s\"\r\n",
+             (unsigned char)c, printable, consumed_by, submitted);
+  else
+    snprintf(line, sizeof line,
+             "\r\nOUT 0x%02x '%s' consumed_by=%s len=%u\r\n",
+             (unsigned char)c, printable, consumed_by, input_len);
+  trace_raw(line);
+}
+
+static void trace_dispatch(const char *line, const char *command) {
+  char output[144];
+  if (command)
+    snprintf(output, sizeof output,
+             "\r\nDISPATCH line=\"%s\" matched=YES handler=cmd_%s\r\n",
+             line, command);
+  else
+    snprintf(output, sizeof output,
+             "\r\nDISPATCH line=\"%s\" matched=NO\r\n", line);
+  trace_raw(output);
+}
+
+static void trace_result(const char *message) {
+  char output[192];
+  snprintf(output, sizeof output, "\r\nRESULT   \"%s\"\r\n", message);
+  trace_raw(output);
+}
+#endif
+
+static const char *const welcome[] = {
+    " Welcome. To set up the five stations:",
+    "   1. Type \"sel 1\" to choose station 1",
+    "   2. Use \"jog +100\" or \"jog -100\" until it is where you want it",
+    "   3. Type \"save\" to store it",
+    "   4. Repeat for stations 2 to 5",
+    "   5. Type \"export\" and copy the lines into config.h",
+    " Type \"help\" at any time."};
 
 static uint32_t ms_now(void) { return to_ms_since_boot(get_absolute_time()); }
 static const char *state_text(sys_state_t state) {
@@ -110,9 +185,10 @@ void dbg_out_push(const char *text) {
 }
 
 void dbg_out_drain(void) {
-  while (out_tail != out_head && uart_is_writable(uart0)) {
+  while (out_tail != out_head && uart_is_writable(uart1)) {
     uint32_t started = time_us_32();
-    uart_putc_raw(uart0, out_buf[out_tail]);
+    console_diag_note_debug_tx();
+    uart_putc_raw(uart1, out_buf[out_tail]);
     console_diag_note_tx_spin(time_us_32() - started);
     out_tail = (uint16_t)((out_tail + 1u) % DEBUG_OUT_BUFFER);
 #ifdef LUFTFUGL_TRACE_OUTPUT
@@ -132,6 +208,9 @@ static void result(const char *command, const char *outcome,
     snprintf(message, sizeof message, "%s: %s", outcome, detail);
   else
     snprintf(message, sizeof message, "%s", detail);
+#ifdef LUFTFUGL_TRACE_INPUT
+  trace_result(message);
+#endif
   if (plain_mode) {
     snprintf(line, sizeof line, " %02lu:%02lu:%02lu  %-12s %s",
              (unsigned long)(seconds / 3600u),
@@ -230,12 +309,8 @@ void dbg_fields_refresh(void) {
     snprintf(target, sizeof target, "station %u", controller_target());
     snprintf(error, sizeof error, "%+d", (int16_t)target_adc - (int16_t)adc);
   }
-  uint32_t tenths =
-      (uint32_t)adc * DEGREE_TENTHS_PER_TURN / ADC_PER_360_DEG;
-  snprintf(line, sizeof line,
-           "  TARGET   %-12s  ERROR     %-20s ANGLE %lu.%lu deg", target,
-           error, (unsigned long)(tenths / 10u),
-           (unsigned long)(tenths % 10u));
+  snprintf(line, sizeof line, "  TARGET  %-12s  ERROR     %-20s STEP %u counts",
+           target, error, jog_step);
   field(4, line);
   snprintf(line, sizeof line, "  FAULTS  %-12s  DUTY      %-20u DIR  %s",
            controller_state() == ST_FAULT ? "1" : "0", motor_duty(),
@@ -243,16 +318,6 @@ void dbg_fields_refresh(void) {
            : motor_direction() == DIR_REV ? "back"
                                           : "stopped");
   field(5, line);
-  snprintf(line, sizeof line, "  STEP %u  SELECTED %-4s SIM %-3s", jog_step,
-           selected_station >= POS_MIN && selected_station <= POS_MAX
-               ? (selected_station == 1   ? "1"
-                  : selected_station == 2 ? "2"
-                  : selected_station == 3 ? "3"
-                  : selected_station == 4 ? "4"
-                                          : "5")
-               : "none",
-           encoder_sim_active() ? "on" : "off");
-  field(6, line);
   snprintf(line, sizeof line,
            "  STATIONS   1:%u%s  2:%u%s  3:%u%s  4:%u%s  5:%u%s",
            encoder_nominal(1), selected_station == 1 ? " ▶" : "",
@@ -260,38 +325,44 @@ void dbg_fields_refresh(void) {
            encoder_nominal(3), selected_station == 3 ? " ▶" : "",
            encoder_nominal(4), selected_station == 4 ? " ▶" : "",
            encoder_nominal(5), selected_station == 5 ? " ▶" : "");
+  field(7, line);
+  if (selected_station >= POS_MIN && selected_station <= POS_MAX) {
+    int16_t off = (int16_t)adc - (int16_t)encoder_nominal(selected_station);
+    snprintf(
+        line, sizeof line,
+        "             selected: %u     stored %u     now %u     off by %+d",
+        selected_station, encoder_nominal(selected_station), adc, off);
+  } else
+    snprintf(line, sizeof line, "             selected: none     now %u", adc);
   field(8, line);
   snprintf(line, sizeof line, "             %s", guidance(adc));
   field(9, line);
 }
 
-static void dbg_out_printf(const char *format, ...) {
-  char text[CMD_MAX + 48u];
-  va_list args;
-  va_start(args, format);
-  vsnprintf(text, sizeof text, format, args);
-  va_end(args);
-  dbg_out_push(text);
+#ifndef LUFTFUGL_TRACE_INPUT
+static void command_line_draw(void) {
+  char line[DEBUG_COMMAND_MAX + 4u];
+  if (plain_mode)
+    return;
+  snprintf(line, sizeof line, "> %.*s", input_len, input);
+  dbg_out_push("\033[s\033[16;1H");
+  dbg_out_push(line);
+  dbg_out_push("\033[K\033[u");
 }
-
-static void cmd_redraw(void) {
-  cmd[cmd_len] = '\0';
-  dbg_out_printf("\033[s\033[%u;1H Command: %s\033[K\033[u", CMD_ROW, cmd);
-}
+#endif
 
 void dbg_render(void) {
   if (plain_mode)
     return;
-  cmd_len = 0u;
-  cmd[0] = '\0';
   out_head = out_tail = 0u;
   dbg_out_push("\033[2J\033[H\033[?25l");
   memset(status_shadow, 0, sizeof status_shadow);
   frame_phase = 1u;
 }
 
+#ifndef LUFTFUGL_TRACE_INPUT
 static bool status_frame_complete(void) {
-  static const uint8_t rows[] = {1, 3, 4, 5, 6, 8, 9};
+  static const uint8_t rows[] = {1, 3, 4, 5, 7, 8, 9};
   for (size_t i = 0; i < sizeof rows / sizeof rows[0]; ++i)
     if (!status_shadow[rows[i] - 1u][0])
       return false;
@@ -304,13 +375,16 @@ static void frame_continue(void) {
       "----------------",
       "\033[10;1H--------------------------------------------------------------"
       "----------------",
-      "\033[11;1H  adc          show reading       jog +100     move forward",
-      "\033[12;1H  status       show all state     jog -100     move back",
-      "\033[13;1H  sel 3        select station 3   save         store station",
-      "\033[14;1H  move 2       go to station 2    help adc     command detail",
+      "\033[11;1H COMMANDS                      type \"help\" for the full "
+      "list",
+      "\033[12;1H   jog +100   move forward 100 counts    jog -100   move back",
+      "\033[13;1H   step 250   change jog size             sel 3      select "
+      "station 3",
+      "\033[14;1H   save       store selected station      export     print "
+      "all stations",
       "\033[15;1H--------------------------------------------------------------"
       "----------------",
-      "\033[16;1H Command: ",
+      "\033[16;1H COMMAND  > ",
       "\033[17;1H--------------------------------------------------------------"
       "----------------"};
   if (!frame_phase || out_free() < 120u)
@@ -327,7 +401,9 @@ static void frame_continue(void) {
   /* Scrolling setup is the final sequence of the frame draw. */
   dbg_out_push("\033[18;24r\033[18;1H");
   frame_phase = 0u;
+  welcome_line = 0u;
 }
+#endif
 
 static bool parse_long(const char *text, long *value) {
   char *end;
@@ -518,12 +594,8 @@ typedef struct {
 static const help_entry_t help_entries[] = {
     {"help", "help jog", "one command name, or none",
      "Shows examples, limits and plain-language notes."},
-    {"adc", "adc", "read-only", "Shows raw, filtered and classified sensing."},
-    {"status", "status", "read-only", "Shows the full controller state."},
-    {"angle", "angle 60", "0 to 360 degrees and inside the safe range",
-     "With no number, shows the current angle. Large moves use bounded jogs."},
-    {"goto", "goto 1260", "ADC 272 to 2915",
-     "Moves in checked steps of 500 counts or less."},
+    {"diag", "diag", "read-only",
+     "Shows temporary UART receive and main-loop timing counters."},
     {"sel", "sel 3", "station 1 to 5",
      "Chooses which station save will update."},
     {"jog", "jog +100", "10 to 500 counts",
@@ -536,11 +608,15 @@ static const help_entry_t help_entries[] = {
      "Shows stored readings and difference from now."},
     {"export", "export", "read-only",
      "Prints values ready to paste into config.h."},
+    {"reset", "reset stations", "literal word stations",
+     "Restores the five compiled station values."},
     {"move", "move 2", "station 1 to 5", "Uses closed-loop position control."},
     {"home", "home", "no arguments",
      "Returns to station 1 through the guarded home path."},
     {"stop", "stop", "no arguments",
      "Brakes immediately; a period works without Enter."},
+    {"status", "status", "read-only", "Shows the full controller state."},
+    {"adc", "adc", "read-only", "Shows raw, filtered and classified sensing."},
     {"faults", "faults", "read-only", "Shows the last fault and counters."},
     {"clearfault", "clearfault", "fault state only",
      "Clears the fault; position becomes unknown."},
@@ -603,72 +679,8 @@ static const help_entry_t *help_detail(const char *word) {
   return NULL;
 }
 
-static bool sequence_step(void) {
-  int32_t remaining = (int32_t)seq_target_adc - (int32_t)encoder_average();
-  if (remaining > JOG_MAX_COUNTS)
-    remaining = JOG_MAX_COUNTS;
-  else if (remaining < -JOG_MAX_COUNTS)
-    remaining = -JOG_MAX_COUNTS;
-  uint16_t from;
-  if (controller_request_jog((int16_t)remaining, &from) != JOG_OK)
-    return false;
-  pending = PENDING_SEQUENCE;
-  return true;
-}
-
-static void sequence_start(uint16_t target, const char *label) {
-  uint16_t current = encoder_average();
-  uint16_t distance = current > target ? current - target : target - current;
-  if (target < CFG_ADC_SAFE_MIN || target > CFG_ADC_SAFE_MAX) {
-    char detail[80];
-    snprintf(detail, sizeof detail, "%u is outside the safe range %u to %u",
-             target, CFG_ADC_SAFE_MIN, CFG_ADC_SAFE_MAX);
-    result(label, "rejected", detail);
-    return;
-  }
-  if (distance < JOG_MIN_COUNTS) {
-    char detail[64];
-    snprintf(detail, sizeof detail, "already within 10 counts of %u", target);
-    result(label, "rejected", detail);
-    return;
-  }
-  seq_target_adc = target;
-  seq_step = 0u;
-  seq_total = (uint8_t)((distance + JOG_MAX_COUNTS - 1u) / JOG_MAX_COUNTS);
-  strncpy(seq_label, label, sizeof seq_label - 1u);
-  seq_label[sizeof seq_label - 1u] = '\0';
-  char detail[80];
-  snprintf(detail, sizeof detail, "moving %u counts %s in %u steps", distance,
-           target > current ? "forward" : "back", seq_total);
-  result(label, "accepted", detail);
-  if (!sequence_step()) {
-    pending = PENDING_NONE;
-    result(label, "rejected", "controller busy or unsafe state");
-  }
-}
-
-static bool parse_angle_tenths(const char *text, uint16_t *tenths) {
-  char *end;
-  if (!text || !*text)
-    return false;
-  unsigned long whole = strtoul(text, &end, 10);
-  unsigned long fraction = 0u;
-  if (*end == '.') {
-    ++end;
-    if (!isdigit((unsigned char)*end))
-      return false;
-    fraction = (unsigned long)(*end++ - '0');
-  }
-  while (isspace((unsigned char)*end))
-    ++end;
-  if (*end || whole > 360u || (whole == 360u && fraction != 0u))
-    return false;
-  *tenths = (uint16_t)(whole * 10u + fraction);
-  return true;
-}
-
 static void submit(char *typed) {
-  char original[CMD_MAX + 1u], candidates[96], *arg, *word, *save;
+  char original[DEBUG_COMMAND_MAX + 1u], candidates[96], *arg, *word, *save;
   long value;
   char *end = typed + strlen(typed);
   while (end > typed && isspace((unsigned char)end[-1]))
@@ -680,7 +692,16 @@ static void submit(char *typed) {
   word = strtok_r(typed, " \t", &save);
   if (!word)
     return;
+  if (first_command) {
+    first_command = false;
+    welcome_line = (uint8_t)(sizeof welcome / sizeof welcome[0]);
+    if (!plain_mode)
+      dbg_out_push("\033[s\033[18;1H\033[J\033[u");
+  }
   const char *command = resolve(word, candidates, sizeof candidates);
+#ifdef LUFTFUGL_TRACE_INPUT
+  trace_dispatch(original, command);
+#endif
   arg = strtok_r(NULL, "", &save);
   while (arg && isspace((unsigned char)*arg))
     ++arg;
@@ -695,6 +716,7 @@ static void submit(char *typed) {
     return;
   }
   if (arg && (!strcmp(command, "status") || !strcmp(command, "adc") ||
+              !strcmp(command, "diag") ||
               !strcmp(command, "stations") || !strcmp(command, "export") ||
               !strcmp(command, "home") || !strcmp(command, "stop") ||
               !strcmp(command, "clearfault") || !strcmp(command, "arm") ||
@@ -724,14 +746,16 @@ static void submit(char *typed) {
       for (size_t i = sizeof help_entries / sizeof help_entries[0]; i-- > 0;)
         result(help_entries[i].name, "complete", help_entries[i].example);
     }
+  } else if (!strcmp(command, "diag")) {
+    char d[192];
+    console_diag_format(d, sizeof d);
+    result(original, "complete", d);
   } else if (!strcmp(command, "status")) {
-    char d[128];
-    snprintf(d, sizeof d,
-             "state %s pos %u target %u dir %s duty %u adc %u rx-coupled %lu",
+    char d[96];
+    snprintf(d, sizeof d, "state %s pos %u target %u dir %s duty %u adc %u",
              state_text(controller_state()), controller_position(),
              controller_target(), dir_text(motor_direction()), motor_duty(),
-             encoder_average(),
-             (unsigned long)console_renderer_rx_discards());
+             encoder_average());
     result(original, "complete", d);
   } else if (!strcmp(command, "adc")) {
     char d[64];
@@ -745,43 +769,6 @@ static void submit(char *typed) {
                                           : "5")
                               : "?");
     result(original, "complete", d);
-  } else if (!strcmp(command, "angle")) {
-    if (!arg) {
-      uint32_t tenths =
-          (uint32_t)encoder_average() * DEGREE_TENTHS_PER_TURN /
-          ADC_PER_360_DEG;
-      char d[64];
-      snprintf(d, sizeof d, "now at %lu.%lu degrees, ADC %u",
-               (unsigned long)(tenths / 10u), (unsigned long)(tenths % 10u),
-               encoder_average());
-      result(original, "complete", d);
-    } else {
-      uint16_t tenths;
-      if (!parse_angle_tenths(arg, &tenths)) {
-        result(original, "rejected", "angle is outside 0 to 360 degrees");
-        return;
-      }
-      uint16_t target = (uint16_t)((uint32_t)tenths * ADC_PER_360_DEG /
-                                   DEGREE_TENTHS_PER_TURN);
-      if (target < CFG_ADC_SAFE_MIN || target > CFG_ADC_SAFE_MAX) {
-        char d[96];
-        snprintf(d, sizeof d,
-                 "%s degrees is ADC %u, outside the safe range %u to %u", arg,
-                 target, CFG_ADC_SAFE_MIN, CFG_ADC_SAFE_MAX);
-        result(original, "rejected", d);
-      } else
-        sequence_start(target, original);
-    }
-  } else if (!strcmp(command, "goto")) {
-    if (!arg) {
-      char d[48];
-      snprintf(d, sizeof d, "current reading %u", encoder_average());
-      result(original, "complete", d);
-    } else if (!parse_long(arg, &value) || value < 0 ||
-               value > (long)ADC_MAX_VALUE)
-      result(original, "rejected", "ADC must be from 0 to 4095");
-    else
-      sequence_start((uint16_t)value, original);
   } else if (!strcmp(command, "jog")) {
     if (arg && !strcmp(arg, "+"))
       value = jog_step;
@@ -865,6 +852,15 @@ static void submit(char *typed) {
                encoder_nominal(1), encoder_nominal(2), encoder_nominal(3),
                encoder_nominal(4), encoder_nominal(5), encoder_average());
     result(original, "complete", d);
+  } else if (!strcmp(command, "reset")) {
+    if (!arg || strcmp(arg, "stations")) {
+      result(original, "rejected", "type \"reset stations\"");
+      return;
+    }
+    if (controller_request_reset_positions() == MOVE_OK)
+      result(original, "complete", "compiled station values restored");
+    else
+      result(original, "rejected", "controller is moving; type \"stop\" first");
   } else if (!strcmp(command, "export"))
     export_positions(original);
   else if (!strcmp(command, "move")) {
@@ -1119,25 +1115,6 @@ static void submit(char *typed) {
 
 void dbg_event(event_kind_t kind, uint8_t arg) {
   char detail[64];
-  if (kind == EV_JOG_COMPLETE && pending == PENDING_SEQUENCE) {
-    ++seq_step;
-    snprintf(detail, sizeof detail, "step %u of %u, now at %u", seq_step,
-             seq_total, encoder_average());
-    result(seq_label, "complete", detail);
-    if (seq_step < seq_total && sequence_step())
-      return;
-    if (seq_step == seq_total) {
-      uint16_t now = encoder_average();
-      uint16_t error = now > seq_target_adc ? now - seq_target_adc
-                                            : seq_target_adc - now;
-      snprintf(detail, sizeof detail, "done, now at %u, %u counts from target",
-               now, error);
-      result(seq_label, "complete", detail);
-    } else
-      result(seq_label, "failed", "sequence cancelled; controller unavailable");
-    pending = PENDING_NONE;
-    return;
-  }
   if ((kind == EV_JOG_COMPLETE && pending == PENDING_JOG) ||
       (kind == EV_ARRIVE &&
        (pending == PENDING_MOVE || pending == PENDING_HOME))) {
@@ -1155,8 +1132,7 @@ void dbg_event(event_kind_t kind, uint8_t arg) {
                          : kind == EV_FAULT_OVERTRAVEL ? "overtravel"
                          : kind == EV_FAULT_STALL      ? "stall"
                                                        : "direction";
-    result(pending == PENDING_SEQUENCE ? seq_label : pending_text, "failed",
-           reason);
+    result(pending_text, "failed", reason);
     pending = PENDING_NONE;
     return;
   }
@@ -1176,54 +1152,118 @@ void dbg_event(event_kind_t kind, uint8_t arg) {
   dbg_log_push(detail);
 }
 
-static void dbg_execute(char *line) { submit(line); }
-
-void dbg_input_char(char c) {
+void dbg_handle_key(char c) {
+  if (c == 27) {
+    input_len = 0;
+    input_overflow = false;
+    command_dirty = true;
+#ifdef LUFTFUGL_TRACE_INPUT
+    dbg_trace_input_out(c, "ESCAPE", NULL);
+#endif
+    return;
+  }
+  if (c == '\n' && swallow_lf) {
+    swallow_lf = false;
+#ifdef LUFTFUGL_TRACE_INPUT
+    dbg_trace_input_out(c, "DISCARD_LF", NULL);
+#endif
+    return;
+  }
+  if (c != '\n')
+    swallow_lf = false;
   if (c == '\r' || c == '\n') {
-    if (cmd_len) {
-      cmd[cmd_len] = '\0';
-      dbg_execute(cmd);
-      cmd_len = 0;
+    swallow_lf = c == '\r';
+    if (!input_len && !input_overflow) {
+#ifdef LUFTFUGL_TRACE_INPUT
+      dbg_trace_input_out(c, "IGNORED_EMPTY", NULL);
+#endif
+      return;
     }
-    cmd_redraw();
+    input[input_len] = '\0';
+#ifdef LUFTFUGL_TRACE_INPUT
+    char submitted[DEBUG_COMMAND_MAX + 1u];
+    memcpy(submitted, input, input_len + 1u);
+#endif
+    if (plain_mode)
+      dbg_out_push("\r\n");
+    if (input_overflow)
+      result(input, "rejected", "line too long");
+    else
+      submit(input);
+#ifdef LUFTFUGL_TRACE_INPUT
+    dbg_trace_input_out(c, input_overflow ? "DISCARD_OVERFLOW" : "SUBMIT",
+                        submitted);
+#endif
+    input_len = 0;
+    input_overflow = false;
+    command_dirty = true;
     return;
   }
-  if (c == '\b' || c == 0x7f) {
-    if (cmd_len) {
-      cmd_len--;
-      cmd_redraw();
-    }
+  if (c == '\b' || c == 127) {
+    if (input_len)
+      --input_len;
+    command_dirty = true;
+#ifdef LUFTFUGL_TRACE_INPUT
+    dbg_trace_input_out(c, "BACKSPACE", NULL);
+#endif
     return;
   }
-  if (c < 0x20 || c > 0x7e) { cmd_len = 0; cmd_redraw(); return; }
-  if (cmd_len >= CMD_MAX) { cmd_len = 0; cmd_redraw(); return; }
-  cmd[cmd_len++] = c;
-  cmd_redraw();
+  if (c >= 32 && c <= 126) {
+    if (input_len < DEBUG_COMMAND_MAX)
+      input[input_len++] = c;
+    else
+      input_overflow = true;
+    if (plain_mode && echo_enabled) {
+      char text[2] = {c, 0};
+      dbg_out_push(text);
+    } else
+      command_dirty = true;
+#ifdef LUFTFUGL_TRACE_INPUT
+    dbg_trace_input_out(c, input_overflow ? "DISCARD_OVERFLOW" : "CMDLINE",
+                        NULL);
+#endif
+  }
+#ifdef LUFTFUGL_TRACE_INPUT
+  else
+    dbg_trace_input_out(c, "NOWHERE", NULL);
+#endif
 }
 
 void dbg_init(void) {
   cfg_reset();
-  active = plain_mode = armed = false;
+  active = plain_mode = echo_enabled = input_overflow = swallow_lf = armed =
+      false;
+  command_dirty = false;
   selected_station = POS_UNKNOWN;
   jog_step = 100u;
-  cmd_len = 0;
+  input_len = 0;
   out_head = out_tail = 0u;
   pending = PENDING_NONE;
   sim_travel_active = false;
   findmin_phase = 0u;
+  first_command = true;
   frame_phase = 0u;
+  welcome_line = (uint8_t)(sizeof welcome / sizeof welcome[0]);
   next_refresh = 0u;
   memset(status_shadow, 0, sizeof status_shadow);
 }
 static void enter(bool plain) {
   plain_mode = plain;
-  active = true;
-  cmd_len = 0;
-  cmd[0] = '\0';
+  active = echo_enabled = true;
+  input_len = 0;
+  input_overflow = false;
+  command_dirty = false;
+  first_command = true;
+#ifndef LUFTFUGL_TRACE_INPUT
   if (!plain)
     dbg_render();
-  else
-    dbg_out_push(" luftfugl debug; type help\r\n");
+  else {
+    for (size_t i = 0; i < sizeof welcome / sizeof welcome[0]; ++i) {
+      dbg_out_push(welcome[i]);
+      dbg_out_push("\r\n");
+    }
+  }
+#endif
 }
 void dbg_enter(void) { enter(false); }
 void dbg_enter_plain(void) { enter(true); }
@@ -1232,7 +1272,7 @@ void dbg_exit(void) {
 
   /* Leaving the UI must still hand motor and simulation changes to the tick. */
   (void)controller_debug_request(&request);
-  active = armed = false;
+  active = echo_enabled = armed = false;
   sim_travel_active = false;
   findmin_phase = 0u;
   if (!plain_mode)
@@ -1266,13 +1306,28 @@ void dbg_poll(void) {
       pending = PENDING_NONE;
     }
   }
+#ifndef LUFTFUGL_TRACE_INPUT
   if (active && !plain_mode && frame_phase)
     frame_continue();
+  if (active && !plain_mode && !frame_phase && command_dirty &&
+      out_free() > DEBUG_COMMAND_MAX + 32u) {
+    command_line_draw();
+    command_dirty = false;
+  }
+  if (active && !plain_mode && !frame_phase &&
+      welcome_line < sizeof welcome / sizeof welcome[0] && out_free() > 100u) {
+    char cursor[20];
+    snprintf(cursor, sizeof cursor, "\033[%u;1H", 18u + welcome_line);
+    dbg_out_push(cursor);
+    dbg_out_push(welcome[welcome_line++]);
+    dbg_out_push("\033[K");
+  }
   if (active && !plain_mode && !frame_phase &&
       (int32_t)(now - next_refresh) >= 0) {
     dbg_fields_refresh();
     next_refresh = now + DEBUG_REFRESH_MS;
   }
+#endif
   if (active)
     dbg_out_drain();
 }
