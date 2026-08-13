@@ -25,7 +25,7 @@ static uint32_t brake_until_ms;
 static uint16_t motion_start_adc, motion_target_adc, previous_motion_adc;
 static uint16_t jog_remaining;
 static uint8_t passed_mask;
-static bool jog_move;
+static bool jog_move, target_braking;
 #ifdef LUFTFUGL_MONITOR
 static bool adc_move;
 static uint16_t adc_target;
@@ -99,6 +99,7 @@ static void begin_home(uint32_t now) {
   int16_t error = (int16_t)target_adc - (int16_t)current;
   motor_brake();
   jog_move = false;
+  target_braking = false;
 #ifdef LUFTFUGL_MONITOR
   motion_trace_reset(now);
 #endif
@@ -128,6 +129,7 @@ static void begin_move(position_t tgt) {
 #endif
   target = tgt;
   jog_move = false;
+  target_braking = false;
   motion_start_adc = current;
   motion_target_adc = target_adc;
   previous_motion_adc = current;
@@ -146,6 +148,7 @@ static void begin_jog(int16_t delta, uint16_t target_adc) {
 #endif
 
   jog_move = true;
+  target_braking = false;
   target = POS_BETWEEN;
   motion_start_adc = current;
   motion_target_adc = target_adc;
@@ -183,6 +186,7 @@ void controller_init(void) {
   jog_remaining = 0u;
   passed_mask = 0u;
   jog_move = false;
+  target_braking = false;
 #ifdef LUFTFUGL_MONITOR
   adc_move = false;
   adc_target = 0u;
@@ -403,6 +407,7 @@ void controller_tick(void) {
       int16_t error = (int16_t)req.adc - (int16_t)current;
       motion_trace_reset(now);
       adc_move = true;
+      target_braking = false;
       adc_target = req.adc;
       adc_arrival_since = 0u;
       target = POS_BETWEEN;
@@ -553,10 +558,15 @@ void controller_tick(void) {
 
     if (jog_move) {
       motor_drive(last_direction, CFG_DUTY_CREEP);
-    } else if (magnitude > CFG_POS_WINDOW) {
-      motor_drive(direction, speed_for_error(error));
     } else {
-      motor_brake();
+      if (magnitude <= CFG_POS_WINDOW)
+        target_braking = true;
+      /* Once the target window has been reached, reversing to chase filtered
+         drift creates a limit cycle. Hold the short brake until confirmation. */
+      if (target_braking)
+        motor_brake();
+      else
+        motor_drive(direction, speed_for_error(error));
     }
 
 #ifdef LUFTFUGL_MONITOR
