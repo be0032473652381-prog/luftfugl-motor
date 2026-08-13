@@ -41,8 +41,6 @@ static volatile uint16_t out_head, out_tail;
 static uint32_t next_refresh;
 static pending_t pending;
 static char pending_text[DEBUG_COMMAND_MAX + 1u];
-static uint16_t goto_target;
-static uint8_t goto_step, goto_steps;
 static char status_shadow[9][81];
 static bool first_command;
 static uint8_t welcome_line;
@@ -54,7 +52,6 @@ static uint8_t findmin_phase, findmin_duty;
 static direction_t findmin_direction;
 static uint16_t findmin_min, findmin_max, findmin_start, findmin_noise;
 static uint32_t findmin_deadline;
-static uint8_t direction_dump_index, direction_dump_end;
 
 #ifdef LUFTFUGL_TRACE_OUTPUT
 static uint32_t output_bytes_pushed, output_bytes_dropped, output_bytes_drained;
@@ -157,8 +154,8 @@ static const char *const welcome[] = {
 
 static uint32_t ms_now(void) { return to_ms_since_boot(get_absolute_time()); }
 static const char *state_text(sys_state_t state) {
-  static const char *const names[] = {"BOOT",   "IDLE",  "MOVING", "APPROACH",
-                                      "HOMING", "FAULT", "DEBUG"};
+  static const char *const names[] = {"BOOT", "IDLE", "MOVING", "APPROACH",
+                                      "HOMING", "DEBUG"};
   return (unsigned)state < sizeof names / sizeof names[0] ? names[state] : "?";
 }
 static const char *dir_text(direction_t direction) {
@@ -276,10 +273,6 @@ static void position_text(char *text, size_t size, uint16_t adc) {
 
 static const char *guidance(uint16_t adc) {
   static char text[80];
-  if (controller_state() == ST_FAULT)
-    return "type \"clearfault\" then \"home\"";
-  if (!encoder_in_safe_range())
-    return "mechanism is past its limit - jog inward slowly";
   if (selected_station < POS_MIN || selected_station > POS_MAX)
     return "type \"sel 1\" to start setting up station 1";
   int16_t error = (int16_t)encoder_nominal(selected_station) - (int16_t)adc;
@@ -318,8 +311,8 @@ void dbg_fields_refresh(void) {
   snprintf(line, sizeof line, "  TARGET  %-12s  ERROR     %-20s STEP %u counts",
            target, error, jog_step);
   field(4, line);
-  snprintf(line, sizeof line, "  FAULTS  %-12s  DUTY      %-20u DIR  %s",
-           controller_state() == ST_FAULT ? "1" : "0", motor_duty(),
+  snprintf(line, sizeof line, "  LIMITS  %-12s  DUTY      %-20u DIR  %s",
+           "none", motor_duty(),
            motor_direction() == DIR_FWD   ? "forward"
            : motor_direction() == DIR_REV ? "back"
                                           : "stopped");
@@ -436,67 +429,23 @@ static void print_angle(char *text, size_t size, uint16_t counts) {
   snprintf(text, size, "%u.%u", tenths / 10u, tenths % 10u);
 }
 
-static bool goto_issue_step(const char *command) {
-  uint16_t current = encoder_average();
-  int32_t remaining = (int32_t)goto_target - (int32_t)current;
-  uint16_t magnitude = (uint16_t)(remaining < 0 ? -remaining : remaining);
-  uint8_t steps_left = (uint8_t)(goto_steps - goto_step);
-  if (magnitude < JOG_MIN_COUNTS) {
-    char detail[64];
-    snprintf(detail, sizeof detail, "done, adc %u, %u counts from target",
-             current, magnitude);
-    result(command, "complete", detail);
-    pending = PENDING_NONE;
-    return false;
-  }
-  int32_t delta = remaining / steps_left;
-  if (delta == 0)
-    delta = remaining > 0 ? JOG_MIN_COUNTS : -(int32_t)JOG_MIN_COUNTS;
-  if (delta > CFG_JOG_MAX_COUNTS)
-    delta = CFG_JOG_MAX_COUNTS;
-  if (delta < -(int32_t)CFG_JOG_MAX_COUNTS)
-    delta = -(int32_t)CFG_JOG_MAX_COUNTS;
-  uint16_t from;
-  jog_result_t request = controller_request_jog((int16_t)delta, &from);
-  if (request != JOG_OK) {
-    result(command, "failed",
-           request == JOG_ENDSTOP      ? "next step is outside the safe range"
-           : request == JOG_OVERTRAVEL ? "current ADC is outside the safe range"
-           : request == JOG_BUSY       ? "controller became busy"
-           : request == JOG_FAULT      ? "controller faulted"
-                                       : "next step is below the jog minimum");
-    pending = PENDING_NONE;
-    return false;
-  }
-  ++goto_step;
-  return true;
-}
-
 static void print_limits(const char *command) {
-  char lines[9][80], angle[12];
+  char lines[7][80], angle[12];
   uint16_t current = encoder_average();
-  uint16_t span = (uint16_t)(CFG_ADC_SAFE_MAX - CFG_ADC_SAFE_MIN);
-  print_angle(angle, sizeof angle, span);
   snprintf(lines[0], sizeof lines[0], "ADC RANGE");
-  snprintf(lines[1], sizeof lines[1], "  hardware        0 .. %u      12-bit, 0 to 3.3 V", ADC_MAX_VALUE);
-  snprintf(lines[2], sizeof lines[2], "  safe range      %u .. %u    %u counts, %s deg", CFG_ADC_SAFE_MIN, CFG_ADC_SAFE_MAX, span, angle);
-  snprintf(lines[3], sizeof lines[3], "  margin below    %u counts below station 1", encoder_nominal(1) - CFG_ADC_SAFE_MIN);
-  snprintf(lines[4], sizeof lines[4], "  margin above    %u counts above station 5", CFG_ADC_SAFE_MAX - encoder_nominal(5));
+  snprintf(lines[1], sizeof lines[1], "  valid travel    0 .. %u      full 12-bit ADC range", ADC_MAX_VALUE);
+  snprintf(lines[2], sizeof lines[2], "  motion limits   none enforced");
+  snprintf(lines[3], sizeof lines[3], "  movement        linear in ADC value, not wrap-aware");
   print_angle(angle, sizeof angle, current);
-  snprintf(lines[5], sizeof lines[5], "  current         %u           %s deg", current, angle);
+  snprintf(lines[4], sizeof lines[4], "  current         %u           %s deg", current, angle);
   print_angle(angle, sizeof angle, CFG_POS_WINDOW);
-  snprintf(lines[6], sizeof lines[6], "  position window %u counts      %s deg either side of a station", CFG_POS_WINDOW, angle);
-  snprintf(lines[7], sizeof lines[7], "  jog range       %u .. %u counts", JOG_MIN_COUNTS, CFG_JOG_MAX_COUNTS);
-  if (CFG_REVERSE_DELTA == 0u)
-    snprintf(lines[8], sizeof lines[8], "  direction check disabled");
-  else
-    snprintf(lines[8], sizeof lines[8],
-             "  direction check %u counts away from best", CFG_REVERSE_DELTA);
+  snprintf(lines[5], sizeof lines[5], "  position window %u counts      %s deg either side", CFG_POS_WINDOW, angle);
+  snprintf(lines[6], sizeof lines[6], "  jog command     -%u .. +%u counts, one request", ADC_MAX_VALUE, ADC_MAX_VALUE);
   if (plain_mode) {
-    for (size_t i = 0; i < 9; ++i)
+    for (size_t i = 0; i < 7; ++i)
       result(i ? "" : command, "complete", lines[i]);
   } else {
-    for (size_t i = 9; i-- > 0;)
+    for (size_t i = 7; i-- > 0;)
       result(i ? "" : command, "complete", lines[i]);
   }
 }
@@ -548,7 +497,7 @@ static bool save_position(position_t station, const char *command) {
   move_result_t request = controller_request_setpos(station, adc);
   if (request != MOVE_OK) {
     result(command, "rejected",
-           request == MOVE_BUSY ? "controller busy" : "controller fault");
+           request == MOVE_BUSY ? "controller busy" : "invalid station data");
     return false;
   }
   char detail[48];
@@ -567,8 +516,7 @@ static bool cfg_update(const char *key, long value) {
        !strcmp(key, "APPROACH_COUNTS")) &&
       value > (long)ADC_MAX_VALUE)
     return false;
-  if (strcmp(key, "TIMEOUT_STEP_MS") && strcmp(key, "TIMEOUT_HOME_MS") &&
-      value > UINT16_MAX)
+  if (value > UINT16_MAX)
     return false;
   memcpy(&next, (const void *)&cfg, sizeof next);
   if (!strcmp(key, "DUTY_NORMAL"))
@@ -583,31 +531,15 @@ static bool cfg_update(const char *key, long value) {
     next.pos_window = (uint16_t)value;
   else if (!strcmp(key, "APPROACH_COUNTS"))
     next.approach_counts = (uint16_t)value;
-  else if (!strcmp(key, "ADC_SAFE_MIN"))
-    next.adc_safe_min = (uint16_t)value;
-  else if (!strcmp(key, "ADC_SAFE_MAX"))
-    next.adc_safe_max = (uint16_t)value;
-  else if (!strcmp(key, "STALL_DELTA"))
-    next.stall_delta = (uint16_t)value;
-  else if (!strcmp(key, "STALL_WINDOW_MS"))
-    next.stall_window_ms = (uint16_t)value;
-  else if (!strcmp(key, "REVERSE_DELTA"))
-    next.reverse_delta = (uint16_t)value;
   else if (!strcmp(key, "DEBOUNCE_MS"))
     next.debounce_ms = (uint16_t)value;
   else if (!strcmp(key, "BRAKE_HOLD_MS"))
     next.brake_hold_ms = (uint16_t)value;
-  else if (!strcmp(key, "TIMEOUT_STEP_MS"))
-    next.timeout_step_ms = (uint32_t)value;
-  else if (!strcmp(key, "TIMEOUT_HOME_MS"))
-    next.timeout_home_ms = (uint32_t)value;
   else
     return false;
   if (next.duty_min > next.duty_creep || next.duty_creep > next.duty_approach ||
-      next.duty_approach > next.duty_normal ||
-      next.adc_safe_min >= next.adc_safe_max ||
-      next.adc_safe_max > ADC_MAX_VALUE || next.debounce_ms == 0u ||
-      next.brake_hold_ms == 0u || next.stall_window_ms == 0u)
+      next.duty_approach > next.duty_normal || next.debounce_ms == 0u ||
+      next.brake_hold_ms == 0u)
     return false;
   memcpy((void *)&cfg, &next, sizeof next);
   return true;
@@ -632,12 +564,6 @@ static bool findmin_pulse(void) {
 static void findmin_poll(uint32_t now) {
   if (!findmin_phase)
     return;
-  if (!encoder_in_safe_range()) {
-    (void)controller_request(REQ_STOP, 0);
-    result("findmin", "failed", "stopped because the safe range was reached");
-    findmin_phase = 0u;
-    return;
-  }
   findmin_sample();
   if ((int32_t)(now - findmin_deadline) < 0)
     return;
@@ -705,7 +631,7 @@ static const help_entry_t help_entries[] = {
      "Shows temporary UART receive and main-loop timing counters."},
     {"sel", "sel 3", "station 1 to 5",
      "Chooses which station save will update."},
-    {"jog", "jog +100", "10 to 500 counts",
+    {"jog", "jog +2000", "-4095 to +4095 counts",
      "Creep speed only; 100 counts is roughly 7 degrees."},
     {"step", "step 250", "10, 25, 100, 250 or 500",
      "Changes the suggested calibration step."},
@@ -723,18 +649,17 @@ static const help_entry_t help_entries[] = {
      "Restarts into the USB bootloader for recovery."},
     {"move", "move 2", "station 1 to 5", "Uses closed-loop position control."},
     {"pos", "pos 3", "station 1 to 5",
-     "Alias for move; uses closed-loop position control and limit checks."},
-    {"goto", "goto 1260", "safe ADC range; at least 10 counts away",
-     "Splits the trip into safe jogs of at most 500 counts; stop cancels the rest."},
+     "Alias for move; uses closed-loop position control."},
+    {"goto", "goto 4000", "ADC range 0 to 4095",
+     "Moves directly to one raw ADC target; movement is not wrap-aware."},
     {"home", "home", "no arguments",
      "Returns to station 1 through the guarded home path."},
     {"stop", "stop", "no arguments",
      "Brakes immediately; a period works without Enter."},
     {"status", "status", "read-only", "Shows the full controller state."},
     {"adc", "adc", "read-only", "Shows raw, filtered and classified sensing."},
-    {"faults", "faults", "read-only", "Shows the last fault and counters."},
-    {"clearfault", "clearfault", "fault state only",
-     "Clears the fault; position becomes unknown."},
+    {"angle", "angle", "read-only",
+     "Shows the filtered ADC reading converted to degrees."},
     {"selftest", "selftest", "no motion",
      "Checks configuration, ADC and the 1 kHz tick."},
     {"tick", "tick", "read-only", "Shows loop timing and watchdog health."},
@@ -831,13 +756,14 @@ static void submit(char *typed) {
     return;
   }
   if (arg && (!strcmp(command, "status") || !strcmp(command, "adc") ||
+              !strcmp(command, "angle") ||
               !strcmp(command, "diag") ||
               !strcmp(command, "stations") || !strcmp(command, "limits") ||
               !strcmp(command, "export") ||
               !strcmp(command, "home") || !strcmp(command, "stop") ||
-              !strcmp(command, "clearfault") || !strcmp(command, "arm") ||
+              !strcmp(command, "arm") ||
               !strcmp(command, "disarm") || !strcmp(command, "selftest") ||
-              !strcmp(command, "faults") || !strcmp(command, "tick") ||
+              !strcmp(command, "tick") ||
               !strcmp(command, "pins") || !strcmp(command, "pwm") ||
               !strcmp(command, "findmin") || !strcmp(command, "plain") ||
               !strcmp(command, "bootsel") || !strcmp(command, "exit"))) {
@@ -885,6 +811,12 @@ static void submit(char *typed) {
                                           : "5")
                               : "?");
     result(original, "complete", d);
+  } else if (!strcmp(command, "angle")) {
+    char angle[12], detail[48];
+    uint16_t adc = encoder_average();
+    print_angle(angle, sizeof angle, adc);
+    snprintf(detail, sizeof detail, "adc %u = %s degrees", adc, angle);
+    result(original, "complete", detail);
   } else if (!strcmp(command, "jog")) {
     if (arg && !strcmp(arg, "+"))
       value = jog_step;
@@ -894,14 +826,10 @@ static void submit(char *typed) {
       result(original, "rejected", "type a distance, for example \"jog +100\"");
       return;
     }
-    if (labs(value) < JOG_MIN_COUNTS) {
-      result(original, "rejected", "below minimum 10 counts; try \"jog +10\"");
-      return;
-    }
-    if (labs(value) > CFG_JOG_MAX_COUNTS) {
+    if (value < -(long)ADC_MAX_VALUE || value > (long)ADC_MAX_VALUE) {
       char detail[80];
-      snprintf(detail, sizeof detail, "%ld is too far, the most is %u",
-               labs(value), CFG_JOG_MAX_COUNTS);
+      snprintf(detail, sizeof detail, "%ld is outside -%u to +%u", value,
+               ADC_MAX_VALUE, ADC_MAX_VALUE);
       result(original, "rejected", detail);
       return;
     }
@@ -913,11 +841,7 @@ static void submit(char *typed) {
       remember_pending(PENDING_JOG, original);
     } else
       result(original, "rejected",
-             r == JOG_ENDSTOP      ? "endpoint outside safe range"
-             : r == JOG_OVERTRAVEL ? "current ADC outside safe range"
-             : r == JOG_BUSY       ? "controller busy"
-             : r == JOG_FAULT      ? "controller fault"
-                                   : "invalid jog");
+             r == JOG_BUSY ? "controller busy" : "invalid jog");
   } else if (!strcmp(command, "step")) {
     if (!parse_long(arg, &value) ||
         (value != 10 && value != 25 && value != 100 && value != 250 &&
@@ -1004,49 +928,34 @@ static void submit(char *typed) {
              r == MOVE_BUSY          ? "already moving"
              : r == MOVE_ALREADY     ? "already at target"
              : r == MOVE_POS_UNKNOWN ? "position unknown"
-             : r == MOVE_ENDSTOP     ? "at end-stop"
-             : r == MOVE_FAULT       ? "faulted, use clearfault"
-                                     : "controller fault");
+                                     : "invalid target");
   } else if (!strcmp(command, "goto")) {
     if (!parse_long(arg, &value) || value < 0 || value > (long)ADC_MAX_VALUE) {
       result(original, "rejected", "type an ADC reading, for example \"goto 1260\"");
       return;
     }
-    if (value < CFG_ADC_SAFE_MIN || value > CFG_ADC_SAFE_MAX) {
-      char detail[80];
-      snprintf(detail, sizeof detail, "%ld is outside the safe range %u to %u",
-               value, CFG_ADC_SAFE_MIN, CFG_ADC_SAFE_MAX);
-      result(original, "rejected", detail);
-      return;
-    }
     uint16_t current = encoder_average();
     uint16_t magnitude = (uint16_t)(value > current ? value - current : current - value);
-    if (magnitude < JOG_MIN_COUNTS) {
+    if (magnitude <= CFG_POS_WINDOW) {
       char detail[64];
-      snprintf(detail, sizeof detail, "already within %u counts of %ld", JOG_MIN_COUNTS, value);
-      result(original, "rejected", detail);
-      return;
-    }
-    if (controller_state() == ST_FAULT) {
-      result(original, "rejected", "faulted, use clearfault");
+      snprintf(detail, sizeof detail, "already within position window of %ld", value);
+      result(original, "complete", detail);
       return;
     }
     if (controller_state() != ST_IDLE) {
       result(original, "rejected", "already moving");
       return;
     }
-    goto_target = (uint16_t)value;
-    goto_steps =
-        (uint8_t)((magnitude + CFG_JOG_MAX_COUNTS - 1u) /
-                  CFG_JOG_MAX_COUNTS);
-    goto_step = 0u;
-    remember_pending(PENDING_GOTO, original);
-    char detail[80];
-    snprintf(detail, sizeof detail, "moving, %u counts %s in %u step%s", magnitude,
-             value > current ? "forward" : "back", goto_steps,
-             goto_steps == 1u ? "" : "s");
-    result(original, "accepted", detail);
-    (void)goto_issue_step(original);
+    move_result_t r = controller_debug_goto_adc((uint16_t)value);
+    if (r == MOVE_OK) {
+      char detail[80];
+      snprintf(detail, sizeof detail, "moving directly to adc %ld, %u counts %s",
+               value, magnitude, value > current ? "forward" : "back");
+      result(original, "accepted", detail);
+      remember_pending(PENDING_GOTO, original);
+    } else
+      result(original, "rejected", r == MOVE_BUSY ? "controller busy"
+                                                   : "invalid target");
   } else if (!strcmp(command, "home")) {
     (void)controller_request(REQ_HOME, 0);
     result(original, "accepted", "homing");
@@ -1058,34 +967,6 @@ static void submit(char *typed) {
     findmin_phase = 0u;
     armed = false;
     result(original, "complete", "brake requested");
-  } else if (!strcmp(command, "clearfault")) {
-    dbg_request_t r = {.op = DBG_OP_FAULT_CLEAR};
-    if (controller_state() != ST_FAULT)
-      result(original, "rejected", "there is no fault to clear");
-    else if (controller_debug_request(&r))
-      result(original, "complete", "fault cleared; position unknown");
-    else
-      result(original, "rejected", "controller busy");
-  } else if (!strcmp(command, "faults")) {
-    fault_record_t fault;
-    dbg_counters_t counters;
-    char detail[128];
-    controller_fault_get(&fault);
-    controller_counters_get(&counters);
-    if (!counters.faults)
-      snprintf(detail, sizeof detail,
-               "no faults; timeouts %lu, limit rejects %lu",
-               (unsigned long)counters.moves_timeout,
-               (unsigned long)counters.limit_rejects);
-    else
-      snprintf(detail, sizeof detail,
-               "last fault event %u at %lums; faults %lu, timeouts %lu, limit "
-               "rejects %lu",
-               fault.kind, (unsigned long)fault.ms,
-               (unsigned long)counters.faults,
-               (unsigned long)counters.moves_timeout,
-               (unsigned long)counters.limit_rejects);
-    result(original, "complete", detail);
   } else if (!strcmp(command, "tick")) {
     tick_stats_t timing;
     char detail[112];
@@ -1213,15 +1094,10 @@ static void submit(char *typed) {
     if (!armed)
       result(original, "rejected",
              "manual drive is not armed; type \"arm\" first");
-    else if (!encoder_in_safe_range())
-      result(original, "rejected", "mechanism is outside the safe range");
     else {
       findmin_phase = 1u;
-      findmin_direction =
-          encoder_average() >
-                  (uint16_t)((CFG_ADC_SAFE_MIN + CFG_ADC_SAFE_MAX) / 2u)
-              ? DIR_REV
-              : DIR_FWD;
+      findmin_direction = encoder_average() > ADC_MAX_VALUE / 2u ? DIR_REV
+                                                                 : DIR_FWD;
       findmin_duty = CFG_DUTY_MIN > DEBUG_FINDMIN_DUTY_OFFSET
                          ? CFG_DUTY_MIN - DEBUG_FINDMIN_DUTY_OFFSET
                          : 0u;
@@ -1244,11 +1120,10 @@ static void submit(char *typed) {
                   CFG_DUTY_CREEP <= CFG_DUTY_APPROACH &&
                   CFG_DUTY_APPROACH <= CFG_DUTY_NORMAL;
     bool pass = encoder_raw() <= ADC_MAX_VALUE && ordered && duties &&
-                CFG_TIMEOUT_HOME_MS >= 4u * CFG_TIMEOUT_STEP_MS &&
                 timing.count != 0u;
     result(
         original, pass ? "complete" : "failed",
-        pass ? "static checks passed: ADC, stations, duties, timeouts and tick"
+        pass ? "static checks passed: ADC, stations, duties and tick"
              : "a static check failed; use adc, stations, cfg and tick to "
                "inspect it");
   } else if (!strcmp(command, "cfg")) {
@@ -1256,10 +1131,9 @@ static void submit(char *typed) {
       char d[160];
       snprintf(d, sizeof d,
                "DUTY_NORMAL=%u DUTY_APPROACH=%u DUTY_CREEP=%u POS_WINDOW=%u "
-               "ADC_SAFE_MIN=%u ADC_SAFE_MAX=%u REVERSE_DELTA=%u",
+               "APPROACH_COUNTS=%u",
                CFG_DUTY_NORMAL, CFG_DUTY_APPROACH, CFG_DUTY_CREEP,
-               CFG_POS_WINDOW, CFG_ADC_SAFE_MIN, CFG_ADC_SAFE_MAX,
-               CFG_REVERSE_DELTA);
+               CFG_POS_WINDOW, CFG_APPROACH_COUNTS);
       result(original, "complete", d);
     } else {
       char *key = strtok_r(arg, " \t", &save);
@@ -1285,31 +1159,10 @@ static void submit(char *typed) {
 
 void dbg_event(event_kind_t kind, uint8_t arg) {
   char detail[64];
-  if (kind == EV_FAULT_DIRECTION) {
-    uint8_t start = controller_history_count();
-    uint8_t samples = 0u;
-    direction_dump_end = start;
-    while (start && samples < 40u) {
-      hist_entry_t entry;
-      --start;
-      if (controller_history_get(start, &entry) && entry.kind >= 2u)
-        ++samples;
-    }
-    direction_dump_index = start;
-  }
   if (kind == EV_JOG_COMPLETE && pending == PENDING_GOTO) {
-    snprintf(detail, sizeof detail, "step %u of %u, adc %u", goto_step,
-             goto_steps, encoder_average());
+    snprintf(detail, sizeof detail, "done, adc %u", encoder_average());
     result(pending_text, "complete", detail);
-    if (goto_step == goto_steps) {
-      uint16_t adc = encoder_average();
-      uint16_t error = adc > goto_target ? adc - goto_target : goto_target - adc;
-      snprintf(detail, sizeof detail, "done, adc %u, %u counts from target",
-               adc, error);
-      result(pending_text, "complete", detail);
-      pending = PENDING_NONE;
-    } else
-      (void)goto_issue_step(pending_text);
+    pending = PENDING_NONE;
     return;
   }
   if ((kind == EV_JOG_COMPLETE && pending == PENDING_JOG) ||
@@ -1327,27 +1180,9 @@ void dbg_event(event_kind_t kind, uint8_t arg) {
     pending = PENDING_NONE;
     return;
   }
-  if (pending != PENDING_NONE &&
-      (kind == EV_TIMEOUT || kind == EV_FAULT_HOME ||
-       kind == EV_FAULT_OVERTRAVEL || kind == EV_FAULT_STALL ||
-       kind == EV_FAULT_DIRECTION)) {
-    const char *reason = kind == EV_TIMEOUT            ? "timeout"
-                         : kind == EV_FAULT_HOME       ? "home fault"
-                         : kind == EV_FAULT_OVERTRAVEL ? "overtravel"
-                         : kind == EV_FAULT_STALL      ? "stall"
-                                                       : "direction";
-    result(pending_text, "failed", reason);
-    pending = PENDING_NONE;
-    return;
-  }
   const char *name = kind == EV_PASS               ? "PASS"
                      : kind == EV_ARRIVE           ? "ARR"
-                     : kind == EV_TIMEOUT          ? "ERR timeout"
-                     : kind == EV_FAULT_HOME       ? "ERR home fault"
                      : kind == EV_HOMING           ? "homing"
-                     : kind == EV_FAULT_OVERTRAVEL ? "ERR overtravel"
-                     : kind == EV_FAULT_STALL      ? "ERR stall"
-                     : kind == EV_FAULT_DIRECTION  ? "ERR direction"
                      : kind == EV_STOPPED_UNKNOWN  ? "stopped, position unknown"
                                                    : "event";
   snprintf(detail, sizeof detail, "%s%s%u", name,
@@ -1445,7 +1280,6 @@ void dbg_init(void) {
   pending = PENDING_NONE;
   sim_travel_active = false;
   findmin_phase = 0u;
-  direction_dump_index = direction_dump_end = 0u;
   first_command = true;
   frame_phase = 0u;
   welcome_line = (uint8_t)(sizeof welcome / sizeof welcome[0]);
@@ -1488,22 +1322,6 @@ bool dbg_plain_mode(void) { return plain_mode; }
 bool dbg_motor_armed(void) { return armed; }
 void dbg_poll(void) {
   uint32_t now = ms_now();
-  if (direction_dump_index < direction_dump_end && !dbg_out_pending()) {
-    hist_entry_t entry;
-    while (direction_dump_index < direction_dump_end) {
-      bool available = controller_history_get(direction_dump_index++, &entry);
-      if (available && entry.kind >= 2u) {
-        char line[112];
-        snprintf(line, sizeof line,
-                 "\r\nDIRTRACE tick=%lu magnitude=%u best=%u%s\r\n",
-                 (unsigned long)entry.tick, entry.magnitude,
-                 entry.best_error_magnitude,
-                 entry.kind == 3u ? " FAULT" : "");
-        dbg_out_push(line);
-        break;
-      }
-    }
-  }
   findmin_poll(now);
   if (sim_travel_active) {
     uint32_t elapsed = now - sim_travel_started;

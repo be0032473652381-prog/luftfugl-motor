@@ -29,23 +29,13 @@
 #define POS_4_ADC 1138 /* 100 deg */
 #define POS_5_ADC 1479 /* 130 deg */
 #define POS_WINDOW 80
-#define APPROACH_COUNTS 200
-#define ADC_SAFE_MIN 50
-#define ADC_SAFE_MAX 4045
-#define STALL_DELTA 8
-#define STALL_WINDOW_MS 300
-#define REVERSE_DELTA 30
+#define APPROACH_COUNTS 100
 
 #define TICK_HZ 1000
 #define TICK_PERIOD_US 1000u
 #define FILTER_DEPTH 5
 #define DEBOUNCE_MS 12
 #define BRAKE_HOLD_MS 100
-#define TIMEOUT_STEP_MS 1500
-#define TIMEOUT_HOME_MS 6000
-#define JOG_MIN_COUNTS 10
-#define JOG_MAX_COUNTS 500
-#define JOG_TIMEOUT_MS 3000
 
 #define CONSOLE_LINE_MAX 32
 #define EVENT_QUEUE_DEPTH 8
@@ -125,7 +115,6 @@ typedef enum {
   ST_MOVING,
   ST_APPROACH,
   ST_HOMING,
-  ST_FAULT,
 #ifdef LUFTFUGL_DEBUG
   ST_DEBUG,
 #endif
@@ -143,29 +132,19 @@ typedef enum {
   MOVE_OK = 0,
   MOVE_ALREADY,
   MOVE_INVALID,
-  MOVE_ENDSTOP,
   MOVE_BUSY,
-  MOVE_POS_UNKNOWN,
-  MOVE_FAULT
+  MOVE_POS_UNKNOWN
 } move_result_t;
 typedef enum {
   JOG_OK = 0,
   JOG_INVALID,
-  JOG_ENDSTOP,
-  JOG_OVERTRAVEL,
-  JOG_BUSY,
-  JOG_FAULT
+  JOG_BUSY
 } jog_result_t;
 typedef enum {
   EV_PASS = 0,
   EV_ARRIVE,
-  EV_TIMEOUT,
-  EV_FAULT_HOME,
   EV_HOMING,
   EV_STOPPED_UNKNOWN,
-  EV_FAULT_OVERTRAVEL,
-  EV_FAULT_STALL,
-  EV_FAULT_DIRECTION,
   EV_JOG_COMPLETE
 } event_kind_t;
 
@@ -178,7 +157,6 @@ typedef enum {
   DBG_OP_BRAKE,
   DBG_OP_COAST,
   DBG_OP_STANDBY,
-  DBG_OP_FAULT_CLEAR,
   DBG_OP_SIM_ENABLE,
   DBG_OP_SIM_SET,
   DBG_OP_GPIO_SET,
@@ -196,11 +174,8 @@ typedef struct {
 typedef struct {
   uint8_t duty_normal, duty_approach, duty_creep, duty_min;
   uint16_t pos_1_adc, pos_2_adc, pos_3_adc, pos_4_adc, pos_5_adc;
-  uint16_t pos_window, approach_counts, adc_safe_min, adc_safe_max;
-  uint16_t stall_delta, stall_window_ms, reverse_delta;
+  uint16_t pos_window, approach_counts;
   uint16_t debounce_ms, brake_hold_ms;
-  uint16_t jog_max_counts;
-  uint32_t timeout_step_ms, timeout_home_ms;
 } cfg_t;
 extern volatile cfg_t cfg;
 void cfg_reset(void);
@@ -215,16 +190,8 @@ void cfg_reset(void);
 #define CFG_POS_5_ADC (cfg.pos_5_adc)
 #define CFG_POS_WINDOW (cfg.pos_window)
 #define CFG_APPROACH_COUNTS (cfg.approach_counts)
-#define CFG_ADC_SAFE_MIN (cfg.adc_safe_min)
-#define CFG_ADC_SAFE_MAX (cfg.adc_safe_max)
-#define CFG_STALL_DELTA (cfg.stall_delta)
-#define CFG_STALL_WINDOW_MS (cfg.stall_window_ms)
-#define CFG_REVERSE_DELTA (cfg.reverse_delta)
 #define CFG_DEBOUNCE_MS (cfg.debounce_ms)
 #define CFG_BRAKE_HOLD_MS (cfg.brake_hold_ms)
-#define CFG_JOG_MAX_COUNTS (cfg.jog_max_counts)
-#define CFG_TIMEOUT_STEP_MS (cfg.timeout_step_ms)
-#define CFG_TIMEOUT_HOME_MS (cfg.timeout_home_ms)
 #else
 #define CFG_DUTY_NORMAL DUTY_NORMAL
 #define CFG_DUTY_APPROACH DUTY_APPROACH
@@ -237,16 +204,8 @@ void cfg_reset(void);
 #define CFG_POS_5_ADC POS_5_ADC
 #define CFG_POS_WINDOW POS_WINDOW
 #define CFG_APPROACH_COUNTS APPROACH_COUNTS
-#define CFG_ADC_SAFE_MIN ADC_SAFE_MIN
-#define CFG_ADC_SAFE_MAX ADC_SAFE_MAX
-#define CFG_STALL_DELTA STALL_DELTA
-#define CFG_STALL_WINDOW_MS STALL_WINDOW_MS
-#define CFG_REVERSE_DELTA REVERSE_DELTA
 #define CFG_DEBOUNCE_MS DEBOUNCE_MS
 #define CFG_BRAKE_HOLD_MS BRAKE_HOLD_MS
-#define CFG_JOG_MAX_COUNTS JOG_MAX_COUNTS
-#define CFG_TIMEOUT_STEP_MS TIMEOUT_STEP_MS
-#define CFG_TIMEOUT_HOME_MS TIMEOUT_HOME_MS
 #endif
 
 #endif

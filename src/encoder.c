@@ -76,8 +76,7 @@ void encoder_init(void) {
   }
   raw_value = samples[FILTER_DEPTH - 1u];
   average_value = (uint16_t)(sample_sum / FILTER_DEPTH);
-  instant_position =
-      encoder_in_safe_range() ? position_at(average_value) : POS_UNKNOWN;
+  instant_position = position_at(average_value);
   confirmed_position = instant_position;
   stable_ms = CFG_DEBOUNCE_MS;
   confirmed_changed = false;
@@ -99,8 +98,7 @@ void encoder_tick(void) {
   sample_sum += raw_value;
   sample_index = (uint8_t)((sample_index + 1u) % FILTER_DEPTH);
   average_value = (uint16_t)(sample_sum / FILTER_DEPTH);
-  position_t classified =
-      encoder_in_safe_range() ? position_at(average_value) : POS_UNKNOWN;
+  position_t classified = position_at(average_value);
   if (classified != instant_position) {
     instant_position = classified;
     stable_ms = 1;
@@ -123,9 +121,6 @@ bool encoder_take_change(position_t *out) {
   *out = confirmed_position;
   confirmed_changed = false;
   return true;
-}
-bool encoder_in_safe_range(void) {
-  return average_value >= CFG_ADC_SAFE_MIN && average_value <= CFG_ADC_SAFE_MAX;
 }
 int16_t encoder_error_to(position_t target) {
   return (int16_t)encoder_nominal(target) - (int16_t)average_value;

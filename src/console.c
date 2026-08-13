@@ -74,7 +74,7 @@ static void write_line(const char *text) {
 }
 static const char *state_name(sys_state_t state) {
   static const char *const names[] = {
-      "BOOT",  "IDLE", "MOVING", "APPROACH", "HOMING", "FAULT",
+      "BOOT", "IDLE", "MOVING", "APPROACH", "HOMING",
 #ifdef LUFTFUGL_MONITOR
       "DEBUG",
 #endif
@@ -137,10 +137,7 @@ static void handle_move(char *argument) {
     write_line("ERR: invalid target");
     return;
   }
-  if ((controller_position() == POS_MIN && target < POS_MIN) ||
-      (controller_position() == POS_MAX && target > POS_MAX))
-    result = MOVE_ENDSTOP;
-  else if (target < POS_MIN || target > POS_MAX)
+  if (target < POS_MIN || target > POS_MAX)
     result = MOVE_INVALID;
   else
     result = controller_request(REQ_MOVE, (position_t)target);
@@ -154,9 +151,6 @@ static void handle_move(char *argument) {
   case MOVE_INVALID:
     snprintf(output, sizeof output, "ERR: invalid target");
     break;
-  case MOVE_ENDSTOP:
-    snprintf(output, sizeof output, "ERR: at end-stop");
-    break;
   case MOVE_BUSY:
     snprintf(output, sizeof output, "ERR: busy");
     break;
@@ -164,7 +158,7 @@ static void handle_move(char *argument) {
     snprintf(output, sizeof output, "ERR: position unknown");
     break;
   default:
-    snprintf(output, sizeof output, "ERR: fault");
+    snprintf(output, sizeof output, "ERR: invalid target");
     break;
   }
   write_line(output);
@@ -181,8 +175,8 @@ static void handle_jog(char *argument) {
   delta = strtol(argument, &end, 10);
   while (isspace((unsigned char)*end))
     end++;
-  if (end == argument || *end || delta < -(long)CFG_JOG_MAX_COUNTS ||
-      delta > (long)CFG_JOG_MAX_COUNTS) {
+  if (end == argument || *end || delta < -(long)ADC_MAX_VALUE ||
+      delta > (long)ADC_MAX_VALUE) {
     write_line("ERR: invalid jog");
     return;
   }
@@ -193,17 +187,11 @@ static void handle_jog(char *argument) {
   case JOG_INVALID:
     snprintf(output, sizeof output, "ERR: invalid jog");
     break;
-  case JOG_ENDSTOP:
-    snprintf(output, sizeof output, "ERR: at end-stop");
-    break;
-  case JOG_OVERTRAVEL:
-    snprintf(output, sizeof output, "ERR: overtravel");
-    break;
   case JOG_BUSY:
     snprintf(output, sizeof output, "ERR: busy");
     break;
   default:
-    snprintf(output, sizeof output, "ERR: fault");
+    snprintf(output, sizeof output, "ERR: invalid jog");
     break;
   }
   write_line(output);
@@ -230,9 +218,6 @@ static void handle_setpos(char *argument) {
     break;
   case MOVE_BUSY:
     snprintf(output, sizeof output, "ERR: busy");
-    break;
-  case MOVE_FAULT:
-    snprintf(output, sizeof output, "ERR: fault");
     break;
   default:
     snprintf(output, sizeof output, "ERR: invalid target");
@@ -440,26 +425,11 @@ void console_drain_events(void) {
     case EV_ARRIVE:
       snprintf(output, sizeof output, "ARR:%u", event.arg);
       break;
-    case EV_TIMEOUT:
-      snprintf(output, sizeof output, "ERR: timeout");
-      break;
-    case EV_FAULT_HOME:
-      snprintf(output, sizeof output, "ERR: fault home timeout");
-      break;
     case EV_HOMING:
       snprintf(output, sizeof output, "OK: homing");
       break;
     case EV_STOPPED_UNKNOWN:
       snprintf(output, sizeof output, "POS:?");
-      break;
-    case EV_FAULT_OVERTRAVEL:
-      snprintf(output, sizeof output, "ERR: overtravel");
-      break;
-    case EV_FAULT_STALL:
-      snprintf(output, sizeof output, "ERR: stall");
-      break;
-    case EV_FAULT_DIRECTION:
-      snprintf(output, sizeof output, "ERR: direction");
       break;
     case EV_JOG_COMPLETE:
       console_adc();
