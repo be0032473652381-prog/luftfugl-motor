@@ -903,7 +903,7 @@ static const help_entry_t help_entries[] = {
     {"angle", "angle", "read-only",
      "Shows the filtered ADC reading converted to degrees."},
     {"led", "led raw ff000000", "on/off/auto, rgbw on/off, or a wire-order hex word",
-     "GP18; station 5 is pure green; raw uses GGRRBBWW or GGRRBB."},
+     "GP18; station 5 is rose RGB 96,24,32; raw uses GGRRBBWW or GGRRBB."},
     {"selftest", "selftest", "no motion",
      "Checks configuration, ADC and the 1 kHz tick."},
     {"tick", "tick", "read-only", "Shows loop timing and watchdog health."},
@@ -1082,12 +1082,12 @@ static void submit(char *typed) {
                  led_state_machine());
       else
         snprintf(detail, sizeof detail, "forced %s; PIO%u SM%u offset %u",
-                 led_is_on() ? "green 0,255,0" : "off",
+                 led_is_on() ? "rose 96,24,32" : "off",
                  led_pio_index(), led_state_machine(), led_program_offset());
       result(original, "complete", detail);
     } else if (!strcmp(arg, "on")) {
       led_set_mode(LED_MODE_FORCED_ON);
-      result(original, "complete", "forced green 0,255,0");
+      result(original, "complete", "forced rose 96,24,32");
     } else if (!strcmp(arg, "off")) {
       led_set_mode(LED_MODE_FORCED_OFF);
       result(original, "complete", "forced off");
