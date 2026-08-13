@@ -2,7 +2,8 @@
 #include "hardware/adc.h"
 
 static uint16_t samples[FILTER_DEPTH];
-static uint8_t sample_index, sample_ticks;
+static uint32_t sample_sum;
+static uint8_t sample_index;
 static uint16_t stable_ms;
 static volatile uint16_t raw_value, average_value;
 static volatile position_t instant_position, confirmed_position;
@@ -14,20 +15,6 @@ static volatile uint16_t sim_value;
 static uint16_t position_adc[] = {POS_1_ADC, POS_2_ADC, POS_3_ADC, POS_4_ADC,
                                   POS_5_ADC};
 #endif
-
-static uint16_t trimmed_average(void) {
-  uint32_t sum = 0u;
-  uint16_t minimum = UINT16_MAX, maximum = 0u;
-  for (uint8_t i = 0u; i < FILTER_DEPTH; ++i) {
-    uint16_t sample = samples[i];
-    sum += sample;
-    if (sample < minimum)
-      minimum = sample;
-    if (sample > maximum)
-      maximum = sample;
-  }
-  return (uint16_t)((sum - minimum - maximum) / (FILTER_DEPTH - 2u));
-}
 
 uint16_t encoder_nominal(position_t position) {
 #ifdef LUFTFUGL_DEBUG
@@ -81,13 +68,14 @@ void encoder_init(void) {
   adc_init();
   adc_gpio_init(PIN_SENSE);
   adc_select_input(ADC_CHANNEL);
+  sample_sum = 0;
   sample_index = 0;
-  sample_ticks = 0u;
   for (uint8_t i = 0; i < FILTER_DEPTH; ++i) {
     samples[i] = adc_read();
+    sample_sum += samples[i];
   }
   raw_value = samples[FILTER_DEPTH - 1u];
-  average_value = trimmed_average();
+  average_value = (uint16_t)(sample_sum / FILTER_DEPTH);
   instant_position = position_at(average_value);
   confirmed_position = instant_position;
   stable_ms = CFG_DEBOUNCE_MS;
@@ -99,24 +87,23 @@ void encoder_init(void) {
 }
 
 void encoder_tick(void) {
-  if (++sample_ticks < ADC_SAMPLE_PERIOD_TICKS)
-    return;
-  sample_ticks = 0u;
 #ifdef LUFTFUGL_DEBUG
   if (encoder_sim_active())
     raw_value = encoder_sim_value();
   else
 #endif
     raw_value = adc_read();
+  sample_sum -= samples[sample_index];
   samples[sample_index] = raw_value;
+  sample_sum += raw_value;
   sample_index = (uint8_t)((sample_index + 1u) % FILTER_DEPTH);
-  average_value = trimmed_average();
+  average_value = (uint16_t)(sample_sum / FILTER_DEPTH);
   position_t classified = position_at(average_value);
   if (classified != instant_position) {
     instant_position = classified;
-    stable_ms = ADC_SAMPLE_PERIOD_MS;
-  } else if (stable_ms <= UINT16_MAX - ADC_SAMPLE_PERIOD_MS) {
-    stable_ms += ADC_SAMPLE_PERIOD_MS;
+    stable_ms = 1;
+  } else if (stable_ms < UINT16_MAX) {
+    ++stable_ms;
   }
   if (stable_ms >= CFG_DEBOUNCE_MS && confirmed_position != instant_position) {
     confirmed_position = instant_position;
