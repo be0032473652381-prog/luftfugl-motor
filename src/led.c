@@ -48,7 +48,11 @@ static uint32_t requested_colour(void) {
   if (station == POS_MAX) {
     uint32_t phase = to_ms_since_boot(get_absolute_time()) %
                      LED_HAZARD_PERIOD_MS;
-    return phase < LED_HAZARD_ON_MS ? station5_rose() : 0u;
+    uint32_t second_pulse = LED_HAZARD_PULSE_MS + LED_HAZARD_GAP_MS;
+    bool lit = phase < LED_HAZARD_PULSE_MS ||
+               (phase >= second_pulse &&
+                phase < second_pulse + LED_HAZARD_PULSE_MS);
+    return lit ? station5_rose() : 0u;
   }
   return 0u;
 }
