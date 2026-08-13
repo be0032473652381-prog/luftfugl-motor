@@ -1094,7 +1094,7 @@ static void submit(char *typed) {
     } else if (!strcmp(arg, "auto")) {
       led_set_mode(LED_MODE_AUTO);
       result(original, "complete",
-             "following station 1 mint / 2 seafoam / 3 yellow / 4 pink / 5 hazard");
+             "following station 1 green / 2 yellow-green / 3 yellow / 4 pink / 5 hazard");
     } else if (!strcmp(arg, "rgbw on")) {
       led_set_rgbw(true);
       result(original, "complete", "RGBW enabled; sending G,R,B,W with W=0");
