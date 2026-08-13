@@ -5,6 +5,7 @@
 #include "controller.h"
 #include "encoder.h"
 #include "motor.h"
+#include "led.h"
 #ifdef LUFTFUGL_MONITOR
 #include "debug.h"
 #endif
@@ -31,6 +32,7 @@ int main(void)
     dbg_init();
 #endif
     encoder_init();
+    led_init();
     controller_init();
 #ifdef LUFTFUGL_MONITOR
     dbg_enter();
@@ -45,6 +47,7 @@ int main(void)
     for (;;) {
         console_poll();
         console_drain_events();
+        led_update();
 #ifdef LUFTFUGL_MONITOR
         dbg_poll();
         dbg_out_drain();

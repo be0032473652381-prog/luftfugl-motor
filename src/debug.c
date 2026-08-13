@@ -10,6 +10,7 @@
 #include "hardware/uart.h"
 #include "hardware/watchdog.h"
 #include "motor.h"
+#include "led.h"
 #include "pico/bootrom.h"
 #include "pico/time.h"
 #include <ctype.h>
@@ -407,7 +408,7 @@ static void frame_continue(void) {
       {"jog", "step", "pos", "move", "goto", "home", "stop"},
       {"sel", "save", "export", "reset", "bootsel", "plain", "exit"},
       {"selftest", "pins", "pwm", "tick", "trace", "findmin", "help"},
-      {"arm", "disarm", "drive", "sim", "", "", ""}};
+      {"arm", "disarm", "drive", "sim", "led", "", ""}};
   static const char *const examples[3][3] = {
       {"jog +100", "pos 3", "sel 1"},
       {"goto 1260", "cfg DUTY_NORMAL 30", "save 3"},
@@ -901,6 +902,8 @@ static const help_entry_t help_entries[] = {
     {"adc", "adc", "read-only", "Shows raw, filtered and classified sensing."},
     {"angle", "angle", "read-only",
      "Shows the filtered ADC reading converted to degrees."},
+    {"led", "led auto", "on, off, auto, or no argument",
+     "GP18; dusty rose RGB 235,160,160; WS2812B data is sent in GRB order."},
     {"selftest", "selftest", "no motion",
      "Checks configuration, ADC and the 1 kHz tick."},
     {"tick", "tick", "read-only", "Shows loop timing and watchdog health."},
@@ -1060,6 +1063,33 @@ static void submit(char *typed) {
     print_angle(angle, sizeof angle, adc);
     snprintf(detail, sizeof detail, "adc %u = %s degrees", adc, angle);
     result(original, "complete", detail);
+  } else if (!strcmp(command, "led")) {
+    if (!arg) {
+      char detail[96];
+      position_t station = encoder_confirmed();
+      if (led_mode() == LED_MODE_AUTO) {
+        if (station >= POS_MIN && station <= POS_MAX)
+          snprintf(detail, sizeof detail, "station 5: %s    (currently at station %u)",
+                   led_is_on() ? "on" : "off", station);
+        else
+          snprintf(detail, sizeof detail, "station 5: %s    (position unknown)",
+                   led_is_on() ? "on" : "off");
+      } else
+        snprintf(detail, sizeof detail, "forced %s; PIO%u SM%u offset %u",
+                 led_is_on() ? "dusty rose 235,160,160" : "off",
+                 led_pio_index(), led_state_machine(), led_program_offset());
+      result(original, "complete", detail);
+    } else if (!strcmp(arg, "on")) {
+      led_set_mode(LED_MODE_FORCED_ON);
+      result(original, "complete", "forced dusty rose 235,160,160");
+    } else if (!strcmp(arg, "off")) {
+      led_set_mode(LED_MODE_FORCED_OFF);
+      result(original, "complete", "forced off");
+    } else if (!strcmp(arg, "auto")) {
+      led_set_mode(LED_MODE_AUTO);
+      result(original, "complete", "following station 5");
+    } else
+      result(original, "rejected", "usage: led on, led off, led auto, or led");
   } else if (!strcmp(command, "jog")) {
     if (arg && !strcmp(arg, "+"))
       value = jog_step;
