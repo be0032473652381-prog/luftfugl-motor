@@ -18,8 +18,8 @@
 #define PWM_WRAP 255
 #define PWM_CLKDIV 97.6875f
 
-#define DUTY_NORMAL 60
-#define DUTY_APPROACH 30
+#define DUTY_NORMAL 30
+#define DUTY_APPROACH 25
 #define DUTY_CREEP 25
 #define DUTY_MIN 25
 
@@ -29,7 +29,7 @@
 #define POS_4_ADC 1175 /* 103.3 deg */
 #define POS_5_ADC 1500 /* 131.9 deg */
 #define POS_WINDOW 60
-#define APPROACH_COUNTS 100
+#define APPROACH_COUNTS 300
 
 #define TICK_HZ 1000
 #define TICK_PERIOD_US 1000u

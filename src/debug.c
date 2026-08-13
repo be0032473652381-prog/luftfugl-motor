@@ -507,18 +507,86 @@ static bool save_position(position_t station, const char *command) {
   return true;
 }
 
-static bool cfg_update(const char *key, long value) {
+static bool cfg_setting_known(const char *key) {
+  static const char *const names[] = {
+      "DUTY_NORMAL", "DUTY_APPROACH", "DUTY_CREEP", "DUTY_MIN",
+      "APPROACH_COUNTS", "POS_WINDOW", "DEBOUNCE_MS", "BRAKE_HOLD_MS",
+      "POS_1_ADC", "POS_2_ADC", "POS_3_ADC", "POS_4_ADC", "POS_5_ADC"};
+  for (size_t i = 0; i < sizeof names / sizeof names[0]; ++i)
+    if (!strcmp(key, names[i]))
+      return true;
+  return false;
+}
+
+static uint16_t cfg_smallest_gap(const cfg_t *values) {
+  const uint16_t positions[] = {values->pos_1_adc, values->pos_2_adc,
+                                values->pos_3_adc, values->pos_4_adc,
+                                values->pos_5_adc};
+  uint16_t smallest = ADC_MAX_VALUE;
+  for (size_t i = 1; i < sizeof positions / sizeof positions[0]; ++i) {
+    if (positions[i] <= positions[i - 1u])
+      return 0u;
+    uint16_t gap = positions[i] - positions[i - 1u];
+    if (gap < smallest)
+      smallest = gap;
+  }
+  return smallest;
+}
+
+static bool cfg_update(const char *key, long value, char *reason,
+                       size_t reason_size, char *advice, size_t advice_size) {
   cfg_t next;
-  if (!key || value < 0)
+  reason[0] = advice[0] = '\0';
+  if (!key || !cfg_setting_known(key)) {
+    snprintf(reason, reason_size, "no setting called \"%s\"", key ? key : "");
+    snprintf(advice, advice_size, "type \"cfg\" to list them");
     return false;
-  if (!strncmp(key, "DUTY_", 5) && value > PWM_WRAP)
+  }
+  if (value < 0 || value > UINT16_MAX) {
+    snprintf(reason, reason_size, "%s %ld is outside its numeric range", key,
+             value);
     return false;
-  if ((!strncmp(key, "ADC_", 4) || !strcmp(key, "POS_WINDOW") ||
-       !strcmp(key, "APPROACH_COUNTS")) &&
-      value > (long)ADC_MAX_VALUE)
+  }
+  if (!strcmp(key, "DUTY_APPROACH") && value < cfg.duty_creep) {
+    snprintf(reason, reason_size, "DUTY_APPROACH %ld is below DUTY_CREEP %u",
+             value, cfg.duty_creep);
+    snprintf(advice, advice_size, "set DUTY_CREEP first, or use %u or more",
+             cfg.duty_creep);
     return false;
-  if (value > UINT16_MAX)
+  }
+  if (!strncmp(key, "DUTY_", 5) && (value < DUTY_MIN || value > PWM_WRAP)) {
+    snprintf(reason, reason_size, "%s %ld is outside %u..255", key, value,
+             DUTY_MIN);
+    snprintf(advice, advice_size, "use a duty from %u through 255", DUTY_MIN);
     return false;
+  }
+  if (!strcmp(key, "APPROACH_COUNTS") && (value < 10 || value > 1000)) {
+    snprintf(reason, reason_size, "APPROACH_COUNTS %ld is outside 10..1000",
+             value);
+    snprintf(advice, advice_size, "use 10 through 1000 counts");
+    return false;
+  }
+  if (!strcmp(key, "POS_WINDOW") && value < 10) {
+    snprintf(reason, reason_size, "POS_WINDOW %ld is below 10 counts", value);
+    snprintf(advice, advice_size, "use 10 counts or more");
+    return false;
+  }
+  if (!strcmp(key, "DEBOUNCE_MS") && (value < 1 || value > 100)) {
+    snprintf(reason, reason_size, "DEBOUNCE_MS %ld is outside 1..100 ms", value);
+    snprintf(advice, advice_size, "use 1 through 100 ms");
+    return false;
+  }
+  if (!strcmp(key, "BRAKE_HOLD_MS") && value > 1000) {
+    snprintf(reason, reason_size, "BRAKE_HOLD_MS %ld is outside 0..1000 ms",
+             value);
+    snprintf(advice, advice_size, "use 0 through 1000 ms");
+    return false;
+  }
+  if (!strncmp(key, "POS_", 4) && value > (long)ADC_MAX_VALUE) {
+    snprintf(reason, reason_size, "%s %ld is outside 0..4095", key, value);
+    snprintf(advice, advice_size, "use a valid 12-bit ADC reading");
+    return false;
+  }
   memcpy(&next, (const void *)&cfg, sizeof next);
   if (!strcmp(key, "DUTY_NORMAL"))
     next.duty_normal = (uint8_t)value;
@@ -536,13 +604,137 @@ static bool cfg_update(const char *key, long value) {
     next.debounce_ms = (uint16_t)value;
   else if (!strcmp(key, "BRAKE_HOLD_MS"))
     next.brake_hold_ms = (uint16_t)value;
-  else
+  else if (!strcmp(key, "POS_1_ADC"))
+    next.pos_1_adc = (uint16_t)value;
+  else if (!strcmp(key, "POS_2_ADC"))
+    next.pos_2_adc = (uint16_t)value;
+  else if (!strcmp(key, "POS_3_ADC"))
+    next.pos_3_adc = (uint16_t)value;
+  else if (!strcmp(key, "POS_4_ADC"))
+    next.pos_4_adc = (uint16_t)value;
+  else if (!strcmp(key, "POS_5_ADC"))
+    next.pos_5_adc = (uint16_t)value;
+  if (next.duty_min > next.duty_creep) {
+    snprintf(reason, reason_size, "DUTY_MIN %u is above DUTY_CREEP %u",
+             next.duty_min, next.duty_creep);
+    snprintf(advice, advice_size, "lower DUTY_MIN or raise DUTY_CREEP first");
     return false;
-  if (next.duty_min > next.duty_creep || next.duty_creep > next.duty_approach ||
-      next.duty_approach > next.duty_normal || next.debounce_ms == 0u ||
-      next.brake_hold_ms == 0u)
+  }
+  if (next.duty_creep > next.duty_approach) {
+    snprintf(reason, reason_size, "DUTY_APPROACH %u is below DUTY_CREEP %u",
+             next.duty_approach, next.duty_creep);
+    snprintf(advice, advice_size,
+             "set DUTY_CREEP first, or use a value of %u or more",
+             next.duty_creep);
     return false;
+  }
+  if (next.duty_approach > next.duty_normal) {
+    snprintf(reason, reason_size, "DUTY_APPROACH %u is above DUTY_NORMAL %u",
+             next.duty_approach, next.duty_normal);
+    snprintf(advice, advice_size,
+             "raise DUTY_NORMAL first, or use a value of %u or less",
+             next.duty_normal);
+    return false;
+  }
+  uint16_t smallest_gap = cfg_smallest_gap(&next);
+  if (!smallest_gap) {
+    snprintf(reason, reason_size, "station values would not stay ascending");
+    snprintf(advice, advice_size, "keep POS_1_ADC through POS_5_ADC increasing");
+    return false;
+  }
+  uint16_t window_max = (uint16_t)((smallest_gap - 1u) / 4u);
+  if (next.pos_window > window_max) {
+    snprintf(reason, reason_size, "POS_WINDOW %u exceeds the %u-count maximum",
+             next.pos_window, window_max);
+    snprintf(advice, advice_size,
+             "reduce POS_WINDOW or increase the smallest station gap");
+    return false;
+  }
   memcpy((void *)&cfg, &next, sizeof next);
+  return true;
+}
+
+static void cfg_table_line(const char *name, uint16_t now, uint16_t compiled,
+                           const char *limits) {
+  char detail[128];
+  snprintf(detail, sizeof detail, "  %-20s%c %6u   %7u   %s", name,
+           now == compiled ? ' ' : '*', now, compiled, limits);
+  result("", "complete", detail);
+}
+
+static void print_cfg(const char *command) {
+  cfg_t live;
+  char limits[64];
+  memcpy(&live, (const void *)&cfg, sizeof live);
+  uint16_t smallest_gap = cfg_smallest_gap(&live);
+  uint16_t window_max = smallest_gap ? (uint16_t)((smallest_gap - 1u) / 4u) : 0u;
+  result(command, "complete", "SETTINGS                    now   default   limits");
+  cfg_table_line("DUTY_NORMAL", live.duty_normal, DUTY_NORMAL,
+                 "25..255, >= DUTY_APPROACH");
+  cfg_table_line("DUTY_APPROACH", live.duty_approach, DUTY_APPROACH,
+                 "25..255, between CREEP and NORMAL");
+  cfg_table_line("DUTY_CREEP", live.duty_creep, DUTY_CREEP,
+                 "25..255, between MIN and APPROACH");
+  cfg_table_line("DUTY_MIN", live.duty_min, DUTY_MIN,
+                 "25..255, <= DUTY_CREEP");
+  cfg_table_line("APPROACH_COUNTS", live.approach_counts, APPROACH_COUNTS,
+                 "10..1000 counts");
+  snprintf(limits, sizeof limits, "10..%u counts, < quarter gap", window_max);
+  cfg_table_line("POS_WINDOW", live.pos_window, POS_WINDOW, limits);
+  cfg_table_line("DEBOUNCE_MS", live.debounce_ms, DEBOUNCE_MS, "1..100 ms");
+  cfg_table_line("BRAKE_HOLD_MS", live.brake_hold_ms, BRAKE_HOLD_MS,
+                 "0..1000 ms");
+  cfg_table_line("POS_1_ADC", live.pos_1_adc, POS_1_ADC,
+                 "0..4095, must stay ascending");
+  cfg_table_line("POS_2_ADC", live.pos_2_adc, POS_2_ADC,
+                 "0..4095, must stay ascending");
+  cfg_table_line("POS_3_ADC", live.pos_3_adc, POS_3_ADC,
+                 "0..4095, must stay ascending");
+  cfg_table_line("POS_4_ADC", live.pos_4_adc, POS_4_ADC,
+                 "0..4095, must stay ascending");
+  cfg_table_line("POS_5_ADC", live.pos_5_adc, POS_5_ADC,
+                 "0..4095, must stay ascending");
+  result("", "complete", "* differs from compiled default");
+  result("", "complete",
+         "cfg DUTY_NORMAL 40 changes one; cfg reset restores defaults");
+}
+
+static bool help_setting(const char *argument, const char *command) {
+  char key[24];
+  size_t length = strlen(argument);
+  if (length >= sizeof key)
+    return false;
+  for (size_t i = 0; i <= length; ++i)
+    key[i] = (char)toupper((unsigned char)argument[i]);
+  if (!cfg_setting_known(key))
+    return false;
+  if (!strcmp(key, "POS_WINDOW")) {
+    cfg_t live;
+    char detail[128];
+    memcpy(&live, (const void *)&cfg, sizeof live);
+    uint16_t gap = cfg_smallest_gap(&live);
+    uint16_t tenths = angle_tenths(live.pos_window);
+    result(command, "complete", "POS_WINDOW - how close counts as arrived");
+    snprintf(detail, sizeof detail,
+             "now %u counts, about %u.%u degrees either side of a station",
+             live.pos_window, tenths / 10u, tenths % 10u);
+    result("", "complete", detail);
+    result("Examples", "complete", "cfg POS_WINDOW 40 - tighter stopping");
+    result("", "complete", "cfg POS_WINDOW 80 - looser, earlier arrival");
+    snprintf(detail, sizeof detail,
+             "10 to %u counts; below quarter of current %u-count gap",
+             gap ? (gap - 1u) / 4u : 0u, gap);
+    result("Limits", "complete", detail);
+    result("Notes", "complete",
+           "For oscillation, reducing DUTY_APPROACH is usually better.");
+    return true;
+  }
+  char detail[96];
+  snprintf(detail, sizeof detail,
+           "%s is runtime-settable; type cfg for live value and limits", key);
+  result(command, "complete", detail);
+  result("Notes", "complete",
+         "RAM-only; lost on reset. export prints config.h station lines.");
   return true;
 }
 
@@ -670,7 +862,7 @@ static const help_entry_t help_entries[] = {
     {"pwm", "pwm", "read-only",
      "Shows PWM configuration and calculated frequency."},
     {"cfg", "cfg DUTY_CREEP 30", "validated RAM values",
-     "Changes are lost at reset."},
+     "Changes are RAM-only and lost on reset; export prints config.h station lines."},
     {"sim", "sim adc 2047", "ADC 0 to 4095",
      "Simulation inhibits physical motor output."},
     {"arm", "arm", "idle controller",
@@ -782,7 +974,7 @@ static void submit(char *typed) {
         result("Limits", "complete", entry->limits);
         result("Examples", "complete", entry->example);
         result(original, "complete", entry->name);
-      } else {
+      } else if (!help_setting(arg, original)) {
         char detail[96];
         snprintf(detail, sizeof detail,
                  "no command called \"%s\", try \"help\"", arg);
@@ -1143,23 +1335,27 @@ static void submit(char *typed) {
                "inspect it");
   } else if (!strcmp(command, "cfg")) {
     if (!arg) {
-      char d[160];
-      snprintf(d, sizeof d,
-               "DUTY_NORMAL=%u DUTY_APPROACH=%u DUTY_CREEP=%u POS_WINDOW=%u "
-               "APPROACH_COUNTS=%u",
-               CFG_DUTY_NORMAL, CFG_DUTY_APPROACH, CFG_DUTY_CREEP,
-               CFG_POS_WINDOW, CFG_APPROACH_COUNTS);
-      result(original, "complete", d);
+      print_cfg(original);
     } else {
       char *key = strtok_r(arg, " \t", &save);
       char *value_text = strtok_r(NULL, " \t", &save);
       for (char *p = key; p && *p; ++p)
         *p = (char)toupper((unsigned char)*p);
-      if (!parse_long(value_text, &value) || !cfg_update(key, value))
-        result(original, "rejected",
-               "unknown key or value violates configuration limits");
-      else
-        result(original, "complete", "runtime constant updated");
+      if (key && !strcmp(key, "RESET") && !value_text) {
+        cfg_reset();
+        result(original, "complete", "compiled defaults restored");
+      } else if (!parse_long(value_text, &value)) {
+        result(original, "rejected", "usage: cfg SETTING VALUE, or cfg reset");
+      } else {
+        char reason[96], advice[96];
+        if (!cfg_update(key, value, reason, sizeof reason, advice,
+                        sizeof advice)) {
+          result(original, "rejected", reason);
+          if (advice[0])
+            result("", "rejected", advice);
+        } else
+          result(original, "complete", "runtime constant updated");
+      }
     }
   } else if (!strcmp(command, "plain")) {
     if (!plain_mode)
