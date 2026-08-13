@@ -902,8 +902,8 @@ static const help_entry_t help_entries[] = {
     {"adc", "adc", "read-only", "Shows raw, filtered and classified sensing."},
     {"angle", "angle", "read-only",
      "Shows the filtered ADC reading converted to degrees."},
-    {"led", "led pin 23", "on/off/auto, rgbw on/off, pin 18/23, or no argument",
-     "GP18 external or GP23 onboard; RGB 235,160,160; GRBW has W=0."},
+    {"led", "led raw ff000000", "on/off/auto, rgbw on/off, or a wire-order hex word",
+     "GP18; raw uses GGRRBBWW in RGBW mode or GGRRBB in RGB mode."},
     {"selftest", "selftest", "no motion",
      "Checks configuration, ADC and the 1 kHz tick."},
     {"tick", "tick", "read-only", "Shows loop timing and watchdog health."},
@@ -1070,13 +1070,17 @@ static void submit(char *typed) {
       if (led_mode() == LED_MODE_AUTO) {
         if (station >= POS_MIN && station <= POS_MAX)
           snprintf(detail, sizeof detail,
-                   "station 5: %s    (station %u; %s; GP%u)",
+                   "station 5: %s    (station %u; %s; GP18)",
                    led_is_on() ? "on" : "off", station,
-                   led_rgbw() ? "RGBW" : "RGB", led_pin());
+                   led_rgbw() ? "RGBW" : "RGB");
         else
           snprintf(detail, sizeof detail, "station 5: %s    (position unknown)",
                    led_is_on() ? "on" : "off");
-      } else
+      } else if (led_mode() == LED_MODE_FORCED_RAW)
+        snprintf(detail, sizeof detail, "forced raw; %s; GP18; PIO%u SM%u",
+                 led_rgbw() ? "GGRRBBWW" : "GGRRBB", led_pio_index(),
+                 led_state_machine());
+      else
         snprintf(detail, sizeof detail, "forced %s; PIO%u SM%u offset %u",
                  led_is_on() ? "dusty rose 235,160,160" : "off",
                  led_pio_index(), led_state_machine(), led_program_offset());
@@ -1096,15 +1100,30 @@ static void submit(char *typed) {
     } else if (!strcmp(arg, "rgbw off")) {
       led_set_rgbw(false);
       result(original, "complete", "RGBW disabled; sending G,R,B");
-    } else if (!strcmp(arg, "pin 18")) {
-      (void)led_set_pin(18u);
-      result(original, "complete", "data output moved to GP18 external LED");
-    } else if (!strcmp(arg, "pin 23")) {
-      (void)led_set_pin(23u);
-      result(original, "complete", "data output moved to GP23 onboard LED");
+    } else if (!strncmp(arg, "raw ", 4u)) {
+      const char *hex = arg + 4u;
+      char *hex_end;
+      size_t digits = strlen(hex);
+      unsigned long word = strtoul(hex, &hex_end, 16);
+      size_t required = led_rgbw() ? 8u : 6u;
+      bool valid_hex = true;
+      for (size_t i = 0; i < digits; ++i)
+        if (!isxdigit((unsigned char)hex[i]))
+          valid_hex = false;
+      if (digits != required || *hex_end || !valid_hex) {
+        result(original, "rejected",
+               led_rgbw() ? "RGBW raw format is eight hex digits GGRRBBWW"
+                          : "RGB raw format is six hex digits GGRRBB");
+      } else {
+        char detail[72];
+        led_set_raw((uint32_t)word);
+        snprintf(detail, sizeof detail, "forced raw %0*lx (%s wire order)",
+                 (int)required, word, led_rgbw() ? "GGRRBBWW" : "GGRRBB");
+        result(original, "complete", detail);
+      }
     } else
       result(original, "rejected",
-             "usage: led on/off/auto, led rgbw on/off, led pin 18/23, or led");
+             "usage: led on/off/auto, led rgbw on/off, led raw <hex>, or led");
   } else if (!strcmp(command, "jog")) {
     if (arg && !strcmp(arg, "+"))
       value = jog_step;
