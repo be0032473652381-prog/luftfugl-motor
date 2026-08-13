@@ -187,6 +187,7 @@ void dbg_out_push(const char *text) {
 void dbg_out_drain(void) {
   while (out_tail != out_head && uart_is_writable(uart0)) {
     uint32_t started = time_us_32();
+    console_diag_note_debug_tx();
     uart_putc_raw(uart0, out_buf[out_tail]);
     console_diag_note_tx_spin(time_us_32() - started);
     out_tail = (uint16_t)((out_tail + 1u) % DEBUG_OUT_BUFFER);

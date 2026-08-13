@@ -34,6 +34,10 @@ static uint32_t last_poll_us;
 static volatile char rx_ring[128];
 static volatile uint8_t rx_head;
 static volatile uint8_t rx_tail;
+#ifdef LUFTFUGL_MONITOR
+static volatile bool debug_tx_active;
+static uint8_t debug_escape_state;
+#endif
 
 static void console_uart_rx_irq(void) {
   while (uart_is_readable(uart0)) {
@@ -45,6 +49,10 @@ static void console_uart_rx_irq(void) {
       uart_get_hw(uart0)->rsr = 0u;
       continue;
     }
+#ifdef LUFTFUGL_MONITOR
+    if (debug_tx_active)
+      continue;
+#endif
     uint8_t next = (uint8_t)((rx_head + 1u) % sizeof rx_ring);
     if (next != rx_tail) {
       rx_ring[rx_head] = (char)(received & UART_UARTDR_DATA_BITS);
@@ -304,6 +312,10 @@ void console_init(void) {
   last_poll_us = 0u;
   rx_head = 0u;
   rx_tail = 0u;
+#ifdef LUFTFUGL_MONITOR
+  debug_tx_active = false;
+  debug_escape_state = 0u;
+#endif
   irq_set_exclusive_handler(UART0_IRQ, console_uart_rx_irq);
   irq_set_enabled(UART0_IRQ, true);
   uart_set_irq_enables(uart0, true, false);
@@ -311,6 +323,11 @@ void console_init(void) {
 }
 void console_poll(void) {
   uint32_t now = time_us_32();
+#ifdef LUFTFUGL_MONITOR
+  if (debug_tx_active &&
+      !(uart_get_hw(uart0)->fr & UART_UARTFR_BUSY_BITS))
+    debug_tx_active = false;
+#endif
   if (last_poll_us != 0u) {
     uint32_t gap = now - last_poll_us;
     if (gap > poll_max_gap_us)
@@ -321,6 +338,27 @@ void console_poll(void) {
   while (rx_tail != rx_head) {
     char c = rx_ring[rx_tail];
     rx_tail = (uint8_t)((rx_tail + 1u) % sizeof rx_ring);
+#ifdef LUFTFUGL_MONITOR
+    if (dbg_active()) {
+      unsigned char byte = (unsigned char)c;
+      if (debug_escape_state) {
+        if (debug_escape_state == 1u)
+          debug_escape_state = byte == '[' ? 2u : 0u;
+        else if (byte >= 0x40u && byte <= 0x7eu)
+          debug_escape_state = 0u;
+        continue;
+      }
+      if (byte == 0x1bu) {
+        debug_escape_state = 1u;
+        continue;
+      }
+      if (!((byte >= 32u && byte <= 126u) || c == '\b' || byte == 127u ||
+            c == '\r' || c == '\n'))
+        continue;
+    } else {
+      debug_escape_state = 0u;
+    }
+#endif
 #ifdef LUFTFUGL_TRACE_INPUT
     dbg_trace_input_in(c);
 #endif
@@ -454,4 +492,5 @@ void console_diag_format(char *output, size_t output_size) {
 void console_diag_note_tx_spin(uint32_t elapsed_us) {
   tx_spin_us += elapsed_us;
 }
+void console_diag_note_debug_tx(void) { debug_tx_active = true; }
 #endif
