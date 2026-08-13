@@ -18,9 +18,9 @@
 #define LED_COUNT 1
 #define LED_RGBW 1
 
-#define LED_STATION5_R 235
-#define LED_STATION5_G 160
-#define LED_STATION5_B 160
+#define LED_STATION5_R 0
+#define LED_STATION5_G 255
+#define LED_STATION5_B 0
 
 #define PWM_WRAP 255
 #define PWM_CLKDIV 97.6875f
