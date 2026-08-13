@@ -1,6 +1,7 @@
 #include "led.h"
 
 #include "config.h"
+#include "controller.h"
 #include "encoder.h"
 #include "hardware/pio.h"
 #include "pico/time.h"
@@ -62,6 +63,10 @@ static uint32_t requested_colour(void) {
   if (mode == LED_MODE_FORCED_ON)
     return station5_rose();
   if (mode == LED_MODE_FORCED_OFF)
+    return 0u;
+  /* Passing through a station must never display its colour. Automatic
+     indication begins only after the controller has completed arrival. */
+  if (controller_state() != ST_IDLE)
     return 0u;
   position_t station = encoder_confirmed();
   if (station == 1u)
