@@ -734,7 +734,8 @@ void controller_tick(void) {
 
     if (!endpoint_braking && magnitude < best_error_magnitude)
       best_error_magnitude = magnitude;
-    else if (!endpoint_braking && reached(now, direction_check_ms) &&
+    else if (CFG_REVERSE_DELTA != 0u && !endpoint_braking &&
+             reached(now, direction_check_ms) &&
              magnitude > best_error_magnitude &&
              magnitude - best_error_magnitude > CFG_REVERSE_DELTA) {
       enter_fault(EV_FAULT_DIRECTION);
@@ -842,6 +843,7 @@ void controller_motion_checks_get(motion_check_status_t *out) {
       (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING) &&
       motor_duty() > CFG_DUTY_MIN;
   out->direction_armed =
+      CFG_REVERSE_DELTA != 0u &&
       (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING) &&
       reached(now, direction_check_ms);
 }

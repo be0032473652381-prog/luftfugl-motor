@@ -470,7 +470,7 @@ static bool goto_issue_step(const char *command) {
 }
 
 static void print_limits(const char *command) {
-  char lines[8][80], angle[12];
+  char lines[9][80], angle[12];
   uint16_t current = encoder_average();
   uint16_t span = (uint16_t)(CFG_ADC_SAFE_MAX - CFG_ADC_SAFE_MIN);
   print_angle(angle, sizeof angle, span);
@@ -484,11 +484,16 @@ static void print_limits(const char *command) {
   print_angle(angle, sizeof angle, CFG_POS_WINDOW);
   snprintf(lines[6], sizeof lines[6], "  position window %u counts      %s deg either side of a station", CFG_POS_WINDOW, angle);
   snprintf(lines[7], sizeof lines[7], "  jog range       %u .. %u counts", JOG_MIN_COUNTS, JOG_MAX_COUNTS);
+  if (CFG_REVERSE_DELTA == 0u)
+    snprintf(lines[8], sizeof lines[8], "  direction check disabled");
+  else
+    snprintf(lines[8], sizeof lines[8],
+             "  direction check %u counts away from best", CFG_REVERSE_DELTA);
   if (plain_mode) {
-    for (size_t i = 0; i < 8; ++i)
+    for (size_t i = 0; i < 9; ++i)
       result(i ? "" : command, "complete", lines[i]);
   } else {
-    for (size_t i = 8; i-- > 0;)
+    for (size_t i = 9; i-- > 0;)
       result(i ? "" : command, "complete", lines[i]);
   }
 }
@@ -1222,12 +1227,13 @@ static void submit(char *typed) {
                "inspect it");
   } else if (!strcmp(command, "cfg")) {
     if (!arg) {
-      char d[128];
+      char d[160];
       snprintf(d, sizeof d,
                "DUTY_NORMAL=%u DUTY_APPROACH=%u DUTY_CREEP=%u POS_WINDOW=%u "
-               "ADC_SAFE_MIN=%u ADC_SAFE_MAX=%u",
+               "ADC_SAFE_MIN=%u ADC_SAFE_MAX=%u REVERSE_DELTA=%u",
                CFG_DUTY_NORMAL, CFG_DUTY_APPROACH, CFG_DUTY_CREEP,
-               CFG_POS_WINDOW, CFG_ADC_SAFE_MIN, CFG_ADC_SAFE_MAX);
+               CFG_POS_WINDOW, CFG_ADC_SAFE_MIN, CFG_ADC_SAFE_MAX,
+               CFG_REVERSE_DELTA);
       result(original, "complete", d);
     } else {
       char *key = strtok_r(arg, " \t", &save);
