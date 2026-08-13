@@ -18,9 +18,9 @@
 #define LED_COUNT 1
 #define LED_RGBW 1
 
-#define LED_STATION5_R 128
-#define LED_STATION5_G 12
-#define LED_STATION5_B 20
+#define LED_STATION5_R 192
+#define LED_STATION5_G 4
+#define LED_STATION5_B 8
 #define LED_STATION4_R 160
 #define LED_STATION4_G 24
 #define LED_STATION4_B 48
