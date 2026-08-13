@@ -14,7 +14,7 @@
 #define ADC_CHANNEL 0
 #define PIN_UART_TX 20
 #define PIN_UART_RX 21
-#define PIN_LED_DATA 18
+#define PIN_LED_DATA 25
 #define LED_COUNT 1
 #define LED_RGBW 1
 

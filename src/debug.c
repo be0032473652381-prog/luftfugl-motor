@@ -903,7 +903,7 @@ static const help_entry_t help_entries[] = {
     {"angle", "angle", "read-only",
      "Shows the filtered ADC reading converted to degrees."},
     {"led", "led rgbw on", "on, off, auto, rgbw on/off, or no argument",
-     "GP18; RGB 235,160,160; sends GRBW with W=0 in RGBW mode, or GRB in RGB mode."},
+     "GP25; RGB 235,160,160; sends GRBW with W=0 in RGBW mode, or GRB in RGB mode."},
     {"selftest", "selftest", "no motion",
      "Checks configuration, ADC and the 1 kHz tick."},
     {"tick", "tick", "read-only", "Shows loop timing and watchdog health."},
