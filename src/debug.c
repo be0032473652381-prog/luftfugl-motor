@@ -1457,6 +1457,7 @@ void dbg_event(event_kind_t kind, uint8_t arg) {
 void dbg_handle_key(char c) {
   if (c == 27) {
     input_len = 0;
+    input[0] = '\0';
     input_overflow = false;
     command_dirty = true;
 #ifdef LUFTFUGL_TRACE_INPUT
@@ -1497,13 +1498,23 @@ void dbg_handle_key(char c) {
                         submitted);
 #endif
     input_len = 0;
+    input[0] = '\0';
     input_overflow = false;
     command_dirty = true;
+#ifndef LUFTFUGL_TRACE_INPUT
+    if (!plain_mode && !frame_phase &&
+        out_free() > DEBUG_COMMAND_MAX + 32u) {
+      command_line_draw();
+      command_dirty = false;
+    }
+#endif
     return;
   }
   if (c == '\b' || c == 127) {
-    if (input_len)
+    if (input_len) {
       --input_len;
+      input[input_len] = '\0';
+    }
     command_dirty = true;
 #ifdef LUFTFUGL_TRACE_INPUT
     dbg_trace_input_out(c, "BACKSPACE", NULL);
@@ -1511,9 +1522,10 @@ void dbg_handle_key(char c) {
     return;
   }
   if (c >= 32 && c <= 126) {
-    if (input_len < DEBUG_COMMAND_MAX)
+    if (input_len < DEBUG_COMMAND_MAX) {
       input[input_len++] = c;
-    else
+      input[input_len] = '\0';
+    } else
       input_overflow = true;
     if (plain_mode && echo_enabled) {
       char text[2] = {c, 0};
