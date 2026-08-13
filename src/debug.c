@@ -50,6 +50,27 @@ static direction_t findmin_direction;
 static uint16_t findmin_min, findmin_max, findmin_start, findmin_noise;
 static uint32_t findmin_deadline;
 
+#ifdef LUFTFUGL_TRACE_OUTPUT
+static uint32_t output_bytes_pushed, output_bytes_dropped, output_bytes_drained;
+
+static void trace_output_snapshot(void) {
+  char line[176];
+  uint16_t queued =
+      out_head >= out_tail ? (uint16_t)(out_head - out_tail)
+                           : (uint16_t)(DEBUG_OUT_BUFFER - out_tail + out_head);
+  snprintf(line, sizeof line,
+           "\r\nOUTBUF pushed=%lu dropped=%lu drained=%lu queued=%u "
+           "head=%u tail=%u writable=%u\r\n",
+           (unsigned long)output_bytes_pushed,
+           (unsigned long)output_bytes_dropped,
+           (unsigned long)output_bytes_drained, queued, out_head, out_tail,
+           uart_is_writable(uart0) ? 1u : 0u);
+  const char *cursor = line;
+  while (*cursor)
+    uart_putc_raw(uart0, *cursor++);
+}
+#endif
+
 #ifdef LUFTFUGL_TRACE_INPUT
 static void trace_raw(const char *text) {
   while (*text)
@@ -146,17 +167,20 @@ static uint16_t out_free(void) {
 }
 
 void dbg_out_push(const char *text) {
-#ifdef LUFTFUGL_TRACE_INPUT
-  (void)text;
-#else
   size_t length = strlen(text);
-  if (length > out_free())
+  if (length > out_free()) {
+#ifdef LUFTFUGL_TRACE_OUTPUT
+    output_bytes_dropped += (uint32_t)length;
+#endif
     return;
+  }
   while (*text) {
     uint16_t next = (uint16_t)((out_head + 1u) % DEBUG_OUT_BUFFER);
     out_buf[out_head] = *text++;
     out_head = next;
   }
+#ifdef LUFTFUGL_TRACE_OUTPUT
+  output_bytes_pushed += (uint32_t)length;
 #endif
 }
 
@@ -166,6 +190,9 @@ void dbg_out_drain(void) {
     uart_putc_raw(uart0, out_buf[out_tail]);
     console_diag_note_tx_spin(time_us_32() - started);
     out_tail = (uint16_t)((out_tail + 1u) % DEBUG_OUT_BUFFER);
+#ifdef LUFTFUGL_TRACE_OUTPUT
+    ++output_bytes_drained;
+#endif
   }
 }
 
@@ -200,6 +227,10 @@ static void result(const char *command, const char *outcome,
     dbg_out_push(line);
     dbg_out_push("\033[K\033[u");
   }
+#ifdef LUFTFUGL_TRACE_OUTPUT
+  if (!strcmp(command, "adc") || !strcmp(command, "sel 1"))
+    trace_output_snapshot();
+#endif
 }
 
 void dbg_log_push(const char *text) { result("event", "complete", text); }
@@ -610,23 +641,35 @@ static const help_entry_t help_entries[] = {
      "Switches to line-oriented output without escape codes."},
     {"exit", "exit", "no arguments", "Leaves the debug console safely."}};
 
-static const char *resolve(const char *word) {
+static const char *resolve(const char *word, char *candidates,
+                           size_t candidates_size) {
   const char *match = NULL;
   size_t n = strlen(word);
+  if (candidates && candidates_size)
+    candidates[0] = '\0';
+  for (size_t i = 0; i < sizeof help_entries / sizeof help_entries[0]; ++i)
+    if (!strcmp(help_entries[i].name, word))
+      return help_entries[i].name;
   if (!strcmp(word, "st"))
     return "status";
   for (size_t i = 0; i < sizeof help_entries / sizeof help_entries[0]; ++i) {
     if (!strncmp(help_entries[i].name, word, n)) {
+      if (candidates && candidates_size) {
+        size_t used = strlen(candidates);
+        snprintf(candidates + used, candidates_size - used, "%s%s",
+                 used ? ", " : "", help_entries[i].name);
+      }
       if (match)
-        return NULL;
-      match = help_entries[i].name;
+        match = "";
+      else
+        match = help_entries[i].name;
     }
   }
-  return match;
+  return match && !*match ? NULL : match;
 }
 
 static const help_entry_t *help_detail(const char *word) {
-  const char *command = resolve(word);
+  const char *command = resolve(word, NULL, 0u);
   if (!command)
     return NULL;
   for (size_t i = 0; i < sizeof help_entries / sizeof help_entries[0]; ++i)
@@ -636,7 +679,7 @@ static const help_entry_t *help_detail(const char *word) {
 }
 
 static void submit(char *typed) {
-  char original[DEBUG_COMMAND_MAX + 1u], *arg, *word, *save;
+  char original[DEBUG_COMMAND_MAX + 1u], candidates[96], *arg, *word, *save;
   long value;
   char *end = typed + strlen(typed);
   while (end > typed && isspace((unsigned char)end[-1]))
@@ -654,7 +697,7 @@ static void submit(char *typed) {
     if (!plain_mode)
       dbg_out_push("\033[s\033[18;1H\033[J\033[u");
   }
-  const char *command = resolve(word);
+  const char *command = resolve(word, candidates, sizeof candidates);
 #ifdef LUFTFUGL_TRACE_INPUT
   trace_dispatch(original, command);
 #endif
@@ -662,9 +705,12 @@ static void submit(char *typed) {
   while (arg && isspace((unsigned char)*arg))
     ++arg;
   if (!command) {
-    char detail[96];
-    snprintf(detail, sizeof detail, "no command called \"%s\", try \"help\"",
-             word);
+    char detail[160];
+    if (candidates[0])
+      snprintf(detail, sizeof detail, "\"%s\" matches %s", word, candidates);
+    else
+      snprintf(detail, sizeof detail, "no command called \"%s\", try \"help\"",
+               word);
     result(original, "rejected", detail);
     return;
   }
