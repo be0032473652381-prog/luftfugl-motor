@@ -1222,11 +1222,12 @@ static void submit(char *typed) {
                "inspect it");
   } else if (!strcmp(command, "cfg")) {
     if (!arg) {
-      char d[96];
+      char d[128];
       snprintf(d, sizeof d,
-               "DUTY_NORMAL=%u DUTY_APPROACH=%u DUTY_CREEP=%u POS_WINDOW=%u",
+               "DUTY_NORMAL=%u DUTY_APPROACH=%u DUTY_CREEP=%u POS_WINDOW=%u "
+               "ADC_SAFE_MIN=%u ADC_SAFE_MAX=%u",
                CFG_DUTY_NORMAL, CFG_DUTY_APPROACH, CFG_DUTY_CREEP,
-               CFG_POS_WINDOW);
+               CFG_POS_WINDOW, CFG_ADC_SAFE_MIN, CFG_ADC_SAFE_MAX);
       result(original, "complete", d);
     } else {
       char *key = strtok_r(arg, " \t", &save);
