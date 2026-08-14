@@ -650,8 +650,14 @@ void controller_tick(void) {
 #endif
       if (!jog_move) {
         if (target_braking &&
-            (uint32_t)(now - target_brake_since) >= CFG_DEBOUNCE_MS) {
-          if (encoder_confirmed() == target) {
+            (uint32_t)(now - target_brake_since) >= CFG_BRAKE_HOLD_MS) {
+          /* The motor is held braked for the full mechanical settling time.
+           * A filtered reading in the target band is sufficient here; waiting
+           * for the reed classifier alone lets inertia push through the band
+           * and start a direction reversal. */
+          if (error_magnitude((int16_t)motion_target_adc -
+                              (int16_t)encoder_average()) <= CFG_POS_WINDOW ||
+              encoder_confirmed() == target) {
             arrive(target, now);
             TICK_RETURN();
           }
