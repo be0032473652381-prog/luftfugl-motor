@@ -73,6 +73,7 @@ static uint32_t cal_sim_next_ms, cal_sim_error_sum, cal_sim_rng;
 static bool cal_motor_active, cal_motor_waiting, cal_motor_settling;
 static bool cal_motor_seen_motion;
 static uint8_t cal_motor_count, cal_motor_misses;
+static uint16_t cal_motor_failures;
 static uint16_t cal_motor_tests;
 static uint8_t cal_motor_station_misses[POS_MAX - POS_MIN + 1u];
 static uint32_t cal_motor_station_sum[POS_MAX - POS_MIN + 1u];
@@ -162,9 +163,9 @@ static void cal_sim_poll(uint32_t now) {
 static void cal_motor_finish(const char *outcome, const char *prefix) {
   char detail[192];
   snprintf(detail, sizeof detail,
-           "%s%u moves; errors %u (S1:%u S2:%u S3:%u S4:%u S5:%u); "
+           "%s%u moves; failures %u; errors %u (S1:%u S2:%u S3:%u S4:%u S5:%u); "
            "mean error %lu; max %u; centers S1:%u S2:%u S3:%u S4:%u S5:%u",
-           prefix, cal_motor_count, cal_motor_misses,
+           prefix, cal_motor_count, cal_motor_failures, cal_motor_misses,
            cal_motor_station_misses[0], cal_motor_station_misses[1],
            cal_motor_station_misses[2], cal_motor_station_misses[3],
            cal_motor_station_misses[4],
@@ -1866,6 +1867,7 @@ static void submit(char *typed) {
         cal_motor_waiting = cal_motor_settling = false;
         cal_motor_seen_motion = false;
         cal_motor_count = cal_motor_misses = 0u;
+        cal_motor_failures = 0u;
         cal_motor_tests = (uint16_t)requested_tests;
         memset(cal_motor_station_misses, 0, sizeof cal_motor_station_misses);
         memset(cal_motor_station_sum, 0, sizeof cal_motor_station_sum);
@@ -2083,8 +2085,16 @@ static void submit(char *typed) {
 void dbg_event(event_kind_t kind, uint8_t arg) {
   char detail[80], angle[12];
   if (kind == EV_TIMEOUT && cal_motor_active) {
-    (void)controller_request(REQ_STOP, 0);
-    cal_motor_finish("failed", "controller timeout; ");
+    ++cal_motor_failures;
+    ++cal_motor_count;
+    ++cal_motor_misses;
+    ++cal_motor_station_misses[cal_motor_target - POS_MIN];
+    cal_motor_waiting = false;
+    cal_motor_settling = false;
+    cal_motor_seen_motion = false;
+    result("cal motor", "progress", "controller timeout; automatic homing recovery, continuing");
+    if (cal_motor_count >= cal_motor_tests)
+      cal_motor_finish("complete", "completed with recovery; ");
     pending = PENDING_NONE;
     return;
   }
