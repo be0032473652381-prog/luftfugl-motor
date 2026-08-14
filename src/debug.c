@@ -70,6 +70,12 @@ static uint8_t cal_sim_count, cal_sim_misses;
 static uint8_t cal_sim_station_misses[POS_MAX - POS_MIN + 1u];
 static uint16_t cal_sim_adc, cal_sim_max_error;
 static uint32_t cal_sim_next_ms, cal_sim_error_sum, cal_sim_rng;
+static bool cal_motor_active, cal_motor_waiting, cal_motor_settling;
+static uint8_t cal_motor_count, cal_motor_misses;
+static uint8_t cal_motor_station_misses[POS_MAX - POS_MIN + 1u];
+static position_t cal_motor_target;
+static uint16_t cal_motor_max_error;
+static uint32_t cal_motor_next_ms, cal_motor_error_sum;
 static uint16_t sim_travel_from, sim_travel_to;
 static uint32_t sim_travel_started, sim_travel_duration;
 static uint8_t findmin_phase, findmin_duty;
@@ -146,6 +152,82 @@ static void cal_sim_poll(uint32_t now) {
              cal_sim_max_error, CFG_LOW_ENDSTOP_ADC, CFG_HIGH_ENDSTOP_ADC);
     result("cal sim", "complete", detail);
     cal_sim_active = false;
+  }
+}
+
+static void cal_motor_finish(const char *outcome, const char *prefix) {
+  char detail[192];
+  snprintf(detail, sizeof detail,
+           "%s%u moves; station errors %u (S1:%u S2:%u S3:%u S4:%u S5:%u); "
+           "mean ADC error %lu; max %u",
+           prefix, cal_motor_count, cal_motor_misses,
+           cal_motor_station_misses[0], cal_motor_station_misses[1],
+           cal_motor_station_misses[2], cal_motor_station_misses[3],
+           cal_motor_station_misses[4],
+           (unsigned long)(cal_motor_count
+                               ? cal_motor_error_sum / cal_motor_count
+                               : 0u),
+           cal_motor_max_error);
+  result("cal motor", outcome, detail);
+  cal_motor_active = cal_motor_waiting = cal_motor_settling = false;
+}
+
+static void cal_motor_poll(uint32_t now) {
+  if (!cal_motor_active || cal_sim_active)
+    return;
+  if (cal_motor_waiting) {
+    if (controller_state() == ST_FAULT) {
+      (void)controller_request(REQ_STOP, 0);
+      cal_motor_finish("failed", "controller fault; ");
+      return;
+    }
+    if (!cal_motor_settling && (int32_t)(now - cal_motor_next_ms) >= 0) {
+      (void)controller_request(REQ_STOP, 0);
+      cal_motor_finish("failed", "move timeout; ");
+      return;
+    }
+    if (!cal_motor_settling && controller_state() == ST_IDLE) {
+      cal_motor_settling = true;
+      cal_motor_next_ms = now + CAL_MOTOR_SETTLE_MS;
+      return;
+    }
+    if (!cal_motor_settling || (int32_t)(now - cal_motor_next_ms) < 0)
+      return;
+
+    uint16_t actual = encoder_average();
+    uint16_t nominal = encoder_nominal(cal_motor_target);
+    uint16_t error = actual > nominal ? (uint16_t)(actual - nominal)
+                                      : (uint16_t)(nominal - actual);
+    cal_motor_error_sum += error;
+    if (error > cal_motor_max_error)
+      cal_motor_max_error = error;
+    if (error > CFG_POS_WINDOW) {
+      ++cal_motor_misses;
+      ++cal_motor_station_misses[cal_motor_target - POS_MIN];
+    }
+    ++cal_motor_count;
+    cal_motor_waiting = cal_motor_settling = false;
+    if (cal_motor_count >= CAL_SIM_TESTS) {
+      cal_motor_finish("complete", "");
+      return;
+    }
+  }
+
+  if (controller_state() != ST_IDLE)
+    return;
+  cal_motor_target = (position_t)(POS_MIN +
+                                  (cal_sim_random() %
+                                   (POS_MAX - POS_MIN + 1u)));
+  move_result_t request = controller_request(REQ_MOVE, cal_motor_target);
+  if (request == MOVE_OK) {
+    cal_motor_waiting = true;
+    cal_motor_next_ms = now + TIMEOUT_STEP_MS + CAL_MOTOR_SETTLE_MS;
+  } else if (request == MOVE_ALREADY) {
+    cal_motor_waiting = true;
+    cal_motor_settling = true;
+    cal_motor_next_ms = now + CAL_MOTOR_SETTLE_MS;
+  } else if (request == MOVE_FAULT) {
+    cal_motor_finish("failed", "controller fault; ");
   }
 }
 
@@ -503,7 +585,7 @@ static void frame_continue(void) {
   static const char *const command_rows[] = {
       "  batt | batt raw | batt res | batt log | batt events | batt reset | batt sim",
       "  load | ina | adc | angle | status | stations | limits | cfg | lowendstop",
-      "  jog | step | pos | move | goto | home | stop | sim | cal sim | led",
+      "  jog | step | pos | move | goto | home | stop | cal sim | cal motor",
       "  highendstop | sel | save | export | arm | drive | disarm | clean | help | exit"};
   char piece[288];
   if (!frame_phase || out_free() < sizeof piece)
@@ -1083,8 +1165,8 @@ static const help_entry_t help_entries[] = {
      "Changes are RAM-only and lost on reset; export prints config.h station lines."},
     {"sim", "sim adc 2047", "ADC 0 to 4095",
      "Simulation inhibits physical motor output."},
-    {"cal", "cal sim", "no motion; 50 simulated tests",
-     "Runs randomized ADC classification tests between the active endstops; motor output remains inhibited."},
+    {"cal", "cal sim | cal motor", "sim is motor-inhibited; motor requires idle known station",
+     "cal sim tests injected ADC values; cal motor commands 50 randomized real station moves and reports arrival errors."},
     {"arm", "arm", "idle controller",
      "Unlocks manual pulses until disarm or exit."},
     {"disarm", "disarm", "no arguments",
@@ -1217,8 +1299,9 @@ static void help_description(const help_entry_t *entry, char *text,
              CFG_HIGH_ENDSTOP_ADC, ADC_MAX_VALUE, encoder_nominal(POS_MAX));
   } else if (!strcmp(entry->name, "cal")) {
     snprintf(text, size,
-             "%u randomized ADC points from %u to %u; station-window misses are counted; motor output is inhibited",
-             CAL_SIM_TESTS, CFG_LOW_ENDSTOP_ADC, CFG_HIGH_ENDSTOP_ADC);
+             "cal sim: %u randomized ADC points from %u to %u, motor inhibited; cal motor: %u live station moves",
+             CAL_SIM_TESTS, CFG_LOW_ENDSTOP_ADC, CFG_HIGH_ENDSTOP_ADC,
+             CAL_SIM_TESTS);
   } else {
     snprintf(text, size, "%s", entry->limits);
   }
@@ -1669,6 +1752,9 @@ static void submit(char *typed) {
     sim_travel_active = false;
     cal_sim_active = false;
     cal_sim_waiting = false;
+    cal_motor_active = false;
+    cal_motor_waiting = false;
+    cal_motor_settling = false;
     findmin_phase = 0u;
     armed = false;
     result(original, "complete", "brake requested");
@@ -1719,9 +1805,28 @@ static void submit(char *typed) {
              motor_duty());
     result(original, "complete", detail);
   } else if (!strcmp(command, "cal")) {
-    if (!arg || strcmp(arg, "sim")) {
-      result(original, "rejected", "syntax: cal sim");
+    if (!arg || (strcmp(arg, "sim") && strcmp(arg, "motor"))) {
+      result(original, "rejected", "syntax: cal sim or cal motor");
+    } else if (!strcmp(arg, "motor")) {
+      if (encoder_sim_active() || cal_sim_active || cal_motor_active ||
+          sim_travel_active ||
+          controller_state() != ST_IDLE || controller_position() < POS_MIN ||
+          controller_position() > POS_MAX) {
+        result(original, "rejected",
+               "simulation must be off; controller must be idle at a known station");
+      } else {
+        cal_motor_active = true;
+        cal_motor_waiting = cal_motor_settling = false;
+        cal_motor_count = cal_motor_misses = 0u;
+        memset(cal_motor_station_misses, 0, sizeof cal_motor_station_misses);
+        cal_motor_max_error = 0u;
+        cal_motor_error_sum = 0u;
+        cal_sim_rng = 0x4c554631u;
+        result(original, "accepted",
+               "cal motor started; 50 randomized station moves");
+      }
     } else if (cal_sim_active || sim_travel_active ||
+               cal_motor_active ||
                controller_state() == ST_MOVING ||
                controller_state() == ST_APPROACH ||
                controller_state() == ST_HOMING) {
@@ -2058,6 +2163,9 @@ void dbg_init(void) {
   sim_travel_active = false;
   cal_sim_active = false;
   cal_sim_waiting = false;
+  cal_motor_active = false;
+  cal_motor_waiting = false;
+  cal_motor_settling = false;
   cal_sim_count = cal_sim_misses = 0u;
   memset(cal_sim_station_misses, 0, sizeof cal_sim_station_misses);
   cal_sim_adc = cal_sim_max_error = 0u;
@@ -2095,6 +2203,9 @@ void dbg_exit(void) {
   sim_travel_active = false;
   cal_sim_active = false;
   cal_sim_waiting = false;
+  cal_motor_active = false;
+  cal_motor_waiting = false;
+  cal_motor_settling = false;
   (void)power_monitor_sim_set(false, 0u);
   findmin_phase = 0u;
   if (!plain_mode)
@@ -2119,6 +2230,7 @@ void dbg_poll(void) {
   }
   findmin_poll(now);
   cal_sim_poll(now);
+  cal_motor_poll(now);
   if (sim_travel_active) {
     uint32_t elapsed = now - sim_travel_started;
     uint16_t adc;
