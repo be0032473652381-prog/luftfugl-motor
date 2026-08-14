@@ -656,8 +656,8 @@ void controller_tick(void) {
            * for the reed classifier alone lets inertia push through the band
            * and start a direction reversal. */
           if (error_magnitude((int16_t)motion_target_adc -
-                              (int16_t)encoder_average()) <= CFG_POS_WINDOW ||
-              encoder_confirmed() == target) {
+                              (int16_t)encoder_average()) <=
+              CFG_ARRIVAL_WINDOW) {
             arrive(target, now);
             TICK_RETURN();
           }

@@ -63,6 +63,7 @@
 #define POS_4_ADC 1175 /* 103.3 deg */
 #define POS_5_ADC 1844 /* measured upper-station ADC from trace */
 #define POS_WINDOW 30
+#define ARRIVAL_WINDOW_COUNTS 15
 #define APPROACH_COUNTS 300
 #define LOW_ENDSTOP_ADC 100
 #define HIGH_ENDSTOP_ADC 2000
@@ -262,6 +263,7 @@ void cfg_reset(void);
 #define CFG_POS_4_ADC (cfg.pos_4_adc)
 #define CFG_POS_5_ADC (cfg.pos_5_adc)
 #define CFG_POS_WINDOW (cfg.pos_window)
+#define CFG_ARRIVAL_WINDOW ARRIVAL_WINDOW_COUNTS
 #define CFG_APPROACH_COUNTS (cfg.approach_counts)
 #define CFG_DEBOUNCE_MS (cfg.debounce_ms)
 #define CFG_BRAKE_HOLD_MS (cfg.brake_hold_ms)
@@ -278,6 +280,7 @@ void cfg_reset(void);
 #define CFG_POS_4_ADC POS_4_ADC
 #define CFG_POS_5_ADC POS_5_ADC
 #define CFG_POS_WINDOW POS_WINDOW
+#define CFG_ARRIVAL_WINDOW ARRIVAL_WINDOW_COUNTS
 #define CFG_APPROACH_COUNTS APPROACH_COUNTS
 #define CFG_DEBOUNCE_MS DEBOUNCE_MS
 #define CFG_BRAKE_HOLD_MS BRAKE_HOLD_MS
