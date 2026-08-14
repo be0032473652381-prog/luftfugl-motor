@@ -1,324 +1,303 @@
-# Hardware: Aura luftfugl Motor & Position Control
+# hardware.md — luftfugl hardware configuration
 
-Wiring, bill of materials, and bench-verification reference for the luftfugl
-motor subsystem. Firmware behaviour is specified separately in `agent.md`;
-this document covers only what is physically built and how to check it.
-
----
-
-## 1. System Overview
-
-```
-   USB-C ──┐
-           │
-      ┌────┴──────────────┐         ┌──────────────────┐
-      │  YD-RP2040        │  3.3V   │  TB6612FNG       │      ┌─────────┐
-      │  (16 MB flash)     ├────────►│  breakout        │      │   N20   │
-      │                   │         │                  │ AO1  │  motor  │
-      │  GP2  ───────────►│ AIN1    │      channel A   ├─────►│  + gear │
-      │  GP3  ───────────►│ AIN2    │                  │ AO2  │  + magnet
-      │  GP14 ───────────►│ PWMA    │                  ├─────►│         │
-      │  GP15 ───────────►│ STBY    │                  │      └────┬────┘
-      │                   │         └────────▲─────────┘           │
-      │                   │                  │ VM = +5 V           │
-      │  GP26/A0 ◄────────┼──── SENSE ───────┼─────────────────────┘
-      │                   │                  │      (reed ladder, 3 wires)
-      │  GP0 TX ─────────►│                  │
-      │  GP1 RX ◄─────────┤   ┌──────────────┴──┐
-      │  SWCLK/SWIO ◄────►│   │  +5 V supply    │
-      └───────────────────┘   └─────────────────┘
-              ▲
-              │  SWD + UART
-       ┌──────┴────────┐
-       │  RPi Debug    │
-       │  Probe        │
-       └───────────────┘
-```
+What is physically connected, and the electrical facts the firmware must
+respect.
 
 ---
 
-## 2. Bill of Materials
+## Board
 
-| # | Item | Spec | Qty | Notes |
-|---|------|------|-----|-------|
-| 1 | MCU board | YD-RP2040 "Ultimate Pico", 16 MB flash, USB-C | 1 | Purple board, BOOTSEL button |
-| 2 | Motor driver | TB6612FNG breakout, SparkFun-style silkscreen | 1 | Channel A only; channel B unused |
-| 3 | Motor | N20 DC gearmotor with permanent magnet on output | 1 | Stall current must be < 1.2 A at 5 V |
-| 4 | Reed switches | SPST normally-open, glass envelope | 5 | One per position |
-| 5 | Pull-up resistor | 10 kΩ, 1 % | 1 | SENSE to 3.3 V |
-| 6 | Ladder resistors | 1.0 k, 2.2 k, 4.7 k, 10 k, 22 kΩ — **1 % metal film** | 1 each | See §5 |
-| 7 | Filter capacitor | 100 nF ceramic, X7R | 1 | SENSE to AG, at the MCU end |
-| 8 | Bulk capacitor | 100 µF or larger electrolytic, ≥ 10 V | 1 | Across VM / GND at the driver |
-| 8a | STBY pull-down | 10 kΩ | 1 | STBY to GND — **see §7** |
-| 9 | Supply | +5 V, ≥ 1.5 A | 1 | See §3 |
-| 10 | Debug probe | Raspberry Pi Debug Probe | 1 | SWD + UART |
-| 11 | Harness | 3-core to the motor assembly, plus 2-core motor leads | — | See §7 |
-
-**Resistor tolerance matters.** The ADC bands in `agent.md` §2.7 are midpoints
-between nominal values. 5 % resistors will still classify correctly, but 1 %
-parts give substantially more margin at positions 4 and 5 where the bands are
-closest in relative terms.
+| | |
+|---|---|
+| MCU board | YD-RP2040 |
+| Silicon | RP2040-B2 |
+| Flash | 16 MB, Zbit zb25vq128 |
+| System clock | 125 MHz |
+| SWD adapter speed | 1000 kHz |
 
 ---
 
-## 3. Power Tree
+## Pin connections
 
-| Rail | Source | Feeds |
+| Pin | Connected to | Peripheral required | Direction | Idle state |
+|-----|--------------|--------------------|-----------|------------|
+| GP2 | TB6612 AIN1 | GPIO | out | low |
+| GP3 | TB6612 AIN2 | GPIO | out | low |
+| GP4 | I²C SDA, three devices | I2C0 | bidir | pulled up |
+| GP5 | I²C SCL, three devices | I2C0 | bidir | pulled up |
+| GP6 | TB6612 BIN1 | PWM slice 3 channel A | out | low |
+| GP7 | TB6612 BIN2 | PWM slice 3 channel B | out | low |
+| GP8 | CM1106SL-NS EN | GPIO | out | low |
+| GP9 | LED load switch enable | GPIO | out | low |
+| GP10 | CM1106SL-NS RDY | GPIO | in | high, active low |
+| GP11 | PCF8563T INT | GPIO | in | high, active low, 10 kΩ external pull-up |
+| GP14 | TB6612 PWMA | PWM slice 7 channel A | out | low |
+| GP15 | TB6612 STBY | GPIO | out | low, 10 kΩ external pull-down |
+| GP16 | TB6612 PWMB | GPIO | out | low |
+| GP18 | SK6812RGBWW DIN | PIO | out | low |
+| GP20 | Debug probe UART RX | UART1 TX | out | — |
+| GP21 | Debug probe UART TX | UART1 RX | in | — |
+| GP26 | Potentiometer wiper | ADC0 | in | — |
+
+Unconnected: GP0, GP1, GP12, GP13, GP17, GP19, GP22, GP27, GP28.
+
+GP6 and GP7 share one PWM slice. GP7 requires inverted output polarity.
+
+---
+
+## I²C bus
+
+Single bus, three devices, 4.7 kΩ pull-ups to 3.3 V.
+
+| Device | Address (7-bit) | Max clock | Notes |
+|--------|-----------------|-----------|-------|
+| CM1106SL-NS | 0x34 | 100 kHz | uses clock stretching |
+| INA219 | 0x40 | 400 kHz | |
+| PCF8563T | 0x51 | 400 kHz | |
+
+Bus speed limited to 100 kHz by the CO₂ sensor.
+
+---
+
+## Motor driver — TB6612FNG
+
+Channel A drives the motor. Channel B drives the buzzer.
+
+| STBY | AIN1 | AIN2 | PWMA | Output |
+|------|------|------|------|--------|
+| low | x | x | x | high impedance |
+| high | 0 | 0 | x | coast |
+| high | 1 | 1 | x | short brake |
+| high | 1 | 0 | duty | forward |
+| high | 0 | 1 | duty | reverse |
+
+Duty is applied directly on PWMA; there is no inverted-duty scheme on this part.
+
+VM 5 V, VCC 3.3 V. Motor on AO1/AO2, buzzer on BO1/BO2.
+
+---
+
+## Position sensor
+
+360° continuous potentiometer, 10 kΩ, linear taper.
+
+- 3.3 V and AG across the track, wiper to GP26
+- 100 nF from wiper to AG, fitted at the MCU
+- Full rotation spans the complete ADC range, 0–4095
+
+Measured station positions:
+
+| Station | ADC | Angle |
+|---------|-----|-------|
+| 1 | 200 | 17.6° |
+| 2 | 525 | 46.2° |
+| 3 | 850 | 74.7° |
+| 4 | 1175 | 103.3° |
+| 5 | 1500 | 131.9° |
+
+Spacing 325 counts. Scale 11.375 counts per degree.
+
+The mechanism has no travel limits and no end-stops. The full 0–4095 range is
+reachable and valid.
+
+---
+
+## Motor characteristics
+
+Measured on this rig:
+
+| | |
+|---|---|
+| Lowest duty producing motion | 25 of 255 |
+| Travel at duty 25 | ~690 counts in 150 ms |
+| Travel duty | 30 |
+| Approach duty | 25 |
+| Creep duty | 25 |
+| PWM frequency | 5 kHz nominal |
+
+Approach and creep are at the stiction threshold, so the mechanism cannot be
+driven more slowly than it approaches.
+
+At 5 kHz the closest achievable frequency with an 8-bit wrap is 4998.4 Hz.
+
+---
+
+## Buzzer
+
+Passive, driven differentially between BO1 and BO2 on TB6612 channel B.
+Antiphase drive on BIN1/BIN2 doubles the voltage swing.
+
+| | |
+|---|---|
+| Resonant frequency | 2.7 kHz |
+| PWMB | high while sounding |
+
+---
+
+## Status LED — SK6812RGBWW
+
+| | |
+|---|---|
+| Data | GP18 |
+| Supply | 3.3 V, switched by GP9 |
+| Devices in chain | 1 |
+| Data format | **32 bits, G-R-B-W order** |
+| Bit timing | 800 kHz, 0.3 µs / 0.6 µs nominal |
+| Time to accept data after power-up | 300 µs |
+| Current with all channels off | ~1 mA |
+
+The white channel is warm white. A non-zero white value desaturates the colour
+and shifts it toward yellow.
+
+| Station | R | G | B | W |
+|---------|---|---|---|---|
+| 1 | 0 | 224 | 24 | 0 |
+| 2 | 96 | 144 | 8 | 0 |
+| 3 | 160 | 48 | 0 | 0 |
+| 4 | 160 | 24 | 48 | 0 |
+| 5 | 192 | 4 | 8 | 0 |
+
+| Condition | R | G | B | W |
+|-----------|---|---|---|---|
+| Battery warning | 255 | 180 | 0 | 0 |
+| CO₂ alarm | 255 | 0 | 0 | 0 |
+
+---
+
+## CO₂ sensor — CM1106SL-NS
+
+I²C mode; COMSEL tied to GND. VBB and VDDIO permanently on 3.3 V. DVCC unused.
+
+EN high starts a measurement. RDY falls when the result is ready.
+
+| Phase | Duration |
+|-------|----------|
+| Preheat | 500 ms |
+| Light source | 100 ms |
+| Calculation | 100 ms |
+| Communication | 30 ms |
+| Total | 730 ms |
+
+| | |
+|---|---|
+| Current while measuring | 6.1 mA |
+| Current with EN low | negligible |
+| EEPROM write time | up to 25 ms |
+| ABC auto-calibration | disabled |
+
+Power must not be removed during an EEPROM write.
+
+---
+
+## Current monitor — INA219
+
+High-side, between the reverse-protection diode and the buck-boost input, so it
+measures battery voltage and battery current.
+
+| | |
+|---|---|
+| Shunt | 0.1 Ω, 1% |
+| Shunt voltage LSB | 10 µV |
+| Resulting current resolution | 100 µA |
+| Bus voltage LSB | 4 mV |
+| Conversion time, 12-bit | 532 µs |
+| Current while converting | 0.6 mA |
+| Current powered down | 6 µA |
+
+Supply from 3.3 V so its I²C lines match the bus. VIN+, VIN− and VS see the
+battery rail.
+
+Maximum expected load is the motor. Range must cover motor stall.
+
+---
+
+## Real-time clock — PCF8563T
+
+Provides the wake interrupt for RP2040 DORMANT mode. INT is open drain, active
+low, with a 10 kΩ external pull-up.
+
+Countdown timer registers:
+
+| Register | Contents |
+|----------|----------|
+| 0x01 | Control/status 2, contains the timer interrupt enable and the timer flag |
+| 0x0E | Timer control, contains the timer enable and the clock source select |
+| 0x0F | Countdown value, 1–255 |
+
+Clock source options:
+
+| Source | Range with an 8-bit countdown |
+|--------|-------------------------------|
+| 4096 Hz | 244 µs – 62 ms |
+| 64 Hz | 16 ms – 4 s |
+| 1 Hz | 1 – 255 s |
+| 1/60 Hz | 1 – 255 minutes |
+
+The timer reloads automatically. INT remains asserted until the timer flag is
+cleared.
+
+| | |
+|---|---|
+| Supply current | 250 nA |
+| Crystal accuracy | ±20 ppm |
+| Backup cell and trickle resistor | not fitted |
+
+---
+
+## Power
+
+| Rail | Source | Loads |
 |------|--------|-------|
-| +5 V | External supply or board VBUS | TB6612FNG `VM` only |
-| +3.3 V | YD-RP2040 onboard regulator, `3V3` pad | TB6612FNG `VCC`, encoder pull-up |
-| GND | Common | Everything |
-| AG | YD-RP2040 analog ground pad | Encoder ladder returns, 100 nF cap |
+| VBAT | 4× AA alkaline through an ideal diode | shunt, buck-boost |
+| 5 V | TPS630702 | TB6612 VM |
+| 3.3 V | YD-RP2040 regulator | TB6612 VCC, INA219, CM1106SL-NS, PCF8563T, SK6812RGBWW (switched), potentiometer, I²C pull-ups |
+| GND | common | |
+| AG | YD-RP2040 analog ground | potentiometer return, wiper filter capacitor |
 
-TB6612FNG rails: VM 2.5–13.5 V, VCC 2.7–5.5 V. The 5 V / 3.3 V split in use is
-well inside both.
+| Battery | |
+|---|---|
+| Cells | 4× AA alkaline |
+| Fresh | 6.4 V |
+| Discharged | 4.0 V |
+| Capacity | 2500 mAh |
 
-**On sourcing the 5 V:** taking VM from USB VBUS works for bench testing, but
-motor current then flows through the same rail feeding the RP2040's regulator.
-Under acceleration this shows up as ADC noise on the sense line. A separate 5 V
-supply, with grounds joined at a single point near the MCU board, is
-preferable — and necessary if position readings prove unstable while moving.
+Sleep currents:
 
-**Grounding.** Route the encoder ladder returns and the 100 nF capacitor to
-`AG`, and the driver/motor ground to a `GND` pad. Join them at the board rather
-than daisy-chaining motor ground through the sensor ground. Motor return
-current sharing a conductor with the sense ground is the most likely source of
-false position readings.
-
----
-
-## 4. Connection Tables
-
-### 4.1 RP2040 → TB6612FNG
-
-| RP2040 pin | Board label | Module pin | Direction |
-|------------|-------------|------------|-----------|
-| GP2 | `2` | AIN1 | out |
-| GP3 | `3` | AIN2 | out |
-| GP14 | `14` | PWMA | out (PWM) |
-| GP15 | `15` | STBY | out |
-| 3.3 V | `3V3` | VCC | power |
-| GND | `GND` | GND | power |
-
-STBY has no pull-up on the breakout. It is driven HIGH by firmware after
-initialisation; before that the RP2040 pin is an input and the driver stays
-safely in standby.
-
-### 4.2 TB6612FNG → Motor and Supply
-
-| Module pin | Connect to |
-|------------|------------|
-| VM | +5 V |
-| GND (all pins) | Common ground |
-| AO1 | Motor terminal 1 |
-| AO2 | Motor terminal 2 |
-| BIN1, BIN2, PWMB | **Tie to GND** — unused channel, must not float |
-| BO1, BO2 | Leave unconnected |
-
-If the motor runs backwards relative to the position numbering, **swap AO1 and
-AO2** rather than inverting the direction logic in firmware.
-
-### 4.3 Encoder Harness → RP2040
-
-Three conductors run to the motor assembly:
-
-| Wire | Function |
-|------|----------|
-| 1 | +3.3 V — feeds the top of the ladder |
-| 2 | SENSE — common node of all five reed branches |
-| 3 | GND / AG — common return for all five resistors |
-
-SENSE terminates at GP26 (`A0`).
-
-### 4.4 Debug Probe
-
-| Probe | YD-RP2040 |
-|-------|-----------|
-| SWD SWCLK | `SWCLK` (4-pin header) |
-| SWD SWDIO | `SWIO` (4-pin header) |
-| SWD GND | `GND` (4-pin header) |
-| UART TX | `1` (GP1, RP2040 RX) |
-| UART RX | `0` (GP0, RP2040 TX) |
-| UART GND | any `GND` |
-
-Do not connect the probe's 3.3 V if the board is separately powered.
-
-SWDIO and SWCLK are dedicated RP2040 package pins, not GPIOs. GP24 and GP25 on
-the bottom row are ordinary GPIOs and have nothing to do with SWD.
+| Item | |
+|------|---|
+| RP2040 DORMANT | 180 µA |
+| Buck-boost quiescent | 25 µA |
+| INA219 powered down | 6 µA |
+| CO₂ sensor, EN low | 2.5 µA |
+| TB6612 standby | 1 µA |
+| PCF8563T | 0.25 µA |
+| SK6812RGBWW, switch off | 0 |
 
 ---
 
-## 5. Position Encoder Ladder
+## Console
 
-```
-        +3.3 V
-          │
-         ┌┴┐
-         │ │ 10 kΩ  (pull-up, at the MCU end)
-         └┬┘
-          │
-  SENSE ──┼────────────────────────────────► GP26 / A0
-          │                          │
-          │                        ──┴──  100 nF
-          │                        ──┬──  (at the MCU end)
-          │                          │
-    ┌─────┼─────┬───────┬───────┬────┴──┐
-    │     │     │       │       │       │
-   ─┴─   ─┴─   ─┴─     ─┴─     ─┴─      │
-   / /   / /   / /     / /     / /      │   reed switches
-   ─┬─   ─┬─   ─┬─     ─┬─     ─┬─      │   (one closed at a time)
-    │     │     │       │       │       │
-   ┌┴┐   ┌┴┐   ┌┴┐     ┌┴┐     ┌┴┐      │
-   │ │   │ │   │ │     │ │     │ │      │
-   └┬┘   └┬┘   └┬┘     └┬┘     └┬┘      │
-   1.0k  2.2k  4.7k    10k     22k      │
-    │     │     │       │       │       │
-    └─────┴─────┴───────┴───────┴───────┴──► AG
-    P1    P2    P3      P4      P5
-```
-
-Nominal ADC reading = `4095 × R / (R + 10 kΩ)`.
-
-| Position | R | Nominal ADC | Firmware band | Measured (fill in) |
-|----------|---|-------------|---------------|--------------------|
-| 1 | 1.0 kΩ | 372 | 0 – 555 | |
-| 2 | 2.2 kΩ | 738 | 556 – 1023 | |
-| 3 | 4.7 kΩ | 1309 | 1024 – 1678 | |
-| 4 | 10 kΩ | 2047 | 1679 – 2431 | |
-| 5 | 22 kΩ | 2815 | 2432 – 3455 | |
-| Between | open | 4095 | 3456 – 4095 | |
-
-Band edges are midpoints between adjacent nominal values. If measured values
-differ from nominal by more than about 8 %, recompute the midpoints from the
-measured column and update `config.h` rather than adjusting the hardware.
-
-The 100 nF cap and the pull-up form a low-pass filter with a time constant that
-varies from ~0.09 ms (position 1 closed) to ~1.0 ms (all reeds open). Leaving a
-reed therefore takes roughly 5 ms to register. This is accounted for in the
-firmware's debounce timing and sets an upper limit on traverse speed.
+| | |
+|---|---|
+| Interface | UART1 |
+| TX | GP20 to probe RX |
+| RX | GP21 from probe TX |
+| Baud | 115200, 8N1 |
+| Flow control | none |
+| Ground | not connected; common through SWD |
 
 ---
 
-## 6. Pin Allocation
+## Debug
 
-| RP2040 | Board label | Use |
-|--------|-------------|-----|
-| GP0 | `0` | UART0 TX → probe |
-| GP1 | `1` | UART0 RX ← probe |
-| GP2 | `2` | AIN1 |
-| GP3 | `3` | AIN2 |
-| GP14 | `14` | PWMA |
-| GP15 | `15` | STBY |
-| GP26 | `A0` | SENSE (ADC0) |
-
-Everything else is reserved for future expansion — SD card, audio DAC, VC-02
-voice module, LEDs. See `agent.md` §9 for the reserved bus map.
-
-The YD-RP2040 additionally uses GP23 for an onboard WS2812 RGB LED and GP25 for
-the user LED on most variants. Confirm before assigning either.
+SWDIO and SWCLK are dedicated RP2040 package pins, available on the board's
+4-pin header alongside GND and 3V3. The probe's 3V3 is not connected.
 
 ---
 
-## 7. Assembly Notes
+## Wake sources
 
-- **Cap placement.** The 100 nF goes at the *MCU* end of the harness, not at
-  the motor assembly. Its job is to filter noise picked up along the cable.
-- **Pull-up placement.** Also at the MCU end, off the same 3.3 V pad feeding
-  VCC.
-- **Cable routing.** Keep the 3-wire encoder harness away from the motor leads.
-  If they must run together, twist the motor pair to cancel its field, and
-  twist SENSE with its ground return.
-- **Bulk capacitor.** Across VM and GND, physically close to the driver module.
-  Observe polarity. Without it, motor inrush will dip the supply and corrupt
-  ADC readings during acceleration.
-- **STBY pull-down (10 kΩ to GND).** The breakout has no pull-down and GP15 is
-  an input during reset, BOOTSEL and every moment before firmware runs. A
-  floating STBY can read as HIGH, enabling the driver with undefined direction
-  inputs. The resistor guarantees standby whenever the MCU is not actively
-  driving the pin. Fit it — it is the cheapest safety part in the build.
-- **Unused channel B.** BIN1, BIN2 and PWMB tied to GND. Floating CMOS inputs
-  on an H-bridge are a real hazard, not a formality.
-- **Harness strain relief.** The moving part carries wires. Anchor them so that
-  travel flexes the cable rather than pulling on solder joints.
+RP2040 DORMANT stops all clocks. The only wake source available is a GPIO
+transition. The PCF8563T INT line on GP11 is the wake source.
 
----
-
-## 8. Hazards
-
-**There are no physical end-stops on this mechanism.** Positions 1 and 5 are
-detected in firmware only. Nothing prevents the motor from driving past them
-and twisting the harness attached to the moving part until it tears.
-
-This has direct consequences for bench work:
-
-- Never run the motor open-loop while coupled to the mechanism.
-- Never bypass the firmware limits to "just test the motor".
-- Test homing and recovery with the motor uncoupled first.
-- Keep the supply within reach during the first coupled tests.
-
-Secondary hazards: the TB6612FNG has no fault output, so thermal shutdown and
-overcurrent are invisible to firmware — they present only as a move timeout.
-And the driver module gets warm under sustained stall; do not leave a stalled
-motor energised while investigating.
-
----
-
-## 9. Pre-Power Checklist
-
-Work through this with the supply disconnected.
-
-- [ ] Continuity: every RP2040 pin in §6 reaches its intended module pin
-- [ ] No short between +5 V and GND at the driver
-- [ ] No short between +3.3 V and GND at the driver or at the ladder
-- [ ] No short between +5 V and +3.3 V
-- [ ] VM is on the 5 V rail and VCC on the 3.3 V rail — **not swapped**
-- [ ] Bulk capacitor polarity correct
-- [ ] BIN1, BIN2, PWMB tied to GND
-- [ ] Grounds common between MCU board, driver, supply, and probe
-- [ ] Encoder ladder: each reed measures its expected resistance to ground when
-      manually closed
-- [ ] Pull-up measures 10 kΩ from SENSE to the 3.3 V pad
-- [ ] Motor uncoupled from the mechanism
-- [ ] Debug probe SWD and UART wired, 3.3 V *not* connected
-
-Then power up with the motor supply off, confirm the firmware banner on UART,
-and only then apply VM.
-
----
-
-## 10. Bench Measurements
-
-Fill these in during bring-up (`agent.md` §13). Every value feeds a constant in
-`config.h`.
-
-| Measurement | Method | Value | Feeds |
-|-------------|--------|-------|-------|
-| ADC at each of 5 positions | Rotate by hand, log averaged reading | | Band table, §5 |
-| ADC between reeds | Park between positions | | Open-band threshold |
-| ADC ripple while moving | Log min/max during a traverse | | Band margin check |
-| Minimum duty that turns the motor | Ramp duty until it moves | | `DUTY_MIN` |
-| Duty giving smooth slow motion | Observe at creep speeds | | `DUTY_CREEP` |
-| Single-step time at `DUTY_NORMAL` | Time position 3 → 4 | | `TIMEOUT_STEP_MS` |
-| Full travel time at `DUTY_CREEP` | Time position 5 → 1 homing | | `TIMEOUT_HOME_MS` |
-| Overshoot past target at `DUTY_APPROACH` | Observe at position 3 | | `DUTY_APPROACH` |
-| Free-running current at 5 V | Inline ammeter on VM | | Supply sizing |
-| Stall current at 5 V | Brief stall, ammeter on VM | | Must be < 1.2 A |
-
----
-
-## 11. Troubleshooting
-
-| Symptom | Likely cause |
-|---------|--------------|
-| Motor never moves, no UART errors | STBY not driven HIGH, or VM not connected |
-| Motor moves only one direction | AIN1/AIN2 swapped or one not connected |
-| Motor runs backwards | Swap AO1 and AO2 |
-| Motor jitters or hums but does not turn | Duty below `DUTY_MIN`, or VM sagging under load |
-| Position always reads `?` | SENSE open, pull-up missing, or ladder ground not connected |
-| Position 4 reads as 5 | Old band table in use — see `agent.md` §2.7 |
-| Readings unstable only while moving | Motor current sharing the sense ground, or missing bulk cap |
-| Readings drift with temperature | 5 % ladder resistors; move to 1 % |
-| `PASS:N` never fires in transit | Traverse too fast for the RC filter — lower `DUTY_NORMAL` |
-| Arrivals overshoot the reed | `DUTY_APPROACH` too high, or firmware coasting instead of braking |
-| Repeated unexplained faults | TB6612FNG thermal shutdown — check VM current draw |
-| SWD not detected | Probe 3.3 V connected while board separately powered, or SWCLK/SWIO swapped |
+The hardware watchdog cannot be serviced while clocks are stopped.
