@@ -74,6 +74,8 @@ static bool cal_motor_active, cal_motor_waiting, cal_motor_settling;
 static bool cal_motor_seen_motion;
 static uint8_t cal_motor_count, cal_motor_misses;
 static uint8_t cal_motor_station_misses[POS_MAX - POS_MIN + 1u];
+static uint32_t cal_motor_station_sum[POS_MAX - POS_MIN + 1u];
+static uint8_t cal_motor_station_count[POS_MAX - POS_MIN + 1u];
 static position_t cal_motor_target;
 static uint16_t cal_motor_max_error;
 static uint32_t cal_motor_next_ms, cal_motor_error_sum;
@@ -159,8 +161,8 @@ static void cal_sim_poll(uint32_t now) {
 static void cal_motor_finish(const char *outcome, const char *prefix) {
   char detail[192];
   snprintf(detail, sizeof detail,
-           "%s%u moves; station errors %u (S1:%u S2:%u S3:%u S4:%u S5:%u); "
-           "mean ADC error %lu; max %u",
+           "%s%u moves; errors %u (S1:%u S2:%u S3:%u S4:%u S5:%u); "
+           "mean error %lu; max %u; centers S1:%u S2:%u S3:%u S4:%u S5:%u",
            prefix, cal_motor_count, cal_motor_misses,
            cal_motor_station_misses[0], cal_motor_station_misses[1],
            cal_motor_station_misses[2], cal_motor_station_misses[3],
@@ -168,7 +170,12 @@ static void cal_motor_finish(const char *outcome, const char *prefix) {
            (unsigned long)(cal_motor_count
                                ? cal_motor_error_sum / cal_motor_count
                                : 0u),
-           cal_motor_max_error);
+           cal_motor_max_error,
+           cal_motor_station_count[0] ? (unsigned)(cal_motor_station_sum[0] / cal_motor_station_count[0]) : 0u,
+           cal_motor_station_count[1] ? (unsigned)(cal_motor_station_sum[1] / cal_motor_station_count[1]) : 0u,
+           cal_motor_station_count[2] ? (unsigned)(cal_motor_station_sum[2] / cal_motor_station_count[2]) : 0u,
+           cal_motor_station_count[3] ? (unsigned)(cal_motor_station_sum[3] / cal_motor_station_count[3]) : 0u,
+           cal_motor_station_count[4] ? (unsigned)(cal_motor_station_sum[4] / cal_motor_station_count[4]) : 0u);
   result("cal motor", outcome, detail);
   cal_motor_active = cal_motor_waiting = cal_motor_settling = false;
   cal_motor_seen_motion = false;
@@ -208,6 +215,8 @@ static void cal_motor_poll(uint32_t now) {
     uint16_t error = actual > nominal ? (uint16_t)(actual - nominal)
                                       : (uint16_t)(nominal - actual);
     cal_motor_error_sum += error;
+    cal_motor_station_sum[cal_motor_target - POS_MIN] += actual;
+    ++cal_motor_station_count[cal_motor_target - POS_MIN];
     if (error > cal_motor_max_error)
       cal_motor_max_error = error;
     if (error > CFG_POS_WINDOW) {
@@ -1840,6 +1849,8 @@ static void submit(char *typed) {
         cal_motor_seen_motion = false;
         cal_motor_count = cal_motor_misses = 0u;
         memset(cal_motor_station_misses, 0, sizeof cal_motor_station_misses);
+        memset(cal_motor_station_sum, 0, sizeof cal_motor_station_sum);
+        memset(cal_motor_station_count, 0, sizeof cal_motor_station_count);
         cal_motor_max_error = 0u;
         cal_motor_error_sum = 0u;
         cal_sim_rng = 0x4c554631u;
