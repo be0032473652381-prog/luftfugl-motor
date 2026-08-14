@@ -52,10 +52,10 @@
 #define PWM_WRAP 255
 #define PWM_CLKDIV 97.6875f
 
-#define DUTY_NORMAL 100
-#define DUTY_APPROACH 50
-#define DUTY_CREEP 50
-#define DUTY_MIN 45
+#define DUTY_NORMAL 50
+#define DUTY_APPROACH 25
+#define DUTY_CREEP 25
+#define DUTY_MIN 25
 
 #define POS_1_ADC 200  /*  17.6 deg */
 #define POS_2_ADC 525  /*  46.2 deg */
