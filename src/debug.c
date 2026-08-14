@@ -1821,12 +1821,19 @@ static void submit(char *typed) {
       result(original, "rejected", "syntax: cal sim or cal motor");
     } else if (!strcmp(arg, "motor")) {
       position_t sensed_position = encoder_confirmed();
-      if (encoder_sim_active() || cal_sim_active || cal_motor_active ||
-          sim_travel_active ||
-          controller_state() != ST_IDLE || sensed_position < POS_MIN ||
-          sensed_position > POS_MAX || controller_position() != sensed_position) {
+      if (cal_sim_active || cal_motor_active || sim_travel_active ||
+          controller_state() == ST_MOVING ||
+          controller_state() == ST_APPROACH ||
+          controller_state() == ST_HOMING) {
         result(original, "rejected",
-               "simulation must be off; controller must be idle at a confirmed station; run home first");
+               "controller busy; type \"stop\" first");
+      } else if (encoder_sim_active()) {
+        dbg_request_t r = {.op = DBG_OP_SIM_ENABLE, .flag = false};
+        if (controller_debug_request(&r))
+          result(original, "accepted",
+                 "simulation disabled; run cal motor again to use the real encoder");
+        else
+          result(original, "rejected", "could not disable simulation; type \"stop\" first");
       } else {
         cal_motor_active = true;
         cal_motor_waiting = cal_motor_settling = false;
@@ -1836,8 +1843,20 @@ static void submit(char *typed) {
         cal_motor_max_error = 0u;
         cal_motor_error_sum = 0u;
         cal_sim_rng = 0x4c554631u;
-        result(original, "accepted",
-               "cal motor started; 50 randomized station moves");
+        if (sensed_position < POS_MIN || sensed_position > POS_MAX ||
+            controller_position() != sensed_position) {
+          move_result_t home = controller_request(REQ_HOME, 0);
+          if (home != MOVE_OK) {
+            cal_motor_active = false;
+            result(original, "rejected", "position unknown; home request busy");
+          } else {
+            result(original, "accepted",
+                   "position unknown; homing first, then 50 randomized station moves");
+          }
+        } else {
+          result(original, "accepted",
+                 "cal motor started; 50 randomized station moves");
+        }
       }
     } else if (cal_sim_active || sim_travel_active ||
                cal_motor_active ||
