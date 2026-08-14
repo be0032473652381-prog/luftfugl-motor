@@ -1195,7 +1195,7 @@ static const help_entry_t help_entries[] = {
      "Changes are RAM-only and lost on reset; export prints config.h station lines."},
     {"sim", "sim adc 2047", "ADC 0 to 4095",
      "Simulation inhibits physical motor output."},
-    {"cal", "cal sim | cal motor 500", "sim is motor-inhibited; motor count is 50 or 500",
+    {"cal", "cal sim | cal motor 500", "sim is motor-inhibited; motor count is 5, 50 or 500",
      "cal sim tests injected ADC values; cal motor commands randomized real station moves and reports encoder centers and errors."},
     {"arm", "arm", "idle controller",
      "Unlocks manual pulses until disarm or exit."},
@@ -1381,6 +1381,17 @@ static void submit(char *typed) {
   original[sizeof original - 1u] = '\0';
   for (char *p = typed; *p; ++p)
     *p = (char)tolower((unsigned char)*p);
+  if (!strncmp(typed, "motor cal", 9u)) {
+    char alias[DEBUG_COMMAND_MAX + 1u];
+    snprintf(alias, sizeof alias, "cal motor%s", typed + 9u);
+    strncpy(typed, alias, DEBUG_COMMAND_MAX);
+    typed[DEBUG_COMMAND_MAX] = '\0';
+  } else if (!strncmp(typed, "motor stop", 10u)) {
+    char alias[DEBUG_COMMAND_MAX + 1u];
+    snprintf(alias, sizeof alias, "stop%s", typed + 10u);
+    strncpy(typed, alias, DEBUG_COMMAND_MAX);
+    typed[DEBUG_COMMAND_MAX] = '\0';
+  }
   const char *endstop_key = NULL;
   const char *endstop_value = NULL;
   if (!strncmp(typed, "low endstop=", 12u)) {
@@ -1837,15 +1848,16 @@ static void submit(char *typed) {
     result(original, "complete", detail);
   } else if (!strcmp(command, "cal")) {
     if (!arg || (strcmp(arg, "sim") && strncmp(arg, "motor", 5u))) {
-      result(original, "rejected", "syntax: cal sim or cal motor [50|500]");
+      result(original, "rejected", "syntax: cal sim or cal motor [5|50|500]");
     } else if (!strncmp(arg, "motor", 5u)) {
       long requested_tests = CAL_SIM_TESTS;
       char *count_text = arg + 5u;
       while (*count_text == ' ' || *count_text == '\t')
         ++count_text;
       if (*count_text && (!parse_long(count_text, &requested_tests) ||
-                          (requested_tests != 50 && requested_tests != 500))) {
-        result(original, "rejected", "cal motor count must be 50 or 500");
+                          (requested_tests != 5 && requested_tests != 50 &&
+                           requested_tests != 500))) {
+        result(original, "rejected", "cal motor count must be 5, 50 or 500");
         return;
       }
       position_t sensed_position = encoder_confirmed();
