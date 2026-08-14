@@ -62,7 +62,7 @@
 #define POS_3_ADC 850  /*  74.7 deg */
 #define POS_4_ADC 1175 /* 103.3 deg */
 #define POS_5_ADC 1844 /* measured upper-station ADC from trace */
-#define POS_WINDOW 50
+#define POS_WINDOW 30
 #define APPROACH_COUNTS 300
 #define LOW_ENDSTOP_ADC 100
 #define HIGH_ENDSTOP_ADC 2000
