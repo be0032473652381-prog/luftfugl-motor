@@ -225,6 +225,14 @@ static void cal_motor_poll(uint32_t now) {
       ++cal_motor_station_misses[cal_motor_target - POS_MIN];
     }
     ++cal_motor_count;
+    if (cal_motor_count == 1u || (cal_motor_count % 10u) == 0u) {
+      char progress[112];
+      snprintf(progress, sizeof progress,
+               "%u/%u target S%u ADC %u err %+d; motor test active",
+               cal_motor_count, cal_motor_tests, cal_motor_target, actual,
+               (int)actual - (int)nominal);
+      result("cal motor", "progress", progress);
+    }
     cal_motor_waiting = cal_motor_settling = false;
     if (cal_motor_count >= cal_motor_tests) {
       cal_motor_finish("complete", "");
