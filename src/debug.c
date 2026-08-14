@@ -1820,12 +1820,13 @@ static void submit(char *typed) {
     if (!arg || (strcmp(arg, "sim") && strcmp(arg, "motor"))) {
       result(original, "rejected", "syntax: cal sim or cal motor");
     } else if (!strcmp(arg, "motor")) {
+      position_t sensed_position = encoder_confirmed();
       if (encoder_sim_active() || cal_sim_active || cal_motor_active ||
           sim_travel_active ||
-          controller_state() != ST_IDLE || controller_position() < POS_MIN ||
-          controller_position() > POS_MAX) {
+          controller_state() != ST_IDLE || sensed_position < POS_MIN ||
+          sensed_position > POS_MAX || controller_position() != sensed_position) {
         result(original, "rejected",
-               "simulation must be off; controller must be idle at a known station");
+               "simulation must be off; controller must be idle at a confirmed station; run home first");
       } else {
         cal_motor_active = true;
         cal_motor_waiting = cal_motor_settling = false;
