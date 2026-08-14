@@ -71,6 +71,7 @@ static uint8_t cal_sim_station_misses[POS_MAX - POS_MIN + 1u];
 static uint16_t cal_sim_adc, cal_sim_max_error;
 static uint32_t cal_sim_next_ms, cal_sim_error_sum, cal_sim_rng;
 static bool cal_motor_active, cal_motor_waiting, cal_motor_settling;
+static bool cal_motor_seen_motion;
 static uint8_t cal_motor_count, cal_motor_misses;
 static uint8_t cal_motor_station_misses[POS_MAX - POS_MIN + 1u];
 static position_t cal_motor_target;
@@ -170,6 +171,7 @@ static void cal_motor_finish(const char *outcome, const char *prefix) {
            cal_motor_max_error);
   result("cal motor", outcome, detail);
   cal_motor_active = cal_motor_waiting = cal_motor_settling = false;
+  cal_motor_seen_motion = false;
 }
 
 static void cal_motor_poll(uint32_t now) {
@@ -186,7 +188,14 @@ static void cal_motor_poll(uint32_t now) {
       cal_motor_finish("failed", "move timeout; ");
       return;
     }
-    if (!cal_motor_settling && controller_state() == ST_IDLE) {
+    if (!cal_motor_settling &&
+        (controller_state() == ST_MOVING || controller_state() == ST_APPROACH ||
+         controller_state() == ST_HOMING)) {
+      cal_motor_seen_motion = true;
+      return;
+    }
+    if (!cal_motor_settling && cal_motor_seen_motion &&
+        controller_state() == ST_IDLE) {
       cal_motor_settling = true;
       cal_motor_next_ms = now + CAL_MOTOR_SETTLE_MS;
       return;
@@ -221,9 +230,11 @@ static void cal_motor_poll(uint32_t now) {
   move_result_t request = controller_request(REQ_MOVE, cal_motor_target);
   if (request == MOVE_OK) {
     cal_motor_waiting = true;
+    cal_motor_seen_motion = false;
     cal_motor_next_ms = now + TIMEOUT_STEP_MS + CAL_MOTOR_SETTLE_MS;
   } else if (request == MOVE_ALREADY) {
     cal_motor_waiting = true;
+    cal_motor_seen_motion = true;
     cal_motor_settling = true;
     cal_motor_next_ms = now + CAL_MOTOR_SETTLE_MS;
   } else if (request == MOVE_FAULT) {
@@ -1755,6 +1766,7 @@ static void submit(char *typed) {
     cal_motor_active = false;
     cal_motor_waiting = false;
     cal_motor_settling = false;
+    cal_motor_seen_motion = false;
     findmin_phase = 0u;
     armed = false;
     result(original, "complete", "brake requested");
@@ -1817,6 +1829,7 @@ static void submit(char *typed) {
       } else {
         cal_motor_active = true;
         cal_motor_waiting = cal_motor_settling = false;
+        cal_motor_seen_motion = false;
         cal_motor_count = cal_motor_misses = 0u;
         memset(cal_motor_station_misses, 0, sizeof cal_motor_station_misses);
         cal_motor_max_error = 0u;
@@ -2013,6 +2026,12 @@ static void submit(char *typed) {
 
 void dbg_event(event_kind_t kind, uint8_t arg) {
   char detail[80], angle[12];
+  if (kind == EV_TIMEOUT && cal_motor_active) {
+    (void)controller_request(REQ_STOP, 0);
+    cal_motor_finish("failed", "controller timeout; ");
+    pending = PENDING_NONE;
+    return;
+  }
   if (kind == EV_TIMEOUT &&
       (pending == PENDING_MOVE || pending == PENDING_HOME)) {
     result(pending_text, "failed", "target timeout; automatic homing started");
@@ -2166,6 +2185,7 @@ void dbg_init(void) {
   cal_motor_active = false;
   cal_motor_waiting = false;
   cal_motor_settling = false;
+  cal_motor_seen_motion = false;
   cal_sim_count = cal_sim_misses = 0u;
   memset(cal_sim_station_misses, 0, sizeof cal_sim_station_misses);
   cal_sim_adc = cal_sim_max_error = 0u;
@@ -2206,6 +2226,7 @@ void dbg_exit(void) {
   cal_motor_active = false;
   cal_motor_waiting = false;
   cal_motor_settling = false;
+  cal_motor_seen_motion = false;
   (void)power_monitor_sim_set(false, 0u);
   findmin_phase = 0u;
   if (!plain_mode)
