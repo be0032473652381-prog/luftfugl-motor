@@ -6,6 +6,7 @@
 #include "encoder.h"
 #include "motor.h"
 #include "led.h"
+#include "power_monitor.h"
 #ifdef LUFTFUGL_MONITOR
 #include "debug.h"
 #endif
@@ -17,6 +18,7 @@ static bool on_tick(struct repeating_timer *timer)
     (void)timer;
     encoder_tick();
     controller_tick();
+    power_monitor_tick();
     tick_has_run = true;
     return true;
 }
@@ -33,6 +35,7 @@ int main(void)
 #endif
     encoder_init();
     led_init();
+    power_monitor_init();
     controller_init();
 #ifdef LUFTFUGL_MONITOR
     dbg_enter();

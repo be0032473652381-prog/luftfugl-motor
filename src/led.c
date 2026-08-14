@@ -5,6 +5,7 @@
 #include "encoder.h"
 #include "hardware/pio.h"
 #include "pico/time.h"
+#include "power_monitor.h"
 #include "ws2812.pio.h"
 
 #include <limits.h>
@@ -57,6 +58,20 @@ static uint32_t station1_mint(void) {
                      LED_STATION_BRIGHTNESS_PERCENT);
 }
 
+static uint32_t battery_deep_yellow(void) {
+  return colour_word(LED_BATTERY_R, LED_BATTERY_G, LED_BATTERY_B,
+                     LED_BATTERY_BRIGHTNESS_PERCENT);
+}
+
+static bool hazard_lit(void) {
+  uint32_t phase =
+      to_ms_since_boot(get_absolute_time()) % LED_HAZARD_PERIOD_MS;
+  uint32_t second_pulse = LED_HAZARD_PULSE_MS + LED_HAZARD_GAP_MS;
+  return phase < LED_HAZARD_PULSE_MS ||
+         (phase >= second_pulse &&
+          phase < second_pulse + LED_HAZARD_PULSE_MS);
+}
+
 static uint32_t requested_colour(void) {
   if (mode == LED_MODE_FORCED_RAW)
     return rgbw_enabled ? raw_colour : raw_colour << 8;
@@ -64,6 +79,12 @@ static uint32_t requested_colour(void) {
     return station5_rose();
   if (mode == LED_MODE_FORCED_OFF)
     return 0u;
+  power_sample_t battery;
+  power_monitor_snapshot(&battery);
+  if (battery.valid && battery.bus_mv < BATTERY_CRITICAL_MV)
+    return hazard_lit() ? battery_deep_yellow() : 0u;
+  if (battery.valid && battery.bus_mv < BATTERY_WARN_MV)
+    return battery_deep_yellow();
   /* Passing through a station must never display its colour. Automatic
      indication begins only after the controller has completed arrival. */
   if (controller_state() != ST_IDLE)
@@ -78,13 +99,7 @@ static uint32_t requested_colour(void) {
   if (station == 4u)
     return station4_peach();
   if (station == POS_MAX) {
-    uint32_t phase = to_ms_since_boot(get_absolute_time()) %
-                     LED_HAZARD_PERIOD_MS;
-    uint32_t second_pulse = LED_HAZARD_PULSE_MS + LED_HAZARD_GAP_MS;
-    bool lit = phase < LED_HAZARD_PULSE_MS ||
-               (phase >= second_pulse &&
-                phase < second_pulse + LED_HAZARD_PULSE_MS);
-    return lit ? station5_rose() : 0u;
+    return hazard_lit() ? station5_rose() : 0u;
   }
   return 0u;
 }

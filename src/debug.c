@@ -4,13 +4,16 @@
 #include "controller.h"
 #include "encoder.h"
 #include "hardware/clocks.h"
+#include "hardware/flash.h"
 #include "hardware/gpio.h"
 #include "hardware/pwm.h"
 #include "hardware/structs/pwm.h"
 #include "hardware/uart.h"
 #include "hardware/watchdog.h"
+#include "hardware/sync.h"
 #include "motor.h"
 #include "led.h"
+#include "power_monitor.h"
 #include "pico/bootrom.h"
 #include "pico/time.h"
 #include <ctype.h>
@@ -20,6 +23,17 @@
 
 #define DEBUG_COMMAND_MAX 48u
 #define DEBUG_REFRESH_MS 1000u
+#define ENDSTOP_SCRATCH_MAGIC 0x45535450u /* "ESTP" */
+#define ENDSTOP_FLASH_MAGIC 0x45535431u /* "EST1" */
+#define ENDSTOP_FLASH_OFFSET (PICO_FLASH_SIZE_BYTES - FLASH_SECTOR_SIZE)
+
+typedef struct {
+  uint32_t magic;
+  uint16_t low;
+  uint16_t high;
+  uint32_t checksum;
+  uint32_t reserved;
+} endstop_record_t;
 
 typedef enum {
   PENDING_NONE,
@@ -44,13 +58,18 @@ static uint32_t next_refresh;
 static pending_t pending;
 static uint16_t pending_target_adc;
 static char pending_text[DEBUG_COMMAND_MAX + 1u];
-static char status_shadow[10][81];
+static char status_shadow[24][81];
 static uint8_t frame_phase;
 static bool frame_measuring;
 static uint32_t frame_bytes_current, frame_bytes_last, frame_draw_count;
 static uint16_t field_bytes_last;
 static bool first_result;
 static bool sim_travel_active;
+static bool cal_sim_active, cal_sim_waiting;
+static uint8_t cal_sim_count, cal_sim_misses;
+static uint8_t cal_sim_station_misses[POS_MAX - POS_MIN + 1u];
+static uint16_t cal_sim_adc, cal_sim_max_error;
+static uint32_t cal_sim_next_ms, cal_sim_error_sum, cal_sim_rng;
 static uint16_t sim_travel_from, sim_travel_to;
 static uint32_t sim_travel_started, sim_travel_duration;
 static uint8_t findmin_phase, findmin_duty;
@@ -58,6 +77,77 @@ static direction_t findmin_direction;
 static uint16_t findmin_min, findmin_max, findmin_start, findmin_noise;
 static uint32_t findmin_deadline;
 static uint8_t trace_dump_index, trace_dump_count;
+
+static uint32_t cal_sim_random(void) {
+  cal_sim_rng = cal_sim_rng * 1664525u + 1013904223u;
+  return cal_sim_rng;
+}
+
+static void result(const char *command, const char *outcome,
+                   const char *detail);
+
+static position_t cal_sim_nearest(uint16_t adc, uint16_t *error_out) {
+  position_t best = POS_MIN;
+  uint16_t best_error = UINT16_MAX;
+  for (position_t p = POS_MIN; p <= POS_MAX; ++p) {
+    uint16_t nominal = encoder_nominal(p);
+    uint16_t error = adc > nominal ? (uint16_t)(adc - nominal)
+                                   : (uint16_t)(nominal - adc);
+    if (error < best_error) {
+      best = p;
+      best_error = error;
+    }
+  }
+  *error_out = best_error;
+  return best;
+}
+
+static void cal_sim_poll(uint32_t now) {
+  if (!cal_sim_active || !encoder_sim_active() || sim_travel_active)
+    return;
+  if (!cal_sim_waiting) {
+    uint16_t span = (uint16_t)(CFG_HIGH_ENDSTOP_ADC - CFG_LOW_ENDSTOP_ADC);
+    cal_sim_adc = (uint16_t)(CFG_LOW_ENDSTOP_ADC +
+                             (cal_sim_random() % ((uint32_t)span + 1u)));
+    dbg_request_t request = {.op = DBG_OP_SIM_SET, .adc = cal_sim_adc};
+    if (!controller_debug_request(&request))
+      return;
+    cal_sim_waiting = true;
+    cal_sim_next_ms = now + CAL_SIM_SETTLE_MS;
+    return;
+  }
+  if ((int32_t)(now - cal_sim_next_ms) < 0)
+    return;
+
+  uint16_t nearest_error;
+  position_t nearest = cal_sim_nearest(cal_sim_adc, &nearest_error);
+  position_t classified = encoder_instant();
+  cal_sim_error_sum += nearest_error;
+  if (nearest_error > cal_sim_max_error)
+    cal_sim_max_error = nearest_error;
+  /* Only a sample inside a station window can be a classification error;
+     points between stations are deliberately reported as between positions. */
+  if (nearest_error <= CFG_POS_WINDOW && classified != nearest) {
+    ++cal_sim_misses;
+    ++cal_sim_station_misses[nearest - POS_MIN];
+  }
+  ++cal_sim_count;
+  cal_sim_waiting = false;
+  if (cal_sim_count >= CAL_SIM_TESTS) {
+    char detail[176];
+    snprintf(detail, sizeof detail,
+             "%u tests; station misses %u (S1:%u S2:%u S3:%u S4:%u S5:%u); "
+             "mean nearest error %lu ADC; max %u; range %u..%u; motor inhibited",
+             CAL_SIM_TESTS, cal_sim_misses,
+             cal_sim_station_misses[0], cal_sim_station_misses[1],
+             cal_sim_station_misses[2], cal_sim_station_misses[3],
+             cal_sim_station_misses[4],
+             (unsigned long)(cal_sim_error_sum / CAL_SIM_TESTS),
+             cal_sim_max_error, CFG_LOW_ENDSTOP_ADC, CFG_HIGH_ENDSTOP_ADC);
+    result("cal sim", "complete", detail);
+    cal_sim_active = false;
+  }
+}
 
 #ifdef LUFTFUGL_TRACE_OUTPUT
 static uint32_t output_bytes_pushed, output_bytes_dropped, output_bytes_drained;
@@ -153,7 +243,7 @@ static uint32_t ms_now(void) { return to_ms_since_boot(get_absolute_time()); }
 static void print_angle(char *text, size_t size, uint16_t counts);
 static const char *state_text(sys_state_t state) {
   static const char *const names[] = {"BOOT", "IDLE", "MOVING", "APPROACH",
-                                      "HOMING", "DEBUG"};
+                                      "HOMING", "FAULT", "DEBUG"};
   return (unsigned)state < sizeof names / sizeof names[0] ? names[state] : "?";
 }
 static const char *dir_text(direction_t direction) {
@@ -226,7 +316,7 @@ static void result(const char *command, const char *outcome,
       dbg_out_push("\033[s\033[24;1H\r\n\r\n\033[u");
       first_result = false;
     }
-    snprintf(line, sizeof line, "  %02lu:%02lu:%02lu  %-11.11s%s",
+    snprintf(line, sizeof line, "  %02lu:%02lu:%02lu  %-11.11s %s",
              (unsigned long)(seconds / 3600u),
              (unsigned long)((seconds / 60u) % 60u),
              (unsigned long)(seconds % 60u), command, message);
@@ -279,7 +369,7 @@ static const char *guidance(uint16_t adc) {
   if (saved_station_mask == 0x1fu)
     return "type \"export\" and copy the lines into config.h";
   if (selected_station < POS_MIN || selected_station > POS_MAX)
-    return "type \"sel 1\" to start setting up station 1";
+    return "calibration: sel <1-5>, save";
   int16_t error = (int16_t)encoder_nominal(selected_station) - (int16_t)adc;
   if (error > (int16_t)CFG_POS_WINDOW || error < -(int16_t)CFG_POS_WINDOW) {
     uint16_t distance = error < 0 ? (uint16_t)-error : (uint16_t)error;
@@ -361,8 +451,13 @@ void dbg_fields_refresh(void) {
   snprintf(line, sizeof line, "  %-15s%-15s%-15s%-15s%-15s",
            a1, a2, a3, a4, a5);
   field(8, line);
-  snprintf(line, sizeof line, "  ▸ %s", guidance(adc));
-  field(10, line);
+  snprintf(line, sizeof line, "  lowendstop: %u   highendstop: %u   ▸ %.30s",
+           CFG_LOW_ENDSTOP_ADC, CFG_HIGH_ENDSTOP_ADC, guidance(adc));
+  field(9, line);
+  char power_lines[6][81];
+  power_monitor_format_menu(power_lines);
+  for (uint8_t i = 0u; i < 6u; ++i)
+    field((uint8_t)(11u + i), power_lines[i]);
 }
 
 #ifndef LUFTFUGL_TRACE_INPUT
@@ -370,8 +465,8 @@ static void command_line_draw(void) {
   char line[80];
   if (plain_mode)
     return;
-  snprintf(line, sizeof line, " ▶ %s", input);
-  dbg_out_push("\033[s\033[22;1H");
+  snprintf(line, sizeof line, " Command > %s", input);
+  dbg_out_push("\033[s\033[23;1H");
   dbg_out_push(line);
   dbg_out_push("\033[K\033[u");
 }
@@ -391,7 +486,7 @@ void dbg_render(void) {
 
 #ifndef LUFTFUGL_TRACE_INPUT
 static bool status_frame_complete(void) {
-  static const uint8_t rows[] = {1, 3, 4, 5, 7, 8, 10};
+  static const uint8_t rows[] = {1, 3, 4, 5, 7, 8, 9, 11, 12, 13, 14, 15, 16};
   for (size_t i = 0; i < sizeof rows / sizeof rows[0]; ++i)
     if (!status_shadow[rows[i] - 1u][0])
       return false;
@@ -399,41 +494,32 @@ static bool status_frame_complete(void) {
 }
 
 static void frame_continue(void) {
-  static const uint8_t rows[] = {2, 11, 12, 13, 14, 15, 16, 17,
-                                 18, 19, 20, 21, 22, 23};
-  static const char rule[] =
-      "───────────────────────────────────────────────────────────────────────────────";
-  static const char *const commands[5][7] = {
-      {"adc", "angle", "status", "stations", "limits", "cfg", "diag"},
-      {"jog", "step", "pos", "move", "goto", "home", "stop"},
-      {"sel", "save", "export", "reset", "bootsel", "plain", "exit"},
-      {"selftest", "pins", "pwm", "tick", "trace", "findmin", "help"},
-      {"arm", "disarm", "drive", "sim", "led", "", ""}};
-  static const char *const examples[3][3] = {
-      {"jog +100", "pos 3", "sel 1"},
-      {"goto 1260", "cfg DUTY_NORMAL 30", "save 3"},
-      {"drive fwd 25 200", "help jog", "export"}};
+  static const uint8_t rows[] = {2, 6, 10, 17, 18, 19, 20, 21, 22, 23};
+  static const char *const section_rules[] = {
+      "────────── MOTOR  CONTROLLER ──────────────────────────────────────────────────",
+      "────────── MOTOR  POSITIONS  ──────────────────────────────────────────────────",
+      "-────── BATTERY INNFORMATION ──────────────────────────────────────────────────",
+      "── COMMANDS ───────────────────────────────────────────────────────────────────"};
+  static const char *const command_rows[] = {
+      "  batt | batt raw | batt res | batt log | batt events | batt reset | batt sim",
+      "  load | ina | adc | angle | status | stations | limits | cfg | lowendstop",
+      "  jog | step | pos | move | goto | home | stop | sim | cal sim | led",
+      "  highendstop | sel | save | export | arm | drive | disarm | clean | help | exit"};
   char piece[288];
   if (!frame_phase || out_free() < sizeof piece)
     return;
   if (frame_phase <= sizeof rows / sizeof rows[0]) {
     uint8_t item = frame_phase - 1u;
     char content[256];
-    if (item == 0u || item == 1u || item == 11u || item == 13u)
-      snprintf(content, sizeof content, "%s", rule);
-    else if (item >= 2u && item <= 6u) {
-      const char *const *c = commands[item - 2u];
+    if (item <= 3u)
+      snprintf(content, sizeof content, "%s", section_rules[item]);
+    else if (item >= 4u && item <= 7u)
+      snprintf(content, sizeof content, "%s", command_rows[item - 4u]);
+    else if (item == 8u)
       snprintf(content, sizeof content,
-               "  %-10s%-10s%-10s%-10s%-10s%-10s%-10s",
-               c[0], c[1], c[2], c[3], c[4], c[5], c[6]);
-    } else if (item == 7u)
-      content[0] = '\0';
-    else if (item >= 8u && item <= 10u) {
-      const char *const *e = examples[item - 8u];
-      snprintf(content, sizeof content, "  %-25s%-25s%-25s", e[0], e[1],
-               e[2]);
-    } else
-      snprintf(content, sizeof content, " ▶ %s", input);
+               "───────────────────────────────────────────────────────────────────────────────");
+    else
+      snprintf(content, sizeof content, " Command > %s", input);
     snprintf(piece, sizeof piece, "\033[%u;1H%s\033[K", rows[item], content);
     dbg_out_push(piece);
     ++frame_phase;
@@ -483,7 +569,9 @@ static void print_limits(const char *command) {
   uint16_t current = encoder_average();
   snprintf(lines[0], sizeof lines[0], "ADC RANGE");
   snprintf(lines[1], sizeof lines[1], "  valid travel    0 .. %u      full 12-bit ADC range", ADC_MAX_VALUE);
-  snprintf(lines[2], sizeof lines[2], "  motion limits   none enforced");
+  snprintf(lines[2], sizeof lines[2],
+           "  motion limits   %u .. %u ADC (low/high end-stop)",
+           CFG_LOW_ENDSTOP_ADC, CFG_HIGH_ENDSTOP_ADC);
   snprintf(lines[3], sizeof lines[3], "  movement        linear in ADC value, not wrap-aware");
   print_angle(angle, sizeof angle, current);
   snprintf(lines[4], sizeof lines[4], "  current         %u           %s deg", current, angle);
@@ -560,11 +648,57 @@ static bool cfg_setting_known(const char *key) {
   static const char *const names[] = {
       "DUTY_NORMAL", "DUTY_APPROACH", "DUTY_CREEP", "DUTY_MIN",
       "APPROACH_COUNTS", "POS_WINDOW", "DEBOUNCE_MS", "BRAKE_HOLD_MS",
-      "POS_1_ADC", "POS_2_ADC", "POS_3_ADC", "POS_4_ADC", "POS_5_ADC"};
+      "POS_1_ADC", "POS_2_ADC", "POS_3_ADC", "POS_4_ADC", "POS_5_ADC",
+      "LOW_ENDSTOP_ADC", "HIGH_ENDSTOP_ADC"};
   for (size_t i = 0; i < sizeof names / sizeof names[0]; ++i)
     if (!strcmp(key, names[i]))
       return true;
   return false;
+}
+
+static bool endstop_values_valid(uint16_t low, uint16_t high) {
+  return low < high && low <= CFG_POS_1_ADC && high >= CFG_POS_5_ADC;
+}
+
+static void endstop_restore(void) {
+  const endstop_record_t *record =
+      (const endstop_record_t *)(XIP_BASE + ENDSTOP_FLASH_OFFSET);
+  if (record->magic == ENDSTOP_FLASH_MAGIC &&
+      record->checksum == (record->magic ^ record->low ^ record->high) &&
+      endstop_values_valid(record->low, record->high)) {
+    cfg.low_endstop_adc = record->low;
+    cfg.high_endstop_adc = record->high;
+    return;
+  }
+  if (watchdog_hw->scratch[0] == ENDSTOP_SCRATCH_MAGIC) {
+    uint16_t low = (uint16_t)watchdog_hw->scratch[1];
+    uint16_t high = (uint16_t)watchdog_hw->scratch[2];
+    if (endstop_values_valid(low, high)) {
+      cfg.low_endstop_adc = low;
+      cfg.high_endstop_adc = high;
+    }
+  }
+}
+
+static void endstop_persist(void) {
+  endstop_record_t record = {
+      ENDSTOP_FLASH_MAGIC, cfg.low_endstop_adc, cfg.high_endstop_adc, 0u, 0u};
+  record.checksum = record.magic ^ record.low ^ record.high;
+  uint32_t irq_state = save_and_disable_interrupts();
+  flash_range_erase(ENDSTOP_FLASH_OFFSET, FLASH_SECTOR_SIZE);
+  flash_range_program(ENDSTOP_FLASH_OFFSET, (const uint8_t *)&record,
+                      sizeof record);
+  restore_interrupts(irq_state);
+  watchdog_hw->scratch[0] = ENDSTOP_SCRATCH_MAGIC;
+  watchdog_hw->scratch[1] = cfg.low_endstop_adc;
+  watchdog_hw->scratch[2] = cfg.high_endstop_adc;
+}
+
+static void endstop_clear_persist(void) {
+  uint32_t irq_state = save_and_disable_interrupts();
+  flash_range_erase(ENDSTOP_FLASH_OFFSET, FLASH_SECTOR_SIZE);
+  restore_interrupts(irq_state);
+  watchdog_hw->scratch[0] = 0u;
 }
 
 static uint16_t cfg_smallest_gap(const cfg_t *values) {
@@ -636,6 +770,12 @@ static bool cfg_update(const char *key, long value, char *reason,
     snprintf(advice, advice_size, "use a valid 12-bit ADC reading");
     return false;
   }
+  if ((!strcmp(key, "LOW_ENDSTOP_ADC") ||
+       !strcmp(key, "HIGH_ENDSTOP_ADC")) && value > (long)ADC_MAX_VALUE) {
+    snprintf(reason, reason_size, "%s %ld is outside 0..4095", key, value);
+    snprintf(advice, advice_size, "use a valid 12-bit ADC reading");
+    return false;
+  }
   memcpy(&next, (const void *)&cfg, sizeof next);
   if (!strcmp(key, "DUTY_NORMAL"))
     next.duty_normal = (uint8_t)value;
@@ -663,6 +803,23 @@ static bool cfg_update(const char *key, long value, char *reason,
     next.pos_4_adc = (uint16_t)value;
   else if (!strcmp(key, "POS_5_ADC"))
     next.pos_5_adc = (uint16_t)value;
+  else if (!strcmp(key, "LOW_ENDSTOP_ADC"))
+    next.low_endstop_adc = (uint16_t)value;
+  else if (!strcmp(key, "HIGH_ENDSTOP_ADC"))
+    next.high_endstop_adc = (uint16_t)value;
+  if (next.low_endstop_adc >= next.high_endstop_adc) {
+    snprintf(reason, reason_size, "low end-stop must be below high end-stop");
+    snprintf(advice, advice_size, "set LOW_ENDSTOP_ADC < HIGH_ENDSTOP_ADC");
+    return false;
+  }
+  if (next.pos_1_adc < next.low_endstop_adc ||
+      next.pos_5_adc > next.high_endstop_adc) {
+    snprintf(reason, reason_size,
+             "end-stop would exclude a configured station");
+    snprintf(advice, advice_size,
+             "keep the end-stops outside stations 1 and 5");
+    return false;
+  }
   if (next.duty_min > next.duty_creep) {
     snprintf(reason, reason_size, "DUTY_MIN %u is above DUTY_CREEP %u",
              next.duty_min, next.duty_creep);
@@ -700,6 +857,8 @@ static bool cfg_update(const char *key, long value, char *reason,
     return false;
   }
   memcpy((void *)&cfg, &next, sizeof next);
+  if (!strcmp(key, "LOW_ENDSTOP_ADC") || !strcmp(key, "HIGH_ENDSTOP_ADC"))
+    endstop_persist();
   return true;
 }
 
@@ -743,6 +902,10 @@ static void print_cfg(const char *command) {
                  "0..4095, must stay ascending");
   cfg_table_line("POS_5_ADC", live.pos_5_adc, POS_5_ADC,
                  "0..4095, must stay ascending");
+  cfg_table_line("LOW_ENDSTOP_ADC", live.low_endstop_adc, LOW_ENDSTOP_ADC,
+                 "0..4095, below station 1");
+  cfg_table_line("HIGH_ENDSTOP_ADC", live.high_endstop_adc, HIGH_ENDSTOP_ADC,
+                 "0..4095, above station 5");
   result("", "complete", "* differs from compiled default");
   result("", "complete",
          "cfg DUTY_NORMAL 40 changes one; cfg reset restores defaults");
@@ -883,6 +1046,10 @@ static const help_entry_t help_entries[] = {
      "Shows stored readings and difference from now."},
     {"limits", "limits", "read-only",
      "One count is about 0.09 degrees; values come from the live configuration."},
+    {"lowendstop", "lowendstop=100", "ADC 0 to 4095; must be below high end-stop and station 1",
+     "Sets the lower potentiometer travel limit in RAM; it takes effect immediately."},
+    {"highendstop", "highendstop=2000", "ADC 0 to 4095; must be above low end-stop and station 5",
+     "Sets the upper potentiometer travel limit in RAM; it takes effect immediately."},
     {"export", "export", "read-only",
      "Prints values ready to paste into config.h."},
     {"reset", "reset", "no arguments; reset stations restores calibration",
@@ -916,6 +1083,8 @@ static const help_entry_t help_entries[] = {
      "Changes are RAM-only and lost on reset; export prints config.h station lines."},
     {"sim", "sim adc 2047", "ADC 0 to 4095",
      "Simulation inhibits physical motor output."},
+    {"cal", "cal sim", "no motion; 50 simulated tests",
+     "Runs randomized ADC classification tests between the active endstops; motor output remains inhibited."},
     {"arm", "arm", "idle controller",
      "Unlocks manual pulses until disarm or exit."},
     {"disarm", "disarm", "no arguments",
@@ -924,6 +1093,26 @@ static const help_entry_t help_entries[] = {
      "Requires arm; direction is fwd or rev."},
     {"findmin", "findmin", "requires arm",
      "Tests for the lowest duty that produces motion."},
+    {"batt", "batt sim 4.3", "sim range 3.9 to 4.5 V; raw, res, log, events, reset",
+     "Use batt sim off to restore INA219 voltage; simulated values are marked SIM."},
+    {"batt raw", "batt raw", "no additional arguments; read-only",
+     "Reports physical INA219 bus, shunt, current and power registers plus overflow."},
+    {"batt res", "batt res", "no additional arguments; read-only",
+     "Reports pack-resistance sample count, estimate and fresh-pack trend when available."},
+    {"batt log", "batt log", "no additional arguments; read-only",
+     "Reports session duration, charge, energy, sample count and model status."},
+    {"batt events", "batt events", "no additional arguments; read-only",
+     "Lists the retained battery peak, minimum-voltage and diagnostic events."},
+    {"batt reset", "batt reset", "no additional arguments",
+     "Clears battery session counters and events without changing calibration."},
+    {"batt sim", "batt sim 4.3 | batt sim off", "3.9 to 4.5 V, or off",
+     "Overrides voltage for SOC and LED-alarm testing; raw registers remain physical."},
+    {"load", "load", "read-only",
+     "Inrush is a sampled lower bound; bench thresholds remain disabled until measured."},
+    {"ina", "ina", "read-only",
+     "Shows computed calibration, conversion configuration and MODE 000 idle state."},
+    {"clean", "clean", "no arguments",
+     "Clears command results and redraws the fixed-screen debug interface."},
     {"plain", "plain", "no arguments",
      "Switches to line-oriented output without escape codes."},
     {"exit", "exit", "no arguments", "Leaves the debug console safely."}};
@@ -934,6 +1123,8 @@ static const char *resolve(const char *word, char *candidates,
   size_t n = strlen(word);
   if (candidates && candidates_size)
     candidates[0] = '\0';
+  if (!strcmp(word, "bat"))
+    return "batt";
   for (size_t i = 0; i < sizeof help_entries / sizeof help_entries[0]; ++i)
     if (!strcmp(help_entries[i].name, word))
       return help_entries[i].name;
@@ -956,13 +1147,115 @@ static const char *resolve(const char *word, char *candidates,
 }
 
 static const help_entry_t *help_detail(const char *word) {
-  const char *command = resolve(word, NULL, 0u);
-  if (!command)
-    return NULL;
-  for (size_t i = 0; i < sizeof help_entries / sizeof help_entries[0]; ++i)
-    if (!strcmp(help_entries[i].name, command))
-      return &help_entries[i];
-  return NULL;
+  const help_entry_t *match = NULL;
+  for (size_t i = 0; i < sizeof help_entries / sizeof help_entries[0]; ++i) {
+    const char *name = help_entries[i].name;
+    const char *query = word;
+    bool matches = true;
+    while (*name || *query) {
+      const char *name_end = strchr(name, ' ');
+      const char *query_end = strchr(query, ' ');
+      size_t name_len = name_end ? (size_t)(name_end - name) : strlen(name);
+      size_t query_len = query_end ? (size_t)(query_end - query) : strlen(query);
+      if (!query_len || query_len > name_len || strncmp(name, query, query_len)) {
+        matches = false;
+        break;
+      }
+      if (!name_end || !query_end) {
+        matches = !name_end && !query_end;
+        break;
+      }
+      name = name_end + 1;
+      query = query_end + 1;
+    }
+    if (matches) {
+      if (match)
+        return NULL;
+      match = &help_entries[i];
+    }
+  }
+  return match;
+}
+
+static void help_description(const help_entry_t *entry, char *text,
+                             size_t size) {
+  if (!strcmp(entry->name, "batt") || !strcmp(entry->name, "batt sim")) {
+    snprintf(text, size,
+             "simulation 3.9-4.5 V; warning below %u.%03u V; critical below %u.%03u V",
+             BATTERY_WARN_MV / 1000u, BATTERY_WARN_MV % 1000u,
+             BATTERY_CRITICAL_MV / 1000u, BATTERY_CRITICAL_MV % 1000u);
+  } else if (!strcmp(entry->name, "batt res")) {
+    snprintf(text, size, "minimum %u wake samples; fresh-pack reference %s",
+             RPACK_MIN_SAMPLES,
+             RPACK_FRESH_MOHM ? "configured" : "not measured");
+  } else if (!strcmp(entry->name, "batt events")) {
+    snprintf(text, size, "read-only; retains the latest %u notable events",
+             EVENT_LOG_DEPTH);
+  } else if (!strcmp(entry->name, "load")) {
+    snprintf(text, size,
+             "inrush window %u ms; no-load, stall and short thresholds %s",
+             INRUSH_SAMPLE_MS,
+             (NO_LOAD_CURRENT_MA && STALL_CURRENT_MA && SHORT_CIRCUIT_MA)
+                 ? "configured"
+                 : "not measured");
+  } else if (!strcmp(entry->name, "ina")) {
+    snprintf(text, size,
+             "100 kHz I2C; 16 V bus; +/-160 mV shunt; %u uA and %u mV per LSB",
+             INA219_CURRENT_LSB_UA, INA219_BUS_LSB_MV);
+  } else if (!strcmp(entry->name, "led")) {
+    snprintf(text, size,
+             "GP18; battery warning below %u.%03u V, critical below %u.%03u V",
+             BATTERY_WARN_MV / 1000u, BATTERY_WARN_MV % 1000u,
+             BATTERY_CRITICAL_MV / 1000u, BATTERY_CRITICAL_MV % 1000u);
+  } else if (!strcmp(entry->name, "lowendstop")) {
+    snprintf(text, size,
+             "active low end-stop %u; accepted range 0..%u, must remain below station 1 (%u) and the high end-stop",
+             CFG_LOW_ENDSTOP_ADC, ADC_MAX_VALUE, encoder_nominal(POS_MIN));
+  } else if (!strcmp(entry->name, "highendstop")) {
+    snprintf(text, size,
+             "active high end-stop %u; accepted range 0..%u, must remain above station 5 (%u) and the low end-stop",
+             CFG_HIGH_ENDSTOP_ADC, ADC_MAX_VALUE, encoder_nominal(POS_MAX));
+  } else if (!strcmp(entry->name, "cal")) {
+    snprintf(text, size,
+             "%u randomized ADC points from %u to %u; station-window misses are counted; motor output is inhibited",
+             CAL_SIM_TESTS, CFG_LOW_ENDSTOP_ADC, CFG_HIGH_ENDSTOP_ADC);
+  } else {
+    snprintf(text, size, "%s", entry->limits);
+  }
+}
+
+static void help_pos_detail(const char *original, const help_entry_t *entry) {
+  char detail[160];
+  snprintf(detail, sizeof detail, "Command > %s", entry->example);
+  result("Example", "complete", detail);
+  snprintf(detail, sizeof detail,
+           "targets: 1=%u, 2=%u, 3=%u, 4=%u, 5=%u ADC counts",
+           encoder_nominal(1), encoder_nominal(2), encoder_nominal(3),
+           encoder_nominal(4), encoder_nominal(5));
+  result("Positions", "complete", detail);
+  snprintf(detail, sizeof detail,
+           "target band is nominal +/-%u counts; sensing uses a %u-sample rolling average",
+           CFG_POS_WINDOW, FILTER_DEPTH);
+  result("Window", "complete", detail);
+  snprintf(detail, sizeof detail,
+           "the same station band must persist for %u ms before arrival is confirmed",
+           CFG_DEBOUNCE_MS);
+  result("Confirm", "complete", detail);
+  snprintf(detail, sizeof detail,
+           "within %u counts, duty changes from %u to %u; limits use creep duty %u",
+           CFG_APPROACH_COUNTS, CFG_DUTY_NORMAL, CFG_DUTY_APPROACH,
+           CFG_DUTY_CREEP);
+  result("Approach", "complete", detail);
+  result("Braking", "complete",
+         "positions 2-4 brake only after confirmed arrival; positions 1 and 5 brake on the first in-band sample, then confirm");
+  result("Limits", "complete",
+         "no wrap-around or physical end-stops; outward movement from positions 1 and 5 is rejected");
+  result("Rejects", "complete",
+         "rejects an invalid station, unknown starting position, or a controller that is already moving");
+  result("Syntax", "complete", "pos <1-5>");
+  result("Function", "complete",
+         "moves to one configured station through the normal closed-loop, filtered and limit-enforced controller path");
+  result(original, "complete", entry->name);
 }
 
 static void submit(char *typed) {
@@ -975,6 +1268,33 @@ static void submit(char *typed) {
   original[sizeof original - 1u] = '\0';
   for (char *p = typed; *p; ++p)
     *p = (char)tolower((unsigned char)*p);
+  const char *endstop_key = NULL;
+  const char *endstop_value = NULL;
+  if (!strncmp(typed, "low endstop=", 12u)) {
+    endstop_key = "LOW_ENDSTOP_ADC";
+    endstop_value = typed + 12u;
+  } else if (!strncmp(typed, "lowendstop=", 11u)) {
+    endstop_key = "LOW_ENDSTOP_ADC";
+    endstop_value = typed + 11u;
+  } else if (!strncmp(typed, "highendstop=", 12u)) {
+    endstop_key = "HIGH_ENDSTOP_ADC";
+    endstop_value = typed + 12u;
+  }
+  if (endstop_key) {
+    long setting;
+    char reason[96], advice[96];
+    if (!parse_long(endstop_value, &setting)) {
+      result(original, "rejected", "use lowendstop=<0..4095> or highendstop=<0..4095>");
+    } else if (!cfg_update(endstop_key, setting, reason, sizeof reason,
+                           advice, sizeof advice)) {
+      result(original, "rejected", reason);
+      if (advice[0])
+        result("", "rejected", advice);
+    } else {
+      result(original, "complete", "end-stop updated in RAM");
+    }
+    return;
+  }
   word = strtok_r(typed, " \t", &save);
   if (!word)
     return;
@@ -1007,18 +1327,36 @@ static void submit(char *typed) {
               !strcmp(command, "trace") ||
               !strcmp(command, "pins") || !strcmp(command, "pwm") ||
               !strcmp(command, "findmin") || !strcmp(command, "plain") ||
+              !strcmp(command, "load") || !strcmp(command, "ina") ||
+              !strcmp(command, "clean") ||
               !strcmp(command, "bootsel") || !strcmp(command, "exit"))) {
     result(original, "rejected", "unexpected argument; try help <command>");
     return;
   }
-  if (!strcmp(command, "help")) {
+  if (!strcmp(command, "clean")) {
+    if (plain_mode)
+      result(original, "complete", "command history boundary");
+    else
+      dbg_render();
+  } else if (!strcmp(command, "help")) {
     if (arg) {
       const help_entry_t *entry = help_detail(arg);
       if (entry) {
-        result("Notes", "complete", entry->notes);
-        result("Limits", "complete", entry->limits);
-        result("Examples", "complete", entry->example);
-        result(original, "complete", entry->name);
+        if (!strcmp(entry->name, "pos")) {
+          help_pos_detail(original, entry);
+        } else {
+          char example[96], description[160];
+          const char *example_command = !strcmp(entry->name, "batt sim")
+                                            ? "batt sim 4.3"
+                                            : entry->example;
+          snprintf(example, sizeof example, "Command > %s", example_command);
+          help_description(entry, description, sizeof description);
+          result("Example", "complete", example);
+          result("Description", "complete", description);
+          result("Syntax", "complete", entry->example);
+          result("Function", "complete", entry->notes);
+          result(original, "complete", entry->name);
+        }
       } else if (!help_setting(arg, original)) {
         char detail[96];
         snprintf(detail, sizeof detail,
@@ -1029,6 +1367,57 @@ static void submit(char *typed) {
       for (size_t i = sizeof help_entries / sizeof help_entries[0]; i-- > 0;)
         result(help_entries[i].name, "complete", help_entries[i].example);
     }
+  } else if (!strcmp(command, "low") || !strcmp(command, "lowendstop") ||
+             !strcmp(command, "highendstop")) {
+    result(original, "rejected",
+           (!strcmp(command, "low") || !strcmp(command, "lowendstop")
+                ? "syntax: lowendstop=<0..4095>"
+                                    : "syntax: highendstop=<0..4095>"));
+  } else if (!strcmp(command, "batt")) {
+    char d[768];
+    if (!arg)
+      power_monitor_format_batt(d, sizeof d);
+    else if (!strcmp(arg, "raw"))
+      power_monitor_format_raw(d, sizeof d);
+    else if (!strcmp(arg, "res"))
+      power_monitor_format_res(d, sizeof d);
+    else if (!strcmp(arg, "log"))
+      power_monitor_format_log(d, sizeof d);
+    else if (!strcmp(arg, "events"))
+      power_monitor_format_events(d, sizeof d);
+    else if (!strcmp(arg, "reset")) {
+      power_monitor_reset();
+      snprintf(d, sizeof d, "battery session counters cleared");
+    } else if (!strcmp(arg, "sim off")) {
+      (void)power_monitor_sim_set(false, 0u);
+      snprintf(d, sizeof d, "battery simulation off; using INA219 voltage");
+    } else if (!strncmp(arg, "sim ", 4u)) {
+      char *voltage_end;
+      double volts = strtod(arg + 4u, &voltage_end);
+      while (isspace((unsigned char)*voltage_end))
+        ++voltage_end;
+      if (voltage_end == arg + 4u || *voltage_end || volts < 3.9 ||
+          volts > 4.5) {
+        result(original, "rejected", "battery simulation range is 3.9 to 4.5 V");
+        return;
+      }
+      uint16_t mv = (uint16_t)(volts * 1000.0 + 0.5);
+      (void)power_monitor_sim_set(true, mv);
+      snprintf(d, sizeof d, "battery voltage simulated at %u.%03u V",
+               mv / 1000u, mv % 1000u);
+    } else {
+      result(original, "rejected", "use batt, batt raw, batt res, batt log, batt events, or batt reset");
+      return;
+    }
+    result(original, "complete", d);
+  } else if (!strcmp(command, "load")) {
+    char d[512];
+    power_monitor_format_load(d, sizeof d);
+    result(original, "complete", d);
+  } else if (!strcmp(command, "ina")) {
+    char d[512];
+    power_monitor_format_ina(d, sizeof d);
+    result(original, "complete", d);
   } else if (!strcmp(command, "diag")) {
     char d[192];
     console_diag_format(d, sizeof d);
@@ -1149,7 +1538,9 @@ static void submit(char *typed) {
       remember_pending(PENDING_JOG, original);
     } else
       result(original, "rejected",
-             r == JOG_BUSY ? "controller busy" : "invalid jog");
+             r == JOG_BUSY    ? "controller busy"
+             : r == JOG_ENDSTOP ? "at configured end-stop"
+                                : "invalid jog");
   } else if (!strcmp(command, "step")) {
     if (!parse_long(arg, &value) ||
         (value != 10 && value != 25 && value != 100 && value != 250 &&
@@ -1238,7 +1629,8 @@ static void submit(char *typed) {
              r == MOVE_BUSY          ? "already moving"
              : r == MOVE_ALREADY     ? "already at target"
              : r == MOVE_POS_UNKNOWN ? "position unknown"
-                                     : "invalid target");
+             : r == MOVE_FAULT       ? "controller fault; use home"
+                                      : "invalid target");
   } else if (!strcmp(command, "goto")) {
     if (!parse_long(arg, &value) || value < 0 || value > (long)ADC_MAX_VALUE) {
       result(original, "rejected", "type an ADC reading, for example \"goto 1260\"");
@@ -1275,6 +1667,8 @@ static void submit(char *typed) {
     (void)controller_request(REQ_STOP, 0);
     pending = PENDING_NONE;
     sim_travel_active = false;
+    cal_sim_active = false;
+    cal_sim_waiting = false;
     findmin_phase = 0u;
     armed = false;
     result(original, "complete", "brake requested");
@@ -1324,9 +1718,37 @@ static void submit(char *typed) {
              wrap, (unsigned long)div16, (unsigned long)frequency,
              motor_duty());
     result(original, "complete", detail);
+  } else if (!strcmp(command, "cal")) {
+    if (!arg || strcmp(arg, "sim")) {
+      result(original, "rejected", "syntax: cal sim");
+    } else if (cal_sim_active || sim_travel_active ||
+               controller_state() == ST_MOVING ||
+               controller_state() == ST_APPROACH ||
+               controller_state() == ST_HOMING) {
+      result(original, "rejected", "controller busy; type \"stop\" first");
+    } else {
+      dbg_request_t r = {.op = DBG_OP_SIM_ENABLE, .flag = true};
+      if (!controller_debug_request(&r)) {
+        result(original, "rejected", "simulation is busy; type \"stop\" first");
+      } else {
+        cal_sim_active = true;
+        cal_sim_waiting = false;
+        cal_sim_count = cal_sim_misses = 0u;
+        memset(cal_sim_station_misses, 0, sizeof cal_sim_station_misses);
+        cal_sim_adc = cal_sim_max_error = 0u;
+        cal_sim_error_sum = 0u;
+        cal_sim_rng = 0x4c554631u;
+        result(original, "accepted",
+               "cal sim started; 50 random ADC tests, motor inhibited");
+      }
+    }
   } else if (!strcmp(command, "sim")) {
     char *sub = strtok_r(arg, " \t", &save);
     if (sub && (!strcmp(sub, "on") || !strcmp(sub, "off"))) {
+      if (!strcmp(sub, "off")) {
+        cal_sim_active = false;
+        cal_sim_waiting = false;
+      }
       dbg_request_t r = {.op = DBG_OP_SIM_ENABLE, .flag = !strcmp(sub, "on")};
       if (controller_debug_request(&r))
         result(original, "complete",
@@ -1458,6 +1880,7 @@ static void submit(char *typed) {
         *p = (char)toupper((unsigned char)*p);
       if (key && !strcmp(key, "RESET") && !value_text) {
         cfg_reset();
+        endstop_clear_persist();
         result(original, "complete", "compiled defaults restored");
       } else if (!parse_long(value_text, &value)) {
         result(original, "rejected", "usage: cfg SETTING VALUE, or cfg reset");
@@ -1485,6 +1908,15 @@ static void submit(char *typed) {
 
 void dbg_event(event_kind_t kind, uint8_t arg) {
   char detail[80], angle[12];
+  if (kind == EV_TIMEOUT &&
+      (pending == PENDING_MOVE || pending == PENDING_HOME)) {
+    result(pending_text, "failed", "target timeout; automatic homing started");
+    pending = PENDING_NONE;
+  }
+  if (kind == EV_FAULT_HOME && pending == PENDING_HOME) {
+    result(pending_text, "failed", "home timeout; controller faulted");
+    pending = PENDING_NONE;
+  }
   if (kind == EV_JOG_COMPLETE && pending == PENDING_GOTO) {
     uint16_t adc = encoder_average();
     print_angle(angle, sizeof angle, adc);
@@ -1511,6 +1943,8 @@ void dbg_event(event_kind_t kind, uint8_t arg) {
   const char *name = kind == EV_PASS               ? "PASS"
                      : kind == EV_ARRIVE           ? "ARR"
                      : kind == EV_HOMING           ? "homing"
+                     : kind == EV_TIMEOUT          ? "timeout; motor braked"
+                     : kind == EV_FAULT_HOME       ? "fault: home timeout"
                      : kind == EV_STOPPED_UNKNOWN  ? "stopped, position unknown"
                                                    : "event";
   snprintf(detail, sizeof detail, "%s%s%u", name,
@@ -1610,6 +2044,7 @@ void dbg_handle_key(char c) {
 
 void dbg_init(void) {
   cfg_reset();
+  endstop_restore();
   active = plain_mode = echo_enabled = input_overflow = swallow_lf = armed =
       false;
   command_dirty = false;
@@ -1621,6 +2056,12 @@ void dbg_init(void) {
   pending = PENDING_NONE;
   pending_target_adc = 0u;
   sim_travel_active = false;
+  cal_sim_active = false;
+  cal_sim_waiting = false;
+  cal_sim_count = cal_sim_misses = 0u;
+  memset(cal_sim_station_misses, 0, sizeof cal_sim_station_misses);
+  cal_sim_adc = cal_sim_max_error = 0u;
+  cal_sim_error_sum = cal_sim_rng = 0u;
   findmin_phase = 0u;
   trace_dump_index = trace_dump_count = 0u;
   frame_phase = 0u;
@@ -1630,6 +2071,7 @@ void dbg_init(void) {
   field_bytes_last = 0u;
   next_refresh = 0u;
   memset(status_shadow, 0, sizeof status_shadow);
+  (void)power_monitor_sim_set(false, 0u);
 }
 static void enter(bool plain) {
   plain_mode = plain;
@@ -1651,6 +2093,9 @@ void dbg_exit(void) {
   (void)controller_debug_request(&request);
   active = echo_enabled = armed = false;
   sim_travel_active = false;
+  cal_sim_active = false;
+  cal_sim_waiting = false;
+  (void)power_monitor_sim_set(false, 0u);
   findmin_phase = 0u;
   if (!plain_mode)
     dbg_out_push("\033[1;24r\033[?25h\033[2J\033[H");
@@ -1673,6 +2118,7 @@ void dbg_poll(void) {
     ++trace_dump_index;
   }
   findmin_poll(now);
+  cal_sim_poll(now);
   if (sim_travel_active) {
     uint32_t elapsed = now - sim_travel_started;
     uint16_t adc;

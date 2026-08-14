@@ -7,6 +7,7 @@
 #include "hardware/uart.h"
 #include "hardware/irq.h"
 #include "motor.h"
+#include "power_monitor.h"
 #include "pico/time.h"
 #include <ctype.h>
 #include <stdio.h>
@@ -49,10 +50,6 @@ static void console_uart_rx_irq(void) {
       uart_get_hw(uart1)->rsr = 0u;
       continue;
     }
-#ifdef LUFTFUGL_MONITOR
-    if (debug_tx_active)
-      continue;
-#endif
     uint8_t next = (uint8_t)((rx_head + 1u) % sizeof rx_ring);
     if (next != rx_tail) {
       rx_ring[rx_head] = (char)(received & UART_UARTDR_DATA_BITS);
@@ -72,9 +69,31 @@ static void write_line(const char *text) {
   write_text(text);
   write_text("\r\n");
 }
+static void write_report(void (*format)(char *, size_t)) {
+  char output[768];
+  format(output, sizeof output);
+  write_line(output);
+}
+static void console_batt(char *argument) {
+  if (!argument)
+    write_report(power_monitor_format_batt);
+  else if (!strcmp(argument, "raw"))
+    write_report(power_monitor_format_raw);
+  else if (!strcmp(argument, "res"))
+    write_report(power_monitor_format_res);
+  else if (!strcmp(argument, "log"))
+    write_report(power_monitor_format_log);
+  else if (!strcmp(argument, "events"))
+    write_report(power_monitor_format_events);
+  else if (!strcmp(argument, "reset")) {
+    power_monitor_reset();
+    write_line("OK: battery session counters cleared");
+  } else
+    write_line("ERR: use batt, batt raw, batt res, batt log, batt events, or batt reset");
+}
 static const char *state_name(sys_state_t state) {
   static const char *const names[] = {
-      "BOOT", "IDLE", "MOVING", "APPROACH", "HOMING",
+      "BOOT", "IDLE", "MOVING", "APPROACH", "HOMING", "FAULT",
 #ifdef LUFTFUGL_MONITOR
       "DEBUG",
 #endif
@@ -157,6 +176,9 @@ static void handle_move(char *argument) {
   case MOVE_POS_UNKNOWN:
     snprintf(output, sizeof output, "ERR: position unknown");
     break;
+  case MOVE_FAULT:
+    snprintf(output, sizeof output, "ERR: fault; use home");
+    break;
   default:
     snprintf(output, sizeof output, "ERR: invalid target");
     break;
@@ -189,6 +211,9 @@ static void handle_jog(char *argument) {
     break;
   case JOG_BUSY:
     snprintf(output, sizeof output, "ERR: busy");
+    break;
+  case JOG_ENDSTOP:
+    snprintf(output, sizeof output, "ERR: at end-stop");
     break;
   default:
     snprintf(output, sizeof output, "ERR: invalid jog");
@@ -256,6 +281,18 @@ static void console_handle_line(char *line) {
     handle_setpos(argument);
   else if (!strcmp(line, "savepos") && !argument)
     console_savepos();
+  else if (!strcmp(line, "batt"))
+    console_batt(argument);
+  else if (!strcmp(line, "load") && !argument)
+    write_report(power_monitor_format_load);
+  else if (!strcmp(line, "ina") && !argument)
+    write_report(power_monitor_format_ina);
+  else if (!strcmp(line, "help") && !argument) {
+    write_line("batt | batt raw | batt res | batt log | batt events | batt reset");
+    write_line("load | ina");
+    write_line("Sleep charge is modelled from SLEEP_CURRENT_UA, not measured by INA219.");
+    write_line("Inrush is a sampled lower bound; SOC and runtime are estimates.");
+  }
   else if (!strcmp(line, "move"))
     handle_move(argument);
   else if (!strcmp(line, "stop") && !argument) {
@@ -427,6 +464,12 @@ void console_drain_events(void) {
       break;
     case EV_HOMING:
       snprintf(output, sizeof output, "OK: homing");
+      break;
+    case EV_TIMEOUT:
+      snprintf(output, sizeof output, "ERR: timeout; motor braked");
+      break;
+    case EV_FAULT_HOME:
+      snprintf(output, sizeof output, "ERR: fault home timeout");
       break;
     case EV_STOPPED_UNKNOWN:
       snprintf(output, sizeof output, "POS:?");

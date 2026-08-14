@@ -17,4 +17,6 @@ void cfg_reset(void)
     cfg.approach_counts = APPROACH_COUNTS;
     cfg.debounce_ms = DEBOUNCE_MS;
     cfg.brake_hold_ms = BRAKE_HOLD_MS;
+    cfg.low_endstop_adc = LOW_ENDSTOP_ADC;
+    cfg.high_endstop_adc = HIGH_ENDSTOP_ADC;
 }

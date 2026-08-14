@@ -20,16 +20,19 @@ add_executable(luftfugl
     src/encoder.c
     src/controller.c
     src/console.c
-    src/debug.c
-    src/config.c
     src/led.c
+    src/power_monitor.c
 )
 
 pico_generate_pio_header(luftfugl ${CMAKE_CURRENT_LIST_DIR}/src/ws2812.pio)
 
-# Development firmware currently exposes the complete monitor in both builds.
-# Keep the option so the shipped-build boundary can be restored later.
-target_compile_definitions(luftfugl PRIVATE LUFTFUGL_MONITOR=1 LUFTFUGL_DEBUG=1)
+if(LUFTFUGL_DEBUG)
+    target_sources(luftfugl PRIVATE src/debug.c src/config.c)
+    target_compile_definitions(luftfugl PRIVATE
+        LUFTFUGL_DEBUG=1
+        LUFTFUGL_MONITOR=1
+    )
+endif()
 if(LUFTFUGL_TRACE_INPUT)
     target_compile_definitions(luftfugl PRIVATE LUFTFUGL_TRACE_INPUT=1)
 endif()
@@ -47,6 +50,8 @@ target_link_libraries(luftfugl
     hardware_timer
     hardware_watchdog
     hardware_pio
+    hardware_i2c
+    hardware_flash
 )
 
 # Console is a raw UART driver, not SDK stdio. See agent.md §15.3.

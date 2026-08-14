@@ -3,6 +3,7 @@
 #include "encoder.h"
 #include "hardware/watchdog.h"
 #include "motor.h"
+#include "power_monitor.h"
 #include "pico/time.h"
 #ifdef LUFTFUGL_MONITOR
 #include <string.h>
@@ -21,7 +22,7 @@ static volatile request_kind_t mailbox;
 static volatile position_t mailbox_arg;
 static volatile int16_t mailbox_delta;
 static volatile uint16_t mailbox_value;
-static uint32_t brake_until_ms;
+static uint32_t brake_until_ms, deadline_ms;
 static uint16_t motion_start_adc, motion_target_adc, previous_motion_adc;
 static uint16_t jog_remaining;
 static uint8_t passed_mask;
@@ -117,7 +118,9 @@ static void begin_home(uint32_t now) {
   passed_mask = 0u;
   last_direction = error > 0 ? DIR_FWD : DIR_REV;
   state = ST_HOMING;
+  deadline_ms = now + TIMEOUT_HOME_MS;
   motor_drive(last_direction, speed_for_error(error));
+  power_monitor_motion_start();
   console_push_event(EV_HOMING, 0);
 }
 
@@ -139,8 +142,12 @@ static void begin_move(position_t tgt) {
   last_direction = error > 0 ? DIR_FWD : DIR_REV;
   state =
       error_magnitude(error) <= CFG_APPROACH_COUNTS ? ST_APPROACH : ST_MOVING;
+  uint8_t steps = tgt > position ? (uint8_t)(tgt - position)
+                                 : (uint8_t)(position - tgt);
+  deadline_ms = now_ms() + (uint32_t)steps * TIMEOUT_STEP_MS;
   motor_enable();
   motor_drive(last_direction, speed_for_error(error));
+  power_monitor_motion_start();
 }
 
 static void begin_jog(int16_t delta, uint16_t target_adc) {
@@ -160,8 +167,10 @@ static void begin_jog(int16_t delta, uint16_t target_adc) {
   passed_mask = 0u;
   last_direction = delta > 0 ? DIR_FWD : DIR_REV;
   state = ST_MOVING;
+  deadline_ms = now_ms() + JOG_TIMEOUT_MS;
   motor_enable();
   motor_drive(last_direction, CFG_DUTY_CREEP);
+  power_monitor_motion_start();
 }
 
 static void arrive(position_t p, uint32_t now) {
@@ -170,8 +179,10 @@ static void arrive(position_t p, uint32_t now) {
     ++counters.moves_ok;
 #endif
   motor_brake();
+  power_monitor_motion_stop();
   position = p;
   brake_until_ms = now + CFG_BRAKE_HOLD_MS;
+  deadline_ms = 0u;
   state = ST_IDLE;
   console_push_event(EV_ARRIVE, p);
 }
@@ -185,6 +196,7 @@ void controller_init(void) {
   mailbox_delta = 0;
   mailbox_value = 0u;
   brake_until_ms = 0;
+  deadline_ms = 0u;
   motion_start_adc = motion_target_adc = previous_motion_adc = 0u;
   jog_remaining = 0u;
   passed_mask = 0u;
@@ -217,6 +229,8 @@ move_result_t controller_request(request_kind_t kind, position_t arg) {
     return MOVE_INVALID;
   if (position == POS_UNKNOWN)
     return MOVE_POS_UNKNOWN;
+  if (state == ST_FAULT)
+    return MOVE_FAULT;
   if (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING)
     return MOVE_BUSY;
   if (brake_until_ms && !reached(now, brake_until_ms))
@@ -236,10 +250,16 @@ jog_result_t controller_request_jog(int16_t delta, uint16_t *from_adc) {
   if (state != ST_IDLE || mailbox != REQ_NONE)
     return JOG_BUSY;
   current = encoder_average();
+  if (current < CFG_LOW_ENDSTOP_ADC || current > CFG_HIGH_ENDSTOP_ADC)
+    return JOG_ENDSTOP;
+  int32_t endpoint = (int32_t)current + delta;
+  if (endpoint < (int32_t)CFG_LOW_ENDSTOP_ADC ||
+      endpoint > (int32_t)CFG_HIGH_ENDSTOP_ADC)
+    return JOG_ENDSTOP;
   if (from_adc)
     *from_adc = current;
   mailbox_delta = delta;
-  mailbox_value = (uint16_t)(((int32_t)current + delta + 4096) & ADC_MAX_VALUE);
+  mailbox_value = (uint16_t)endpoint;
   mailbox = REQ_JOG;
   return JOG_OK;
 }
@@ -286,6 +306,8 @@ move_result_t controller_debug_goto_adc(uint16_t adc) {
     return MOVE_BUSY;
   if (brake_until_ms && !reached(now, brake_until_ms))
     return MOVE_BUSY;
+  if (adc < CFG_LOW_ENDSTOP_ADC || adc > CFG_HIGH_ENDSTOP_ADC)
+    return MOVE_INVALID;
   uint16_t current = encoder_average();
   uint16_t delta = current > adc ? current - adc : adc - current;
   if (delta <= CFG_POS_WINDOW)
@@ -421,6 +443,7 @@ void controller_tick(void) {
       last_direction = error > 0 ? DIR_FWD : DIR_REV;
       state = error_magnitude(error) <= CFG_APPROACH_COUNTS ? ST_APPROACH
                                                             : ST_MOVING;
+      deadline_ms = now + JOG_TIMEOUT_MS;
       motor_enable();
       motor_drive(last_direction, speed_for_error(error));
       break;
@@ -442,6 +465,8 @@ void controller_tick(void) {
 #endif
     if (request == REQ_STOP) {
       motor_brake();
+      power_monitor_motion_stop();
+      deadline_ms = 0u;
       jog_move = false;
       target = POS_UNKNOWN;
       state = ST_IDLE;
@@ -474,6 +499,36 @@ void controller_tick(void) {
     } else {
       position = POS_BETWEEN;
       console_push_event(EV_STOPPED_UNKNOWN, 0);
+    }
+    TICK_RETURN();
+  }
+
+  if (deadline_ms && reached(now, deadline_ms)) {
+    bool was_jog = jog_move;
+#ifdef LUFTFUGL_MONITOR
+    was_jog = was_jog || adc_move;
+#endif
+    deadline_ms = 0u;
+    motor_brake();
+    power_monitor_motion_stop();
+    jog_move = false;
+#ifdef LUFTFUGL_MONITOR
+    adc_move = false;
+#endif
+    if (state == ST_HOMING) {
+      motor_disable();
+      target = POS_UNKNOWN;
+      state = ST_FAULT;
+      console_push_event(EV_FAULT_HOME, 0u);
+    } else {
+      target = POS_UNKNOWN;
+      position = encoder_confirmed();
+      console_push_event(EV_TIMEOUT, 0u);
+      if (was_jog) {
+        state = ST_IDLE;
+      } else {
+        begin_home(now);
+      }
     }
     TICK_RETURN();
   }
@@ -561,12 +616,17 @@ void controller_tick(void) {
     if (jog_move) {
       motor_drive(last_direction, CFG_DUTY_CREEP);
     } else {
-      if (!target_braking && magnitude <= CFG_POS_WINDOW) {
+      bool limit_target = target == POS_MIN || target == POS_MAX;
+      /* Limits have no mechanical stops, so brake on their first in-band
+       * sample. Interior stations must remain closed-loop until the encoder's
+       * debounced classification confirms the requested reed. */
+      bool limit_window =
+          (target == POS_MIN && current <= motion_target_adc + CFG_POS_WINDOW) ||
+          (target == POS_MAX && current + CFG_POS_WINDOW >= motion_target_adc);
+      if (!target_braking && limit_target && limit_window) {
         target_braking = true;
         target_brake_since = now;
       }
-      /* Once the target window has been reached, reversing to chase filtered
-         drift creates a limit cycle. Hold the short brake until confirmation. */
       if (target_braking)
         motor_brake();
       else
@@ -590,10 +650,7 @@ void controller_tick(void) {
       }
     } else {
 #endif
-      if (!jog_move &&
-          (encoder_confirmed() == target ||
-           (target_braking &&
-            (uint32_t)(now - target_brake_since) >= CFG_DEBOUNCE_MS))) {
+      if (!jog_move && encoder_confirmed() == target) {
         arrive(target, now);
         TICK_RETURN();
       }
@@ -608,6 +665,9 @@ void controller_tick(void) {
   case ST_MOVING:
   case ST_APPROACH:
   case ST_HOMING:
+    break;
+  case ST_FAULT:
+    motor_disable();
     break;
   case ST_IDLE:
     motor_brake();

@@ -15,6 +15,10 @@
 #define PIN_UART_TX 20
 #define PIN_UART_RX 21
 #define PIN_LED_DATA 18
+#define PIN_I2C_SDA 4
+#define PIN_I2C_SCL 5
+#define I2C_BAUD 100000u
+#define INA219_ADDRESS 0x40u
 #define LED_COUNT 1
 #define LED_RGBW 1
 #define LED_STATION_BRIGHTNESS_PERCENT 3u
@@ -38,32 +42,67 @@
 #define LED_HAZARD_PERIOD_MS 1000u
 #define LED_HAZARD_PULSE_MS 150u
 #define LED_HAZARD_GAP_MS 150u
+#define LED_BATTERY_R 255u
+#define LED_BATTERY_G 48u
+#define LED_BATTERY_B 0u
+#define LED_BATTERY_BRIGHTNESS_PERCENT 100u
+#define BATTERY_WARN_MV 4400u
+#define BATTERY_CRITICAL_MV 4000u
 
 #define PWM_WRAP 255
 #define PWM_CLKDIV 97.6875f
 
-#define DUTY_NORMAL 30
-#define DUTY_APPROACH 25
-#define DUTY_CREEP 25
-#define DUTY_MIN 25
+#define DUTY_NORMAL 100
+#define DUTY_APPROACH 60
+#define DUTY_CREEP 50
+#define DUTY_MIN 45
 
 #define POS_1_ADC 200  /*  17.6 deg */
 #define POS_2_ADC 525  /*  46.2 deg */
 #define POS_3_ADC 850  /*  74.7 deg */
 #define POS_4_ADC 1175 /* 103.3 deg */
-#define POS_5_ADC 1500 /* 131.9 deg */
+#define POS_5_ADC 1844 /* measured upper-station ADC from trace */
 #define POS_WINDOW 60
 #define APPROACH_COUNTS 300
+#define LOW_ENDSTOP_ADC 100
+#define HIGH_ENDSTOP_ADC 2000
 
 #define TICK_HZ 1000
 #define TICK_PERIOD_US 1000u
 #define FILTER_DEPTH 5
 #define DEBOUNCE_MS 12
 #define BRAKE_HOLD_MS 100
+#define TIMEOUT_STEP_MS 1500u
+#define TIMEOUT_HOME_MS 6000u
+#define JOG_TIMEOUT_MS 3000u
 
 #define CONSOLE_LINE_MAX 32
 #define EVENT_QUEUE_DEPTH 8
 #define UART_BAUD 115200
+
+/* INA219 and battery model. Zero marks a bench value that has not yet been
+ * measured; diagnostics say "not measured" and the associated detector stays
+ * disabled. */
+#define BATTERY_CAPACITY_MAH 2500u
+#define SLEEP_CURRENT_UA 0u
+#define NO_LOAD_CURRENT_MA 0u
+#define STALL_CURRENT_MA 0u
+#define STALL_DETECT_MS 0u
+#define SHORT_CIRCUIT_MA 0u
+#define RPACK_FRESH_MOHM 0u
+#define INRUSH_SAMPLE_MS 20u
+#define EVENT_LOG_DEPTH 16u
+#define RUN_CURRENT_DEPTH 16u
+#define RPACK_MIN_SAMPLES 10u
+#define INA219_SHUNT_MOHM 100u
+#define INA219_CURRENT_LSB_UA 100u
+#define INA219_BUS_LSB_MV 4u
+#define INA219_SHUNT_LSB_UV 10u
+#define INA219_POWER_LSB_UW (20u * INA219_CURRENT_LSB_UA)
+#define INA219_NORMAL_CONFIG 0x119bu
+#define INA219_POWER_DOWN_CONFIG 0x1198u
+#define INA219_INRUSH_CONFIG 0x1003u
+#define INA219_SAMPLE_PERIOD_MS 1000u
 
 #define ADC_MAX_VALUE 4095u
 #ifdef LUFTFUGL_MONITOR
@@ -103,6 +142,8 @@
 #define DEBUG_SIM_DEFAULT_ADC POS_1_ADC
 #define DEBUG_SIM_MIN_POSITION_MS DEBOUNCE_MS
 #define DEBUG_SIM_SWEEP_SETTLE_MS (FILTER_DEPTH + DEBOUNCE_MS)
+#define CAL_SIM_TESTS 50u
+#define CAL_SIM_SETTLE_MS 20u
 #define DEBUG_MENU_BUFFER_SIZE 512u
 #define DEBUG_HEADER_BUFFER_SIZE 256u
 #define DEBUG_PWM_DIV_MASK 0x0fffu
@@ -140,6 +181,7 @@ typedef enum {
   ST_MOVING,
   ST_APPROACH,
   ST_HOMING,
+  ST_FAULT,
 #ifdef LUFTFUGL_DEBUG
   ST_DEBUG,
 #endif
@@ -158,17 +200,21 @@ typedef enum {
   MOVE_ALREADY,
   MOVE_INVALID,
   MOVE_BUSY,
-  MOVE_POS_UNKNOWN
+  MOVE_POS_UNKNOWN,
+  MOVE_FAULT
 } move_result_t;
 typedef enum {
   JOG_OK = 0,
   JOG_INVALID,
-  JOG_BUSY
+  JOG_BUSY,
+  JOG_ENDSTOP
 } jog_result_t;
 typedef enum {
   EV_PASS = 0,
   EV_ARRIVE,
   EV_HOMING,
+  EV_TIMEOUT,
+  EV_FAULT_HOME,
   EV_STOPPED_UNKNOWN,
   EV_JOG_COMPLETE
 } event_kind_t;
@@ -201,6 +247,7 @@ typedef struct {
   uint16_t pos_1_adc, pos_2_adc, pos_3_adc, pos_4_adc, pos_5_adc;
   uint16_t pos_window, approach_counts;
   uint16_t debounce_ms, brake_hold_ms;
+  uint16_t low_endstop_adc, high_endstop_adc;
 } cfg_t;
 extern volatile cfg_t cfg;
 void cfg_reset(void);
@@ -217,6 +264,8 @@ void cfg_reset(void);
 #define CFG_APPROACH_COUNTS (cfg.approach_counts)
 #define CFG_DEBOUNCE_MS (cfg.debounce_ms)
 #define CFG_BRAKE_HOLD_MS (cfg.brake_hold_ms)
+#define CFG_LOW_ENDSTOP_ADC (cfg.low_endstop_adc)
+#define CFG_HIGH_ENDSTOP_ADC (cfg.high_endstop_adc)
 #else
 #define CFG_DUTY_NORMAL DUTY_NORMAL
 #define CFG_DUTY_APPROACH DUTY_APPROACH
@@ -231,6 +280,8 @@ void cfg_reset(void);
 #define CFG_APPROACH_COUNTS APPROACH_COUNTS
 #define CFG_DEBOUNCE_MS DEBOUNCE_MS
 #define CFG_BRAKE_HOLD_MS BRAKE_HOLD_MS
+#define CFG_LOW_ENDSTOP_ADC LOW_ENDSTOP_ADC
+#define CFG_HIGH_ENDSTOP_ADC HIGH_ENDSTOP_ADC
 #endif
 
 #endif
