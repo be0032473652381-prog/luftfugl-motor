@@ -231,7 +231,7 @@ static void cal_motor_poll(uint32_t now) {
   if (request == MOVE_OK) {
     cal_motor_waiting = true;
     cal_motor_seen_motion = false;
-    cal_motor_next_ms = now + TIMEOUT_STEP_MS + CAL_MOTOR_SETTLE_MS;
+    cal_motor_next_ms = now + TIMEOUT_STEP_MS + CAL_MOTOR_SETTLE_MS + 500u;
   } else if (request == MOVE_ALREADY) {
     cal_motor_waiting = true;
     cal_motor_seen_motion = true;
