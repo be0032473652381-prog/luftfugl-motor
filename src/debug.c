@@ -73,6 +73,7 @@ static uint32_t cal_sim_next_ms, cal_sim_error_sum, cal_sim_rng;
 static bool cal_motor_active, cal_motor_waiting, cal_motor_settling;
 static bool cal_motor_seen_motion;
 static uint8_t cal_motor_count, cal_motor_misses;
+static uint16_t cal_motor_tests;
 static uint8_t cal_motor_station_misses[POS_MAX - POS_MIN + 1u];
 static uint32_t cal_motor_station_sum[POS_MAX - POS_MIN + 1u];
 static uint8_t cal_motor_station_count[POS_MAX - POS_MIN + 1u];
@@ -225,7 +226,7 @@ static void cal_motor_poll(uint32_t now) {
     }
     ++cal_motor_count;
     cal_motor_waiting = cal_motor_settling = false;
-    if (cal_motor_count >= CAL_SIM_TESTS) {
+    if (cal_motor_count >= cal_motor_tests) {
       cal_motor_finish("complete", "");
       return;
     }
@@ -1185,8 +1186,8 @@ static const help_entry_t help_entries[] = {
      "Changes are RAM-only and lost on reset; export prints config.h station lines."},
     {"sim", "sim adc 2047", "ADC 0 to 4095",
      "Simulation inhibits physical motor output."},
-    {"cal", "cal sim | cal motor", "sim is motor-inhibited; motor requires idle known station",
-     "cal sim tests injected ADC values; cal motor commands 50 randomized real station moves and reports arrival errors."},
+    {"cal", "cal sim | cal motor 500", "sim is motor-inhibited; motor count is 50 or 500",
+     "cal sim tests injected ADC values; cal motor commands randomized real station moves and reports encoder centers and errors."},
     {"arm", "arm", "idle controller",
      "Unlocks manual pulses until disarm or exit."},
     {"disarm", "disarm", "no arguments",
@@ -1826,9 +1827,18 @@ static void submit(char *typed) {
              motor_duty());
     result(original, "complete", detail);
   } else if (!strcmp(command, "cal")) {
-    if (!arg || (strcmp(arg, "sim") && strcmp(arg, "motor"))) {
-      result(original, "rejected", "syntax: cal sim or cal motor");
-    } else if (!strcmp(arg, "motor")) {
+    if (!arg || (strcmp(arg, "sim") && strncmp(arg, "motor", 5u))) {
+      result(original, "rejected", "syntax: cal sim or cal motor [50|500]");
+    } else if (!strncmp(arg, "motor", 5u)) {
+      long requested_tests = CAL_SIM_TESTS;
+      char *count_text = arg + 5u;
+      while (*count_text == ' ' || *count_text == '\t')
+        ++count_text;
+      if (*count_text && (!parse_long(count_text, &requested_tests) ||
+                          (requested_tests != 50 && requested_tests != 500))) {
+        result(original, "rejected", "cal motor count must be 50 or 500");
+        return;
+      }
       position_t sensed_position = encoder_confirmed();
       if (cal_sim_active || cal_motor_active || sim_travel_active ||
           controller_state() == ST_MOVING ||
@@ -1848,6 +1858,7 @@ static void submit(char *typed) {
         cal_motor_waiting = cal_motor_settling = false;
         cal_motor_seen_motion = false;
         cal_motor_count = cal_motor_misses = 0u;
+        cal_motor_tests = (uint16_t)requested_tests;
         memset(cal_motor_station_misses, 0, sizeof cal_motor_station_misses);
         memset(cal_motor_station_sum, 0, sizeof cal_motor_station_sum);
         memset(cal_motor_station_count, 0, sizeof cal_motor_station_count);
@@ -1861,12 +1872,18 @@ static void submit(char *typed) {
             cal_motor_active = false;
             result(original, "rejected", "position unknown; home request busy");
           } else {
-            result(original, "accepted",
-                   "position unknown; homing first, then 50 randomized station moves");
+            char detail[96];
+            snprintf(detail, sizeof detail,
+                     "position unknown; homing first, then %u randomized station moves",
+                     cal_motor_tests);
+            result(original, "accepted", detail);
           }
         } else {
-          result(original, "accepted",
-                 "cal motor started; 50 randomized station moves");
+          char detail[64];
+          snprintf(detail, sizeof detail,
+                   "cal motor started; %u randomized station moves",
+                   cal_motor_tests);
+          result(original, "accepted", detail);
         }
       }
     } else if (cal_sim_active || sim_travel_active ||
