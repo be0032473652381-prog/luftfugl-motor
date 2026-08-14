@@ -616,14 +616,12 @@ void controller_tick(void) {
     if (jog_move) {
       motor_drive(last_direction, CFG_DUTY_CREEP);
     } else {
-      bool limit_target = target == POS_MIN || target == POS_MAX;
-      /* Limits have no mechanical stops, so brake on their first in-band
-       * sample. Interior stations must remain closed-loop until the encoder's
-       * debounced classification confirms the requested reed. */
-      bool limit_window =
-          (target == POS_MIN && current <= motion_target_adc + CFG_POS_WINDOW) ||
-          (target == POS_MAX && current + CFG_POS_WINDOW >= motion_target_adc);
-      if (!target_braking && limit_target && limit_window) {
+      /* Brake on entry to every target band. Without this hand-off, inertia
+       * carries the rotor across an interior station and the error sign flips,
+       * making the controller hunt forward/backward instead of letting the
+       * filtered encoder confirm the station. */
+      bool target_window = magnitude <= CFG_POS_WINDOW;
+      if (!target_braking && target_window) {
         target_braking = true;
         target_brake_since = now;
       }
@@ -650,9 +648,20 @@ void controller_tick(void) {
       }
     } else {
 #endif
-      if (!jog_move && encoder_confirmed() == target) {
-        arrive(target, now);
-        TICK_RETURN();
+      if (!jog_move) {
+        if (target_braking &&
+            (uint32_t)(now - target_brake_since) >= CFG_DEBOUNCE_MS) {
+          if (encoder_confirmed() == target) {
+            arrive(target, now);
+            TICK_RETURN();
+          }
+          /* A noisy or marginal reading did not confirm the target. Resume
+           * closed-loop motion with the freshly measured error. */
+          target_braking = false;
+        } else if (!target_braking && encoder_confirmed() == target) {
+          arrive(target, now);
+          TICK_RETURN();
+        }
       }
 #ifdef LUFTFUGL_MONITOR
     }
