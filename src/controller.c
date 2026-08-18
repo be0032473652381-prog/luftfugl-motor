@@ -645,6 +645,14 @@ void controller_tick(void) {
        * near an edge of its band; the ADC window is the authoritative target
        * test and is already bounded by the ordered station configuration. */
       bool target_window = magnitude <= CFG_POS_WINDOW;
+      if (state == ST_HOMING) {
+        /* Homing can cross the narrow ADC band between 1 kHz samples.  Use
+         * the travel direction as the reference and stop on the first
+         * directional crossing instead of driving past station 1. */
+        target_window = last_direction == DIR_REV
+                            ? current <= motion_target_adc + CFG_POS_WINDOW
+                            : current + CFG_POS_WINDOW >= motion_target_adc;
+      }
       if (!target_braking && target_window) {
         target_braking = true;
         target_brake_since = now;
@@ -684,7 +692,8 @@ void controller_tick(void) {
          * band.  Mechanical inertia can carry the pot well past the target
          * during the brake interval.  Confirm the settled ADC is still near
          * the target; otherwise resume in the correcting direction. */
-        if (error_magnitude((int16_t)motion_target_adc -
+        if (state == ST_HOMING ||
+            error_magnitude((int16_t)motion_target_adc -
                             (int16_t)encoder_average()) <= CFG_POS_WINDOW) {
           arrive(target, now);
           TICK_RETURN();
