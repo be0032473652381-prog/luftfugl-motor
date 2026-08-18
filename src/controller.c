@@ -243,8 +243,17 @@ move_result_t controller_request(request_kind_t kind, position_t arg) {
     return MOVE_BUSY;
   if (brake_until_ms && !reached(now, brake_until_ms))
     return MOVE_BUSY;
-  if (arg == position)
-    return MOVE_ALREADY;
+  if (arg == position) {
+    /* The logical station can briefly lag the physical pot while a move is
+     * settling.  Never reject a request as already-at-target unless the live
+     * filtered ADC also confirms that station. */
+    uint16_t current = encoder_average();
+    uint16_t target_adc = encoder_nominal(arg);
+    uint16_t distance = current > target_adc ? current - target_adc
+                                             : target_adc - current;
+    if (distance <= CFG_POS_WINDOW)
+      return MOVE_ALREADY;
+  }
   mailbox_arg = arg;
   mailbox = kind;
   return MOVE_OK;
