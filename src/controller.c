@@ -655,9 +655,18 @@ void controller_tick(void) {
     } else {
 #endif
       if (!jog_move && target_braking &&
-          (uint32_t)(now - target_brake_since) >= CFG_DEBOUNCE_MS) {
-        arrive(target, now);
-        TICK_RETURN();
+          (uint32_t)(now - target_brake_since) >= CFG_BRAKE_HOLD_MS) {
+        /* Do not report arrival merely because the first sample entered the
+         * band.  Mechanical inertia can carry the pot well past the target
+         * during the brake interval.  Confirm the settled ADC is still near
+         * the target; otherwise resume in the correcting direction. */
+        if (error_magnitude((int16_t)motion_target_adc -
+                            (int16_t)encoder_average()) <= CFG_POS_WINDOW) {
+          arrive(target, now);
+          TICK_RETURN();
+        }
+        target_braking = false;
+        last_direction = error > 0 ? DIR_FWD : DIR_REV;
       }
 #ifdef LUFTFUGL_MONITOR
     }
