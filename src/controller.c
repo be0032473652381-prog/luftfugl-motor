@@ -616,12 +616,14 @@ void controller_tick(void) {
     if (jog_move) {
       motor_drive(last_direction, CFG_DUTY_CREEP);
     } else {
-      /* Brake on entry to every target band. Without this hand-off, inertia
-       * carries the rotor across an interior station and the error sign flips,
-       * making the controller hunt forward/backward instead of letting the
-       * filtered encoder confirm the station. */
-      bool target_window = magnitude <= CFG_POS_WINDOW;
-      if (!target_braking && target_window) {
+      bool limit_target = target == POS_MIN || target == POS_MAX;
+      /* End stations brake on their first in-band sample. Interior stations
+       * stay closed-loop until the filtered encoder confirms the requested
+       * station, matching the original stable position algorithm. */
+      bool limit_window =
+          (target == POS_MIN && current <= motion_target_adc + CFG_POS_WINDOW) ||
+          (target == POS_MAX && current + CFG_POS_WINDOW >= motion_target_adc);
+      if (!target_braking && limit_target && limit_window) {
         target_braking = true;
         target_brake_since = now;
       }
@@ -648,26 +650,9 @@ void controller_tick(void) {
       }
     } else {
 #endif
-      if (!jog_move) {
-        if (target_braking &&
-            (uint32_t)(now - target_brake_since) >= CFG_BRAKE_HOLD_MS) {
-          /* The motor is held braked for the full mechanical settling time.
-           * A filtered reading in the target band is sufficient here; waiting
-           * for the reed classifier alone lets inertia push through the band
-           * and start a direction reversal. */
-          if (error_magnitude((int16_t)motion_target_adc -
-                              (int16_t)encoder_average()) <=
-              CFG_ARRIVAL_WINDOW) {
-            arrive(target, now);
-            TICK_RETURN();
-          }
-          /* A noisy or marginal reading did not confirm the target. Resume
-           * closed-loop motion with the freshly measured error. */
-          target_braking = false;
-        } else if (!target_braking && encoder_confirmed() == target) {
-          arrive(target, now);
-          TICK_RETURN();
-        }
+      if (!jog_move && encoder_confirmed() == target) {
+        arrive(target, now);
+        TICK_RETURN();
       }
 #ifdef LUFTFUGL_MONITOR
     }
