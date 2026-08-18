@@ -544,7 +544,12 @@ void controller_tick(void) {
     uint16_t current = encoder_average();
     int16_t error = (int16_t)motion_target_adc - (int16_t)current;
     uint16_t magnitude = error_magnitude(error);
-    direction_t direction = error > 0 ? DIR_FWD : DIR_REV;
+    /* A station command is one monotonic move.  Do not recalculate the
+     * direction from every noisy ADC sample: doing so turns a small
+     * overshoot/noise excursion into forward/backward hunting.  The direction
+     * is latched when the request starts and the filtered target window is
+     * what ends the move. */
+    direction_t direction = last_direction;
     bool jog_reached = false;
     if (jog_move) {
       uint16_t progress = 0u;
