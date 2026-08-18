@@ -235,7 +235,7 @@ move_result_t controller_request(request_kind_t kind, position_t arg) {
   }
   if (arg < POS_MIN || arg > POS_MAX)
     return MOVE_INVALID;
-  if (position == POS_UNKNOWN)
+  if (position == POS_UNKNOWN || position == POS_BETWEEN)
     return MOVE_POS_UNKNOWN;
   if (state == ST_FAULT)
     return MOVE_FAULT;
