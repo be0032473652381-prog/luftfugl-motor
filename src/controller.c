@@ -616,14 +616,13 @@ void controller_tick(void) {
     if (jog_move) {
       motor_drive(last_direction, CFG_DUTY_CREEP);
     } else {
-      bool limit_target = target == POS_MIN || target == POS_MAX;
-      /* End stations brake on their first in-band sample. Interior stations
-       * stay closed-loop until the filtered encoder confirms the requested
-       * station, matching the original stable position algorithm. */
-      bool limit_window =
-          (target == POS_MIN && current <= motion_target_adc + CFG_POS_WINDOW) ||
-          (target == POS_MAX && current + CFG_POS_WINDOW >= motion_target_adc);
-      if (!target_braking && limit_target && limit_window) {
+      /* Once the filtered ADC enters the target window, brake for the
+       * debounce interval.  Requiring the classifier to name the station
+       * here can leave a real move marked busy forever when the pot settles
+       * near an edge of its band; the ADC window is the authoritative target
+       * test and is already bounded by the ordered station configuration. */
+      bool target_window = magnitude <= CFG_POS_WINDOW;
+      if (!target_braking && target_window) {
         target_braking = true;
         target_brake_since = now;
       }
@@ -650,7 +649,8 @@ void controller_tick(void) {
       }
     } else {
 #endif
-      if (!jog_move && encoder_confirmed() == target) {
+      if (!jog_move && target_braking &&
+          (uint32_t)(now - target_brake_since) >= CFG_DEBOUNCE_MS) {
         arrive(target, now);
         TICK_RETURN();
       }
