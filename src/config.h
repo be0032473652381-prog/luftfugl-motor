@@ -53,7 +53,7 @@
 #define PWM_CLKDIV 97.6875f
 
 #define DUTY_NORMAL 50
-#define DUTY_APPROACH 25
+#define DUTY_APPROACH 50
 #define DUTY_CREEP 25
 #define DUTY_MIN 25
 
@@ -62,7 +62,7 @@
 #define POS_3_ADC 850  /*  74.7 deg */
 #define POS_4_ADC 1175 /* 103.3 deg */
 #define POS_5_ADC 1844 /* measured upper-station ADC from trace */
-#define POS_WINDOW 30
+#define POS_WINDOW 60
 #define ARRIVAL_WINDOW_COUNTS 15
 #define APPROACH_COUNTS 300
 #define LOW_ENDSTOP_ADC 100
