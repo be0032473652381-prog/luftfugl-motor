@@ -120,7 +120,11 @@ static void begin_home(uint32_t now) {
   last_direction = error > 0 ? DIR_FWD : DIR_REV;
   state = ST_HOMING;
   deadline_ms = now + TIMEOUT_HOME_MS;
-  motor_drive(last_direction, speed_for_error(error));
+  /* Adjacent stations can begin inside APPROACH_COUNTS.  Give the motor a
+   * startup pulse so the low final-approach duty cannot leave it stalled. */
+  motor_drive(last_direction, error_magnitude(error) <= CFG_POS_WINDOW
+                                  ? CFG_DUTY_APPROACH
+                                  : CFG_DUTY_NORMAL);
   power_monitor_motion_start();
   console_push_event(EV_HOMING, 0);
 }
@@ -638,9 +642,14 @@ void controller_tick(void) {
       }
       if (target_braking)
         motor_brake();
-      else
-      motor_drive(direction, target_correcting ? CFG_DUTY_CREEP
-                                               : speed_for_error(error));
+      else {
+        uint8_t duty = target_correcting ? CFG_DUTY_CREEP
+                                         : speed_for_error(error);
+        if (!target_correcting && current == motion_start_adc &&
+            magnitude > CFG_POS_WINDOW)
+          duty = CFG_DUTY_NORMAL;
+        motor_drive(direction, duty);
+      }
     }
 
 #ifdef LUFTFUGL_MONITOR
