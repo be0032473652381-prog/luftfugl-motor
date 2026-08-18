@@ -38,6 +38,16 @@ static volatile dbg_counters_t counters;
 static volatile motion_trace_entry_t motion_trace[DEBUG_HISTORY_DEPTH];
 static volatile uint8_t motion_trace_head, motion_trace_used;
 static uint32_t motion_trace_next_ms;
+#ifdef LUFTFUGL_DEBOUNCE_TRACE
+static volatile uint16_t debounce_trace_adc[DEBOUNCE_TRACE_DEPTH];
+static volatile uint32_t debounce_trace_entry_tick;
+static volatile uint32_t debounce_trace_confirm_tick;
+static volatile uint32_t debounce_trace_count;
+static volatile uint16_t debounce_trace_confirm_adc;
+static volatile bool debounce_trace_active;
+static volatile bool debounce_trace_confirmed;
+static volatile bool debounce_trace_overflowed;
+#endif
 #ifdef LUFTFUGL_DEBUG
 static uint32_t debug_drive_until_ms;
 #endif
@@ -76,6 +86,56 @@ static void motion_trace_sample(uint32_t now) {
     ++motion_trace_used;
   motion_trace_next_ms = now + DEBUG_MOTION_TRACE_PERIOD_MS;
 }
+#ifdef LUFTFUGL_DEBOUNCE_TRACE
+static void debounce_trace_reset(void) {
+  debounce_trace_entry_tick = 0u;
+  debounce_trace_confirm_tick = 0u;
+  debounce_trace_count = 0u;
+  debounce_trace_confirm_adc = 0u;
+  debounce_trace_active = false;
+  debounce_trace_confirmed = false;
+  debounce_trace_overflowed = false;
+}
+
+static void debounce_trace_start(uint32_t now, uint16_t adc) {
+  /* Correction may re-enter the window; retain the first entry because that
+   * is the point whose subsequent debounce drift is under investigation. */
+  if (debounce_trace_active)
+    return;
+  debounce_trace_entry_tick = now;
+  debounce_trace_confirm_tick = 0u;
+  debounce_trace_confirm_adc = 0u;
+  debounce_trace_count = 1u;
+  debounce_trace_adc[0] = adc;
+  debounce_trace_confirmed = false;
+  debounce_trace_overflowed = false;
+  debounce_trace_active = true;
+}
+
+static void debounce_trace_sample(uint32_t now) {
+  if (!debounce_trace_active || now == debounce_trace_entry_tick)
+    return;
+  if (debounce_trace_count < DEBOUNCE_TRACE_DEPTH)
+    debounce_trace_adc[debounce_trace_count++] = encoder_average();
+  else
+    debounce_trace_overflowed = true;
+  if (debounce_trace_confirmed &&
+      (uint32_t)(now - debounce_trace_entry_tick) >=
+          DEBOUNCE_TRACE_MIN_TICKS)
+    debounce_trace_active = false;
+}
+
+static void debounce_trace_confirm(uint32_t now) {
+  if (!debounce_trace_active)
+    return;
+  debounce_trace_confirm_tick = now;
+  debounce_trace_confirm_adc = encoder_average();
+  debounce_trace_confirmed = true;
+  if ((uint32_t)(now - debounce_trace_entry_tick) >=
+      DEBOUNCE_TRACE_MIN_TICKS)
+    debounce_trace_active = false;
+}
+#endif
 #endif
 static bool reached(uint32_t now, uint32_t deadline) {
   return deadline && (int32_t)(now - deadline) >= 0;
@@ -135,6 +195,9 @@ static void begin_move(position_t tgt) {
   int16_t error = (int16_t)target_adc - (int16_t)current;
 #ifdef LUFTFUGL_MONITOR
   motion_trace_reset(now_ms());
+#endif
+#ifdef LUFTFUGL_DEBOUNCE_TRACE
+  debounce_trace_reset();
 #endif
   target = tgt;
   jog_move = false;
@@ -220,6 +283,9 @@ void controller_init(void) {
   memset((void *)motion_trace, 0, sizeof motion_trace);
   motion_trace_head = motion_trace_used = 0u;
   motion_trace_next_ms = 0u;
+#ifdef LUFTFUGL_DEBOUNCE_TRACE
+  debounce_trace_reset();
+#endif
 #ifdef LUFTFUGL_DEBUG
   debug_drive_until_ms = 0u;
 #endif
@@ -362,6 +428,9 @@ void controller_tick(void) {
   uint32_t now = now_ms();
   position_t changed;
   watchdog_update();
+#ifdef LUFTFUGL_DEBOUNCE_TRACE
+  debounce_trace_sample(now);
+#endif
   if (reached(now, brake_until_ms))
     brake_until_ms = 0u;
 #ifdef LUFTFUGL_MONITOR
@@ -505,6 +574,10 @@ void controller_tick(void) {
 
   if (encoder_take_change(&changed)) {
     position = changed;
+#ifdef LUFTFUGL_DEBOUNCE_TRACE
+    if (changed == target)
+      debounce_trace_confirm(now);
+#endif
   }
 
   if (state == ST_BOOT) {
@@ -656,6 +729,14 @@ void controller_tick(void) {
       if (!target_braking && target_window) {
         target_braking = true;
         target_brake_since = now;
+#ifdef LUFTFUGL_DEBOUNCE_TRACE
+        if (!jog_move
+#ifdef LUFTFUGL_MONITOR
+            && !adc_move
+#endif
+        )
+          debounce_trace_start(now, current);
+#endif
       }
       if (target_braking)
         motor_brake();
@@ -759,5 +840,22 @@ bool controller_motion_trace_get(uint8_t index, motion_trace_entry_t *out) {
   *out = motion_trace[(first + index) % DEBUG_HISTORY_DEPTH];
   return true;
 }
+#ifdef LUFTFUGL_DEBOUNCE_TRACE
+void controller_debounce_trace_info(debounce_trace_info_t *out) {
+  out->entry_tick = debounce_trace_entry_tick;
+  out->confirm_tick = debounce_trace_confirm_tick;
+  out->entry_adc = debounce_trace_count ? debounce_trace_adc[0] : 0u;
+  out->confirm_adc = debounce_trace_confirm_adc;
+  out->sample_count = debounce_trace_count;
+  out->confirmed = debounce_trace_confirmed;
+  out->overflowed = debounce_trace_overflowed;
+}
+bool controller_debounce_trace_get(uint32_t index, uint16_t *adc) {
+  if (index >= debounce_trace_count)
+    return false;
+  *adc = debounce_trace_adc[index];
+  return true;
+}
+#endif
 #endif
 position_t controller_target(void) { return target; }

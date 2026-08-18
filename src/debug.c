@@ -88,6 +88,10 @@ static direction_t findmin_direction;
 static uint16_t findmin_min, findmin_max, findmin_start, findmin_noise;
 static uint32_t findmin_deadline;
 static uint8_t trace_dump_index, trace_dump_count;
+#ifdef LUFTFUGL_DEBOUNCE_TRACE
+static uint32_t debounce_dump_index, debounce_dump_count;
+static debounce_trace_info_t debounce_dump_info;
+#endif
 
 static uint32_t cal_sim_random(void) {
   cal_sim_rng = cal_sim_rng * 1664525u + 1013904223u;
@@ -1188,6 +1192,10 @@ static const help_entry_t help_entries[] = {
     {"tick", "tick", "read-only", "Shows loop timing and watchdog health."},
     {"trace", "trace", "read-only",
      "Dumps the latest move at 50 ms intervals: time, ADC, direction and duty."},
+#ifdef LUFTFUGL_DEBOUNCE_TRACE
+    {"debounce", "debounce", "read-only",
+     "Dumps every filtered ADC tick from target-window entry through arrival."},
+#endif
     {"pins", "pins", "read-only", "Shows live motor and sensor pin levels."},
     {"pwm", "pwm", "read-only",
      "Shows PWM configuration and calculated frequency."},
@@ -1449,6 +1457,9 @@ static void submit(char *typed) {
               !strcmp(command, "disarm") || !strcmp(command, "selftest") ||
               !strcmp(command, "tick") ||
               !strcmp(command, "trace") ||
+#ifdef LUFTFUGL_DEBOUNCE_TRACE
+              !strcmp(command, "debounce") ||
+#endif
               !strcmp(command, "pins") || !strcmp(command, "pwm") ||
               !strcmp(command, "findmin") || !strcmp(command, "plain") ||
               !strcmp(command, "load") || !strcmp(command, "ina") ||
@@ -1823,6 +1834,29 @@ static void submit(char *typed) {
                trace_dump_count);
       result(original, "complete", detail);
     }
+#ifdef LUFTFUGL_DEBOUNCE_TRACE
+  } else if (!strcmp(command, "debounce")) {
+    debounce_dump_index = 0u;
+    controller_debounce_trace_info(&debounce_dump_info);
+    debounce_dump_count = debounce_dump_info.sample_count;
+    if (!debounce_dump_count) {
+      result(original, "complete", "no target-window arrival recorded");
+    } else {
+      char detail[160];
+      snprintf(detail, sizeof detail,
+               "entry_tick=%lu entry_adc=%u confirm_tick=%lu confirm_adc=%u "
+               "samples=%lu confirmed=%s overflow=%s",
+               (unsigned long)debounce_dump_info.entry_tick,
+               debounce_dump_info.entry_adc,
+               (unsigned long)debounce_dump_info.confirm_tick,
+               debounce_dump_info.confirm_adc,
+               (unsigned long)debounce_dump_info.sample_count,
+               debounce_dump_info.confirmed ? "yes" : "no",
+               debounce_dump_info.overflowed ? "yes" : "no");
+      result(original, "complete", detail);
+      result("debounce", "complete", "tick,adc");
+    }
+#endif
   } else if (!strcmp(command, "pins")) {
     char detail[112];
     snprintf(
@@ -2270,6 +2304,9 @@ void dbg_init(void) {
   cal_sim_error_sum = cal_sim_rng = 0u;
   findmin_phase = 0u;
   trace_dump_index = trace_dump_count = 0u;
+#ifdef LUFTFUGL_DEBOUNCE_TRACE
+  debounce_dump_index = debounce_dump_count = 0u;
+#endif
   frame_phase = 0u;
   first_result = true;
   frame_measuring = false;
@@ -2327,6 +2364,20 @@ void dbg_poll(void) {
     }
     ++trace_dump_index;
   }
+#ifdef LUFTFUGL_DEBOUNCE_TRACE
+  if (debounce_dump_index < debounce_dump_count && !dbg_out_pending()) {
+    uint16_t adc;
+    if (controller_debounce_trace_get(debounce_dump_index, &adc)) {
+      char detail[64];
+      snprintf(detail, sizeof detail, "%lu,%u",
+               (unsigned long)(debounce_dump_info.entry_tick +
+                               debounce_dump_index),
+               adc);
+      result("debounce", "complete", detail);
+    }
+    ++debounce_dump_index;
+  }
+#endif
   findmin_poll(now);
   cal_sim_poll(now);
   cal_motor_poll(now);

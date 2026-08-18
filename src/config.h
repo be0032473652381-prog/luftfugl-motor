@@ -62,7 +62,7 @@
 #define POS_3_ADC 850  /*  74.7 deg */
 #define POS_4_ADC 1250 /* 110.0 deg */
 #define POS_5_ADC 1844 /* measured upper-station ADC from trace */
-#define POS_WINDOW 30
+#define POS_WINDOW 60
 #define ARRIVAL_WINDOW_COUNTS 15
 #define APPROACH_COUNTS 300
 #define LOW_ENDSTOP_ADC 100
@@ -168,6 +168,12 @@
 #define DEBUG_JOG_STEP_4 100u
 #define DEBUG_JOG_STEP_5 250u
 #define DEBUG_JOG_STEP_6 500u
+#ifdef LUFTFUGL_DEBOUNCE_TRACE
+/* One sample per tick from first window entry through the longest possible
+ * station-move deadline, plus the required post-entry observation interval. */
+#define DEBOUNCE_TRACE_MIN_TICKS 30u
+#define DEBOUNCE_TRACE_DEPTH (TIMEOUT_STEP_MS + DEBOUNCE_TRACE_MIN_TICKS + 1u)
+#endif
 #endif
 
 #define POS_UNKNOWN 0

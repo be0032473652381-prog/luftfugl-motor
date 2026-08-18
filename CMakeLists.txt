@@ -13,6 +13,7 @@ pico_sdk_init()
 option(LUFTFUGL_DEBUG "Build interactive debug monitor" ON)
 option(LUFTFUGL_TRACE_INPUT "Trace every received console character" OFF)
 option(LUFTFUGL_TRACE_OUTPUT "Trace debug output ring activity" OFF)
+option(LUFTFUGL_DEBOUNCE_TRACE "Capture per-tick target-window arrival data" OFF)
 
 add_executable(luftfugl
     src/main.c
@@ -39,6 +40,12 @@ endif()
 
 if(LUFTFUGL_TRACE_OUTPUT)
     target_compile_definitions(luftfugl PRIVATE LUFTFUGL_TRACE_OUTPUT=1)
+endif()
+if(LUFTFUGL_DEBOUNCE_TRACE)
+    if(NOT LUFTFUGL_DEBUG)
+        message(FATAL_ERROR "LUFTFUGL_DEBOUNCE_TRACE requires LUFTFUGL_DEBUG=ON")
+    endif()
+    target_compile_definitions(luftfugl PRIVATE LUFTFUGL_DEBOUNCE_TRACE=1)
 endif()
 target_include_directories(luftfugl PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src)
 target_compile_options(luftfugl PRIVATE -Wall -Wextra)

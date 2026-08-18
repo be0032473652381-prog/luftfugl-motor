@@ -35,5 +35,18 @@ void controller_counters_get(dbg_counters_t *out);
 void controller_counters_reset(void);
 uint8_t controller_motion_trace_count(void);
 bool controller_motion_trace_get(uint8_t index, motion_trace_entry_t *out);
+#ifdef LUFTFUGL_DEBOUNCE_TRACE
+typedef struct {
+  uint32_t entry_tick;
+  uint32_t confirm_tick;
+  uint16_t entry_adc;
+  uint16_t confirm_adc;
+  uint32_t sample_count;
+  bool confirmed;
+  bool overflowed;
+} debounce_trace_info_t;
+void controller_debounce_trace_info(debounce_trace_info_t *out);
+bool controller_debounce_trace_get(uint32_t index, uint16_t *adc);
+#endif
 #endif
 #endif
