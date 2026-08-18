@@ -26,7 +26,7 @@ static uint32_t brake_until_ms, deadline_ms;
 static uint16_t motion_start_adc, motion_target_adc, previous_motion_adc;
 static uint16_t jog_remaining;
 static uint8_t passed_mask;
-static bool jog_move, target_braking;
+static bool jog_move, target_braking, target_correcting;
 static uint32_t target_brake_since;
 #ifdef LUFTFUGL_MONITOR
 static bool adc_move;
@@ -101,6 +101,7 @@ static void begin_home(uint32_t now) {
   motor_brake();
   jog_move = false;
   target_braking = false;
+  target_correcting = false;
   target_brake_since = 0u;
 #ifdef LUFTFUGL_MONITOR
   motion_trace_reset(now);
@@ -134,6 +135,7 @@ static void begin_move(position_t tgt) {
   target = tgt;
   jog_move = false;
   target_braking = false;
+  target_correcting = false;
   target_brake_since = 0u;
   motion_start_adc = current;
   motion_target_adc = target_adc;
@@ -158,6 +160,7 @@ static void begin_jog(int16_t delta, uint16_t target_adc) {
 
   jog_move = true;
   target_braking = false;
+  target_correcting = false;
   target_brake_since = 0u;
   target = POS_BETWEEN;
   motion_start_adc = current;
@@ -202,6 +205,7 @@ void controller_init(void) {
   passed_mask = 0u;
   jog_move = false;
   target_braking = false;
+  target_correcting = false;
   target_brake_since = 0u;
 #ifdef LUFTFUGL_MONITOR
   adc_move = false;
@@ -433,6 +437,7 @@ void controller_tick(void) {
       motion_trace_reset(now);
       adc_move = true;
       target_braking = false;
+      target_correcting = false;
       target_brake_since = 0u;
       adc_target = req.adc;
       target = POS_BETWEEN;
@@ -634,7 +639,8 @@ void controller_tick(void) {
       if (target_braking)
         motor_brake();
       else
-        motor_drive(direction, speed_for_error(error));
+      motor_drive(direction, target_correcting ? CFG_DUTY_CREEP
+                                               : speed_for_error(error));
     }
 
 #ifdef LUFTFUGL_MONITOR
@@ -666,6 +672,7 @@ void controller_tick(void) {
           TICK_RETURN();
         }
         target_braking = false;
+        target_correcting = true;
         last_direction = error > 0 ? DIR_FWD : DIR_REV;
       }
 #ifdef LUFTFUGL_MONITOR
