@@ -53,7 +53,7 @@
 #define PWM_CLKDIV 97.6875f
 
 #define DUTY_NORMAL 50
-#define DUTY_APPROACH 50
+#define DUTY_APPROACH 25
 #define DUTY_CREEP 25
 #define DUTY_MIN 25
 
