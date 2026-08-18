@@ -1752,7 +1752,7 @@ static void submit(char *typed) {
       result(original, "rejected",
              r == MOVE_BUSY          ? "already moving"
              : r == MOVE_ALREADY     ? "already at target"
-             : r == MOVE_POS_UNKNOWN ? "position unknown"
+             : r == MOVE_POS_UNKNOWN ? "position unknown; run home first"
              : r == MOVE_FAULT       ? "controller fault; use home"
                                       : "invalid target");
   } else if (!strcmp(command, "goto")) {
