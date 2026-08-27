@@ -96,8 +96,22 @@ static uint32_t battery_deep_yellow(void) {
                      LED_BATTERY_BRIGHTNESS_PERCENT);
 }
 
-static uint32_t co2_blue(void) {
-  return colour_word(0u, 32u, 255u, LED_STATION_BRIGHTNESS_PERCENT);
+static uint32_t co2_warm_white_breathe(uint32_t now) {
+  /* Eight-second, low-brightness breathing envelope.  The RGBW pixel uses
+     its neutral white die with a small amber contribution for a soft,
+     warm-white result; it never snaps fully dark between steps. */
+  static const uint8_t level[32] = {
+      1u, 1u, 1u, 1u, 2u, 2u, 3u, 4u,
+      5u, 6u, 7u, 8u, 9u, 10u, 10u, 10u,
+      10u, 10u, 10u, 9u, 8u, 7u, 6u, 5u,
+      4u, 3u, 2u, 2u, 1u, 1u, 1u, 1u};
+  uint8_t brightness = level[(now / 250u) % 32u];
+  if (!rgbw_enabled)
+    return colour_word(255u, 178u, 96u, brightness);
+  uint8_t r = (uint8_t)((32u * brightness + 50u) / 100u);
+  uint8_t g = (uint8_t)((14u * brightness + 50u) / 100u);
+  uint8_t w = (uint8_t)((255u * brightness + 50u) / 100u);
+  return ((uint32_t)g << 24) | ((uint32_t)r << 16) | w;
 }
 
 static uint32_t co2_cyan(void) {
@@ -158,7 +172,7 @@ static uint32_t requested_colour(void) {
   }
   co2_error_latched = false;
   if (co2_warming_up())
-    return (now % 1000u) < 500u ? co2_blue() : 0u;
+    return co2_warm_white_breathe(now);
   if (!co2_filtered_valid())
     return co2_sample_flash_active() ? co2_cyan() : 0u;
   power_sample_t battery;
