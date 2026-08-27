@@ -560,22 +560,10 @@ void dbg_fields_refresh(void) {
              "ERROR", error, "STEP", step, "SELECTED", selected);
     field(5, line);
   } else if (ui_page == 5u) {
-    const char *variant = co2_variant() == CO2_VARIANT_SCD40 ? "SCD40"
-                         : co2_variant() == CO2_VARIANT_SCD41 ? "SCD41"
-                         : co2_variant() == CO2_VARIANT_OTHER ? "SCD4x other"
-                                                              : "not detected";
-    char co2_line[81];
-    snprintf(co2_line, sizeof co2_line,
-             "  SCD4x     %-13s address 0x62 (%s)", variant,
-             co2_detected() ? "ACK + variant" : "no response");
-    field(3, co2_line);
-    if (co2_sample_valid()) {
-      snprintf(co2_line, sizeof co2_line,
-               "  CO2 concentration   %u ppm", co2_ppm());
-      field(4, co2_line);
-    } else {
-      field(4, "  CO2 concentration   unavailable");
-    }
+    char co2_lines[18][81];
+    co2_format_menu(co2_lines);
+    for (uint8_t i = 0u; i < 18u; ++i)
+      field((uint8_t)(3u + i), co2_lines[i]);
   }
   char s1[12], s2[12], s3[12], s4[12], s5[12];
   snprintf(s1, sizeof s1, "1:%5u", encoder_nominal(1));
@@ -642,8 +630,8 @@ void dbg_render(void) {
 static bool status_frame_complete(void) {
   if (!status_shadow[0][0])
     return false;
-  if (ui_page != 5u) {
-    uint8_t last = ui_page == 4u ? 8u : (ui_page == 5u ? 4u : 5u);
+  {
+    uint8_t last = ui_page == 4u ? 8u : (ui_page == 5u ? 20u : 5u);
     for (uint8_t row = 3u; row <= last; ++row)
       if (!status_shadow[row - 1u][0])
         return false;
@@ -1294,6 +1282,24 @@ static const help_entry_t help_entries[] = {
      "Inrush is a sampled lower bound; bench thresholds remain disabled until measured."},
     {"ina", "ina", "read-only",
      "Shows computed calibration, conversion configuration and MODE 000 idle state."},
+    {"co2", "co2", "no arguments",
+     "Shows the filtered and raw SCD41 measurement; single mode starts a 5-second shot."},
+    {"ready", "ready", "no arguments",
+     "Shows and clears the SCD41 latched data-ready indication."},
+    {"serial", "serial", "no arguments",
+     "Stops periodic measurement briefly and reads the SCD41 48-bit serial number."},
+    {"asc", "asc off", "on, off, or no argument",
+     "Reads or sets SCD41 automatic self-calibration."},
+    {"offset", "offset 4.5", "0 to 20 degrees C, or no argument",
+     "Reads or sets the SCD41 temperature offset."},
+    {"altitude", "altitude 12", "0 to 3000 metres, or no argument",
+     "Reads or sets SCD41 altitude compensation."},
+    {"mode", "mode single", "periodic, single, or no argument",
+     "Reads or selects the SCD41 measurement mode."},
+    {"sdc41", "sdc41 off", "on or off",
+     "Uses the SCD41 protocol power-down or wake command."},
+    {"menu", "menu", "no arguments",
+     "Redraws the complete live SCD41 Page-5 menu."},
     {"clean", "clean", "no arguments",
      "Clears command results and redraws the fixed-screen debug interface."},
     {"plain", "plain", "no arguments",
@@ -1623,14 +1629,32 @@ static void submit(char *typed) {
     result(original, "rejected", "unexpected argument; try help <command>");
     return;
   }
-  if (!strcmp(command, "clean")) {
+  bool sdc_page_command = ui_page == 5u &&
+      (!strcmp(command, "co2") || !strcmp(command, "ready") ||
+       !strcmp(command, "serial") || !strcmp(command, "selftest") ||
+       !strcmp(command, "asc") || !strcmp(command, "offset") ||
+       !strcmp(command, "altitude") || !strcmp(command, "mode") ||
+       !strcmp(command, "status") || !strcmp(command, "sdc41") ||
+       !strcmp(command, "menu"));
+  if (sdc_page_command) {
+    char detail[192];
+    bool ok = co2_command(command, arg, detail, sizeof detail);
+    result(original, ok ? "complete" : "rejected", detail);
+    if (!strcmp(command, "menu") && !plain_mode)
+      dbg_render();
+  } else if (!strcmp(command, "clean")) {
     if (plain_mode)
       result(original, "complete", "command history boundary");
     else
       dbg_render();
   } else if (!strcmp(command, "help")) {
     if (arg) {
-      const help_entry_t *entry = help_detail(arg);
+      const char *sdc_help = ui_page == 5u ? co2_command_help(arg) : NULL;
+      const help_entry_t *entry = sdc_help ? NULL : help_detail(arg);
+      if (sdc_help) {
+        result("Purpose", "complete", sdc_help);
+        result(original, "complete", "SDC41 Page-5 command");
+      } else
       if (entry) {
         if (!strcmp(entry->name, "pos")) {
           help_pos_detail(original, entry);

@@ -24,6 +24,8 @@ typedef struct {
 
 void power_monitor_init(void);
 void power_monitor_tick(void);
+bool power_monitor_i2c_claim(void);
+void power_monitor_i2c_release(void);
 void power_monitor_request_sample(void);
 void power_monitor_motion_start(void);
 void power_monitor_motion_stop(void);

@@ -5,6 +5,7 @@
 #include "hardware/i2c.h"
 #include "hardware/regs/i2c.h"
 #include "hardware/structs/i2c.h"
+#include "hardware/sync.h"
 #include "pico/time.h"
 #include <stdio.h>
 #include <string.h>
@@ -32,6 +33,7 @@ typedef struct {
 } notable_t;
 
 static volatile power_sample_t published;
+static volatile bool i2c_claimed;
 static power_sample_t working;
 static pm_state_t state;
 static io_kind_t io_kind;
@@ -225,6 +227,8 @@ void power_monitor_motion_stop(void) {
 }
 
 void power_monitor_tick(void) {
+  if (i2c_claimed)
+    return;
   uint16_t value;
   uint32_t ms = now_ms();
   bool completed = io_complete(&value);
@@ -313,6 +317,21 @@ void power_monitor_tick(void) {
       (void)io_start_read(REG_CONFIG);
     break;
   }
+}
+
+bool power_monitor_i2c_claim(void) {
+  uint32_t irq_state = save_and_disable_interrupts();
+  bool available = io_kind == IO_IDLE && !i2c_claimed;
+  if (available)
+    i2c_claimed = true;
+  restore_interrupts(irq_state);
+  return available;
+}
+
+void power_monitor_i2c_release(void) {
+  uint32_t irq_state = save_and_disable_interrupts();
+  i2c_claimed = false;
+  restore_interrupts(irq_state);
 }
 
 void power_monitor_snapshot(power_sample_t *out) {

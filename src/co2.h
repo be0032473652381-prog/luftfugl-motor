@@ -2,6 +2,7 @@
 #define LUFTFUGL_CO2_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 typedef enum {
@@ -20,5 +21,8 @@ uint16_t co2_ppm(void);
 int16_t co2_temperature_tenths(void);
 uint16_t co2_humidity_tenths(void);
 uint32_t co2_frames_read(void);
+void co2_format_menu(char lines[18][81]);
+bool co2_command(const char *command, const char *args, char *out, size_t size);
+const char *co2_command_help(const char *command);
 
 #endif
