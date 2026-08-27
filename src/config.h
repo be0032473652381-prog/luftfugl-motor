@@ -12,15 +12,22 @@
 #define PIN_STBY 15
 #define PIN_SENSE 26
 #define ADC_CHANNEL 0
-#define PIN_UART_TX 20
-#define PIN_UART_RX 21
+#define PIN_UART_TX 8
+#define PIN_UART_RX 9
+#define PIN_LED_POWER 0
 #define PIN_LED_DATA 18
+#define PIN_BUZZER_BIN1 6
+#define PIN_BUZZER_BIN2 7
+#define PIN_BUZZER_PWMB 16
+#define BUZZER_STATION_5_PLAYS 3u
 #define PIN_I2C_SDA 4
 #define PIN_I2C_SCL 5
 #define I2C_BAUD 100000u
+#define SCD41_ADDRESS 0x62u
 #define INA219_ADDRESS 0x40u
 #define LED_COUNT 1
 #define LED_RGBW 1
+#define LED_POWER_STARTUP_US 300u
 #define LED_STATION_BRIGHTNESS_PERCENT 3u
 #define LED_HAZARD_BRIGHTNESS_PERCENT 30u
 
@@ -58,9 +65,9 @@
 #define DUTY_MIN 25
 
 #define POS_1_ADC 200  /*  17.6 deg */
-#define POS_2_ADC 525  /*  46.2 deg */
-#define POS_3_ADC 850  /*  74.7 deg */
-#define POS_4_ADC 1250 /* 110.0 deg */
+#define POS_2_ADC 611  /*  53.7 deg */
+#define POS_3_ADC 1022 /*  89.8 deg */
+#define POS_4_ADC 1433 /* 126.0 deg */
 #define POS_5_ADC 1844 /* measured upper-station ADC from trace */
 #define POS_WINDOW 30
 #define ARRIVAL_WINDOW_COUNTS 15
@@ -131,7 +138,7 @@
 #define DEBUG_NOMINAL_P3 POS_3_ADC
 #define DEBUG_HISTORY_DEPTH 64u
 #define DEBUG_MOTION_TRACE_PERIOD_MS 50u
-#define DEBUG_OUT_BUFFER 2048u
+#define DEBUG_OUT_BUFFER 4096u
 #define DEBUG_SELFTEST_ADC_SAMPLES 10u
 #define DEBUG_SELFTEST_SAMPLE_PERIOD_MS 1u
 #define DEBUG_SELFTEST_WINDOW_MS 1000u
@@ -161,6 +168,7 @@
 #define DEBUG_GPIO_OP_STBY 3u
 #define DEBUG_SCREEN_REFRESH_MS 200u
 #define DEBUG_SCREEN_UPTIME_MS 1000u
+#define DEBUG_SCREEN_BOTTOM_ROW 53u
 #define DEBUG_JOG_STEP_DEFAULT 100u
 #define DEBUG_JOG_STEP_1 10u
 #define DEBUG_JOG_STEP_2 25u

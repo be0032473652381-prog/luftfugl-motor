@@ -99,6 +99,9 @@ static bool io_start_write(uint8_t reg, uint16_t value) {
   i2c_hw_t *hw = i2c_get_hw(i2c0);
   if (io_kind != IO_IDLE)
     return false;
+  hw->enable = 0u;
+  hw->tar = INA219_ADDRESS;
+  hw->enable = 1u;
   while (hw->rxflr)
     (void)hw->data_cmd;
   (void)hw->clr_stop_det;
@@ -114,6 +117,9 @@ static bool io_start_read(uint8_t reg) {
   i2c_hw_t *hw = i2c_get_hw(i2c0);
   if (io_kind != IO_IDLE)
     return false;
+  hw->enable = 0u;
+  hw->tar = INA219_ADDRESS;
+  hw->enable = 1u;
   while (hw->rxflr)
     (void)hw->data_cmd;
   (void)hw->clr_stop_det;
@@ -476,8 +482,9 @@ void power_monitor_format_menu(char lines[6][81]) {
            s.bus_raw, (uint16_t)s.shunt_raw, (uint16_t)s.current_raw,
            s.power_raw, s.overflow ? "YES" : "no");
   snprintf(lines[2], 81,
-           "  CONFIG   addr 0x40  active %04x  normal %04x  cal %04x  idle MODE 000",
-           s.config_raw, INA219_NORMAL_CONFIG, calibration_value());
+           "  CONFIG   addr 0x%02x  active %04x  normal %04x  cal %04x  idle MODE 000",
+           INA219_ADDRESS, s.config_raw, INA219_NORMAL_CONFIG,
+           calibration_value());
   snprintf(lines[3], 81,
            "  CONVERT  normal 12-bit triggered; inrush 9-bit/%u ms (lower bound)",
            INRUSH_SAMPLE_MS);

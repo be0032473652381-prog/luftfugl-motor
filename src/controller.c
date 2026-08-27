@@ -24,10 +24,11 @@ static volatile int16_t mailbox_delta;
 static volatile uint16_t mailbox_value;
 static uint32_t brake_until_ms, deadline_ms;
 static uint16_t motion_start_adc, motion_target_adc, previous_motion_adc;
+static uint16_t motion_progress_adc;
 static uint16_t jog_remaining;
 static uint8_t passed_mask;
-static bool jog_move, target_braking, target_correcting;
-static uint32_t target_brake_since;
+static bool jog_move, target_braking, target_correcting, stiction_boost;
+static uint32_t target_brake_since, motion_progress_ms;
 #ifdef LUFTFUGL_MONITOR
 static bool adc_move;
 static uint16_t adc_target;
@@ -102,11 +103,12 @@ static void begin_home(uint32_t now) {
   jog_move = false;
   target_braking = false;
   target_correcting = false;
+  stiction_boost = false;
   target_brake_since = 0u;
 #ifdef LUFTFUGL_MONITOR
   motion_trace_reset(now);
 #endif
-  if (error_magnitude(error) <= CFG_POS_WINDOW) {
+  if (error_magnitude(error) <= CFG_ARRIVAL_WINDOW) {
     target = POS_MIN;
     arrive(POS_MIN, now);
     return;
@@ -116,6 +118,8 @@ static void begin_home(uint32_t now) {
   motion_start_adc = current;
   motion_target_adc = target_adc;
   previous_motion_adc = current;
+  motion_progress_adc = current;
+  motion_progress_ms = now;
   passed_mask = 0u;
   last_direction = error > 0 ? DIR_FWD : DIR_REV;
   state = ST_HOMING;
@@ -140,11 +144,17 @@ static void begin_move(position_t tgt) {
   jog_move = false;
   target_braking = false;
   target_correcting = false;
+  stiction_boost = false;
   target_brake_since = 0u;
   motion_start_adc = current;
   motion_target_adc = target_adc;
   previous_motion_adc = current;
-  passed_mask = 0u;
+  motion_progress_adc = current;
+  motion_progress_ms = now_ms();
+  /* The filtered ADC may settle a few counts beyond the starting station's
+   * nominal value.  Mark that confirmed station as already reported so
+   * reverse travel cannot misidentify its nominal crossing as PASS:start. */
+  passed_mask = (uint8_t)(1u << (position - POS_MIN));
   last_direction = error > 0 ? DIR_FWD : DIR_REV;
   state =
       error_magnitude(error) <= CFG_APPROACH_COUNTS ? ST_APPROACH : ST_MOVING;
@@ -165,11 +175,14 @@ static void begin_jog(int16_t delta, uint16_t target_adc) {
   jog_move = true;
   target_braking = false;
   target_correcting = false;
+  stiction_boost = false;
   target_brake_since = 0u;
   target = POS_BETWEEN;
   motion_start_adc = current;
   motion_target_adc = target_adc;
   previous_motion_adc = current;
+  motion_progress_adc = current;
+  motion_progress_ms = now_ms();
   jog_remaining = error_magnitude(delta);
   passed_mask = 0u;
   last_direction = delta > 0 ? DIR_FWD : DIR_REV;
@@ -205,11 +218,14 @@ void controller_init(void) {
   brake_until_ms = 0;
   deadline_ms = 0u;
   motion_start_adc = motion_target_adc = previous_motion_adc = 0u;
+  motion_progress_adc = 0u;
+  motion_progress_ms = 0u;
   jog_remaining = 0u;
   passed_mask = 0u;
   jog_move = false;
   target_braking = false;
   target_correcting = false;
+  stiction_boost = false;
   target_brake_since = 0u;
 #ifdef LUFTFUGL_MONITOR
   adc_move = false;
@@ -235,14 +251,14 @@ move_result_t controller_request(request_kind_t kind, position_t arg) {
   }
   if (arg < POS_MIN || arg > POS_MAX)
     return MOVE_INVALID;
-  if (position == POS_UNKNOWN || position == POS_BETWEEN)
-    return MOVE_POS_UNKNOWN;
   if (state == ST_FAULT)
     return MOVE_FAULT;
   if (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING)
     return MOVE_BUSY;
   if (brake_until_ms && !reached(now, brake_until_ms))
     return MOVE_BUSY;
+  if (position == POS_UNKNOWN || position == POS_BETWEEN)
+    return MOVE_POS_UNKNOWN;
   if (arg == position) {
     /* The logical station can briefly lag the physical pot while a move is
      * settling.  Never reject a request as already-at-target unless the live
@@ -451,12 +467,15 @@ void controller_tick(void) {
       adc_move = true;
       target_braking = false;
       target_correcting = false;
+      stiction_boost = false;
       target_brake_since = 0u;
       adc_target = req.adc;
       target = POS_BETWEEN;
       motion_start_adc = current;
       motion_target_adc = req.adc;
       previous_motion_adc = current;
+      motion_progress_adc = current;
+      motion_progress_ms = now;
       passed_mask = 0u;
       last_direction = error > 0 ? DIR_FWD : DIR_REV;
       state = error_magnitude(error) <= CFG_APPROACH_COUNTS ? ST_APPROACH
@@ -636,6 +655,23 @@ void controller_tick(void) {
     }
     previous_motion_adc = current;
 
+    if (!jog_move && !target_braking) {
+      uint16_t progress = current > motion_progress_adc
+                              ? current - motion_progress_adc
+                              : motion_progress_adc - current;
+      if (progress >= CFG_ARRIVAL_WINDOW) {
+        motion_progress_adc = current;
+        motion_progress_ms = now;
+      } else if ((uint32_t)(now - motion_progress_ms) >=
+                 CFG_BRAKE_HOLD_MS) {
+        /* The loaded 3.3 V mechanism can stall at approach duty.  Once a
+         * whole settle interval passes without meaningful encoder progress,
+         * keep normal duty for the remainder of this move.  Target-window
+         * braking still bounds the resulting travel. */
+        stiction_boost = true;
+      }
+    }
+
     if (jog_move) {
       motor_drive(last_direction, CFG_DUTY_CREEP);
     } else {
@@ -644,8 +680,10 @@ void controller_tick(void) {
        * here can leave a real move marked busy forever when the pot settles
        * near an edge of its band; the ADC window is the authoritative target
        * test and is already bounded by the ordered station configuration. */
-      bool target_window = magnitude <= CFG_POS_WINDOW;
-      if (state == ST_HOMING) {
+      bool target_window = magnitude <=
+                           (target_correcting ? CFG_ARRIVAL_WINDOW
+                                              : CFG_POS_WINDOW);
+      if (state == ST_HOMING && !target_correcting) {
         /* Homing can cross the narrow ADC band between 1 kHz samples.  Use
          * the travel direction as the reference and stop on the first
          * directional crossing instead of driving past station 1. */
@@ -660,8 +698,13 @@ void controller_tick(void) {
       if (target_braking)
         motor_brake();
       else {
-        uint8_t duty = target_correcting ? CFG_DUTY_CREEP
-                                         : speed_for_error(error);
+        /* A correction begins after a full brake, so creep duty can leave the
+         * gearbox stuck before it re-enters the target band.  Reuse the
+         * measured normal duty to break stiction; the wide target window
+         * still brakes before the tighter settled-arrival check. */
+        uint8_t duty = (target_correcting || stiction_boost)
+                           ? CFG_DUTY_NORMAL
+                           : speed_for_error(error);
         if (!target_correcting && current == motion_start_adc &&
             magnitude > CFG_POS_WINDOW)
           duty = CFG_DUTY_NORMAL;
@@ -690,16 +733,20 @@ void controller_tick(void) {
           (uint32_t)(now - target_brake_since) >= CFG_BRAKE_HOLD_MS) {
         /* Do not report arrival merely because the first sample entered the
          * band.  Mechanical inertia can carry the pot well past the target
-         * during the brake interval.  Confirm the settled ADC is still near
-         * the target; otherwise resume in the correcting direction. */
-        if (state == ST_HOMING ||
-            error_magnitude((int16_t)motion_target_adc -
-                            (int16_t)encoder_average()) <= CFG_POS_WINDOW) {
+         * during the brake interval.  Settle inside the tighter arrival
+         * window so normal ADC drift cannot immediately make the station
+         * unknown again.  Homing uses the same check: its directional
+         * crossing rule brakes early for harness safety, but is not evidence
+         * that the mechanism actually stopped at station 1. */
+        if (error_magnitude((int16_t)motion_target_adc -
+                            (int16_t)encoder_average()) <=
+            CFG_ARRIVAL_WINDOW) {
           arrive(target, now);
           TICK_RETURN();
         }
         target_braking = false;
         target_correcting = true;
+        stiction_boost = true;
         last_direction = error > 0 ? DIR_FWD : DIR_REV;
       }
 #ifdef LUFTFUGL_MONITOR

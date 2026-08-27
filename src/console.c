@@ -1,4 +1,5 @@
 #include "console.h"
+#include "buzzer.h"
 #include "controller.h"
 #include "encoder.h"
 #include "hardware/gpio.h"
@@ -449,6 +450,8 @@ void console_drain_events(void) {
     event_t event = event_queue[event_tail];
     char output[32];
     event_tail = (uint8_t)((event_tail + 1u) % EVENT_QUEUE_DEPTH);
+    if (event.kind == EV_ARRIVE && event.arg == POS_MAX)
+      buzzer_play(BUZZER_STATION_5_PLAYS);
 #ifdef LUFTFUGL_MONITOR
     if (dbg_active()) {
       dbg_event(event.kind, event.arg);

@@ -6,6 +6,8 @@
 #include "encoder.h"
 #include "motor.h"
 #include "led.h"
+#include "buzzer.h"
+#include "co2.h"
 #include "power_monitor.h"
 #ifdef LUFTFUGL_MONITOR
 #include "debug.h"
@@ -27,15 +29,18 @@ int main(void)
 {
     bool watchdog_reset = watchdog_caused_reboot();
     struct repeating_timer timer;
+    led_power_init();
     console_init();
     if (watchdog_reset) console_watchdog_reset();
     motor_init();
+    buzzer_init();
 #ifdef LUFTFUGL_MONITOR
     dbg_init();
 #endif
     encoder_init();
     led_init();
     power_monitor_init();
+    co2_init();
     controller_init();
 #ifdef LUFTFUGL_MONITOR
     dbg_enter();
@@ -51,6 +56,8 @@ int main(void)
         console_poll();
         console_drain_events();
         led_update();
+        buzzer_tick();
+        co2_tick();
 #ifdef LUFTFUGL_MONITOR
         dbg_poll();
         dbg_out_drain();

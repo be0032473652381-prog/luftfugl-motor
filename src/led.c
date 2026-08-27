@@ -3,6 +3,7 @@
 #include "config.h"
 #include "controller.h"
 #include "encoder.h"
+#include "hardware/gpio.h"
 #include "hardware/pio.h"
 #include "pico/time.h"
 #include "power_monitor.h"
@@ -16,6 +17,25 @@ static uint32_t last_colour;
 static uint32_t raw_colour;
 static led_mode_t mode;
 static bool rgbw_enabled;
+static bool power_enabled;
+static bool data_enabled;
+static uint64_t power_ready_us;
+
+static void led_data_disable(void) {
+  if (data_enabled)
+    pio_sm_set_enabled(led_pio, led_sm, false);
+  gpio_init(PIN_LED_DATA);
+  gpio_put(PIN_LED_DATA, false);
+  gpio_set_dir(PIN_LED_DATA, GPIO_OUT);
+  data_enabled = false;
+}
+
+static void led_data_enable(void) {
+  ws2812_program_init(led_pio, led_sm, led_offset, PIN_LED_DATA, 800000.0f,
+                      rgbw_enabled);
+  data_enabled = true;
+  last_colour = UINT32_MAX;
+}
 
 static uint32_t colour_word(uint8_t r, uint8_t g, uint8_t b,
                             uint8_t brightness_percent) {
@@ -104,13 +124,27 @@ static uint32_t requested_colour(void) {
   return 0u;
 }
 
+static bool station5_hazard_selected(void) {
+  return mode == LED_MODE_AUTO && controller_state() == ST_IDLE &&
+         encoder_confirmed() == POS_MAX;
+}
+
+void led_power_init(void) {
+  gpio_init(PIN_LED_POWER);
+  gpio_pull_down(PIN_LED_POWER);
+  gpio_put(PIN_LED_POWER, false);
+  gpio_set_dir(PIN_LED_POWER, GPIO_OUT);
+  power_enabled = false;
+  power_ready_us = 0u;
+}
+
 void led_init(void) {
   led_pio = pio0;
   led_sm = pio_claim_unused_sm(led_pio, true);
   led_offset = pio_add_program(led_pio, &ws2812_program);
   rgbw_enabled = LED_RGBW != 0;
-  ws2812_program_init(led_pio, led_sm, led_offset, PIN_LED_DATA, 800000.0f,
-                      rgbw_enabled);
+  data_enabled = false;
+  led_data_disable();
   mode = LED_MODE_AUTO;
   raw_colour = 0u;
   last_colour = UINT32_MAX;
@@ -119,6 +153,28 @@ void led_init(void) {
 
 void led_update(void) {
   uint32_t colour = requested_colour();
+  bool power_required = colour != 0u || station5_hazard_selected();
+  if (!power_required) {
+    if (power_enabled) {
+      led_data_disable();
+      gpio_put(PIN_LED_POWER, false);
+    }
+    power_enabled = false;
+    power_ready_us = 0u;
+    last_colour = 0u;
+    return;
+  }
+  if (!power_enabled) {
+    gpio_put(PIN_LED_POWER, true);
+    power_enabled = true;
+    power_ready_us = time_us_64() + LED_POWER_STARTUP_US;
+    last_colour = UINT32_MAX;
+    return;
+  }
+  if (time_us_64() < power_ready_us)
+    return;
+  if (!data_enabled)
+    led_data_enable();
   if (colour == last_colour)
     return;
   pio_sm_put_blocking(led_pio, led_sm, colour);
@@ -134,17 +190,13 @@ void led_set_mode(led_mode_t new_mode) {
 }
 
 led_mode_t led_mode(void) { return mode; }
-bool led_is_on(void) { return last_colour != 0u; }
+bool led_is_on(void) { return power_enabled && last_colour != 0u; }
 bool led_rgbw(void) { return rgbw_enabled; }
 void led_set_rgbw(bool enabled) {
   if (enabled == rgbw_enabled)
     return;
-  pio_sm_set_enabled(led_pio, led_sm, false);
-  pio_sm_clear_fifos(led_pio, led_sm);
-  pio_sm_restart(led_pio, led_sm);
+  led_data_disable();
   rgbw_enabled = enabled;
-  ws2812_program_init(led_pio, led_sm, led_offset, PIN_LED_DATA, 800000.0f,
-                      rgbw_enabled);
   last_colour = UINT32_MAX;
   led_update();
 }
@@ -154,6 +206,7 @@ void led_set_raw(uint32_t wire_word) {
   last_colour = UINT32_MAX;
   led_update();
 }
+bool led_powered(void) { return power_enabled; }
 uint led_pio_index(void) { return led_pio == pio0 ? 0u : 1u; }
 uint led_state_machine(void) { return led_sm; }
 uint led_program_offset(void) { return led_offset; }

@@ -13,6 +13,8 @@
 #include "hardware/sync.h"
 #include "motor.h"
 #include "led.h"
+#include "buzzer.h"
+#include "co2.h"
 #include "power_monitor.h"
 #include "pico/bootrom.h"
 #include "pico/time.h"
@@ -60,6 +62,7 @@ static uint16_t pending_target_adc;
 static char pending_text[DEBUG_COMMAND_MAX + 1u];
 static char status_shadow[24][81];
 static uint8_t frame_phase;
+static uint8_t ui_page;
 static bool frame_measuring;
 static uint32_t frame_bytes_current, frame_bytes_last, frame_draw_count;
 static uint16_t field_bytes_last;
@@ -407,6 +410,7 @@ bool dbg_out_pending(void) { return out_tail != out_head; }
 static void result(const char *command, const char *outcome,
                    const char *detail) {
   char line[256];
+  char esc[32];
   char message[160];
   uint32_t seconds = ms_now() / 1000u;
   if (!strcmp(outcome, "rejected") || !strcmp(outcome, "failed"))
@@ -425,7 +429,9 @@ static void result(const char *command, const char *outcome,
     dbg_out_push("\r\n");
   } else {
     if (first_result) {
-      dbg_out_push("\033[s\033[24;1H\r\n\r\n\033[u");
+      snprintf(esc, sizeof esc, "\033[s\033[%u;1H\r\n\r\n\033[u",
+               DEBUG_SCREEN_BOTTOM_ROW);
+      dbg_out_push(esc);
       first_result = false;
     }
     snprintf(line, sizeof line, "  %02lu:%02lu:%02lu  %-11.11s %s",
@@ -503,7 +509,7 @@ void dbg_fields_refresh(void) {
   uint32_t seconds = ms_now() / 1000u;
   uint16_t adc = encoder_average();
   uint16_t target_adc = controller_target_adc();
-  snprintf(line, sizeof line, " luftfugl 2.0%52sup %02lu:%02lu:%02lu", "",
+  snprintf(line, sizeof line, " luftfugl 2.0  page %u/6%41sup %02lu:%02lu:%02lu", ui_page, "",
            (unsigned long)(seconds / 3600u),
            (unsigned long)((seconds / 60u) % 60u),
            (unsigned long)(seconds % 60u));
@@ -529,17 +535,48 @@ void dbg_fields_refresh(void) {
                 : selected_station == 4 ? "station 4"
                                         : "station 5")
                                                                       : "none");
-  snprintf(line, sizeof line, "  %-9s%-14s%-9s%-14s%-9s%-14s",
-           "STATE", state_text(controller_state()), "TARGET", target,
-           "DIR", direction);
-  field(3, line);
-  snprintf(line, sizeof line, "  %-9s%-14s%-9s%-14s%-9s%-14s",
-           "ADC", adc_text, "ANGLE", angle_text,
-           "DUTY", duty);
-  field(4, line);
-  snprintf(line, sizeof line, "  %-9s%-14s%-9s%-14s%-9s%-14s",
-           "ERROR", error, "STEP", step, "SELECTED", selected);
-  field(5, line);
+  if (ui_page == 1u) {
+    field(3, "  GENERAL   firmware 2.0     debug monitor active");
+    field(4, "  TICK      1 kHz             watchdog 100 ms");
+    field(5, "  LED       data GP18         buzzer BIN1/2 GP6/GP7");
+    field(7, "");
+    field(8, "");
+    field(9, "  1 - General information");
+    field(10, "  2 - Motor controller");
+    field(11, "  3 - Motor positions");
+    field(12, "  4 - Battery information");
+    field(13, "  5 - CO2 sensor");
+    field(14, "  6 - Commands");
+  } else if (ui_page == 2u) {
+    snprintf(line, sizeof line, "  %-9s%-14s%-9s%-14s%-9s%-14s",
+             "STATE", state_text(controller_state()), "TARGET", target,
+             "DIR", direction);
+    field(3, line);
+    snprintf(line, sizeof line, "  %-9s%-14s%-9s%-14s%-9s%-14s",
+             "ADC", adc_text, "ANGLE", angle_text,
+             "DUTY", duty);
+    field(4, line);
+    snprintf(line, sizeof line, "  %-9s%-14s%-9s%-14s%-9s%-14s",
+             "ERROR", error, "STEP", step, "SELECTED", selected);
+    field(5, line);
+  } else if (ui_page == 5u) {
+    const char *variant = co2_variant() == CO2_VARIANT_SCD40 ? "SCD40"
+                         : co2_variant() == CO2_VARIANT_SCD41 ? "SCD41"
+                         : co2_variant() == CO2_VARIANT_OTHER ? "SCD4x other"
+                                                              : "not detected";
+    char co2_line[81];
+    snprintf(co2_line, sizeof co2_line,
+             "  SCD4x     %-13s address 0x62 (%s)", variant,
+             co2_detected() ? "ACK + variant" : "no response");
+    field(3, co2_line);
+    if (co2_sample_valid()) {
+      snprintf(co2_line, sizeof co2_line,
+               "  CO2 concentration   %u ppm", co2_ppm());
+      field(4, co2_line);
+    } else {
+      field(4, "  CO2 concentration   unavailable");
+    }
+  }
   char s1[12], s2[12], s3[12], s4[12], s5[12];
   snprintf(s1, sizeof s1, "1:%5u", encoder_nominal(1));
   snprintf(s2, sizeof s2, "2:%5u", encoder_nominal(2));
@@ -548,7 +585,8 @@ void dbg_fields_refresh(void) {
   snprintf(s5, sizeof s5, "5:%5u", encoder_nominal(5));
   snprintf(line, sizeof line, "  %-15.15s%-15.15s%-15.15s%-15.15s%-15.15s",
            s1, s2, s3, s4, s5);
-  field(7, line);
+  if (ui_page == 3u)
+    field(3, line);
   char a1[12], a2[12], a3[12], a4[12], a5[12], value[8];
   print_angle(value, sizeof value, encoder_nominal(1));
   snprintf(a1, sizeof a1, "%s deg", value);
@@ -562,14 +600,17 @@ void dbg_fields_refresh(void) {
   snprintf(a5, sizeof a5, "%s deg", value);
   snprintf(line, sizeof line, "  %-15s%-15s%-15s%-15s%-15s",
            a1, a2, a3, a4, a5);
-  field(8, line);
+  if (ui_page == 3u)
+    field(4, line);
   snprintf(line, sizeof line, "  lowendstop: %u   highendstop: %u   ▸ %.30s",
            CFG_LOW_ENDSTOP_ADC, CFG_HIGH_ENDSTOP_ADC, guidance(adc));
-  field(9, line);
+  if (ui_page == 3u)
+    field(5, line);
   char power_lines[6][81];
   power_monitor_format_menu(power_lines);
-  for (uint8_t i = 0u; i < 6u; ++i)
-    field((uint8_t)(11u + i), power_lines[i]);
+  if (ui_page == 4u)
+    for (uint8_t i = 0u; i < 6u; ++i)
+      field((uint8_t)(3u + i), power_lines[i]);
 }
 
 #ifndef LUFTFUGL_TRACE_INPUT
@@ -588,6 +629,7 @@ void dbg_render(void) {
   if (plain_mode)
     return;
   out_head = out_tail = 0u;
+  command_dirty = true;
   frame_bytes_current = 0u;
   frame_measuring = true;
   first_result = true;
@@ -598,40 +640,63 @@ void dbg_render(void) {
 
 #ifndef LUFTFUGL_TRACE_INPUT
 static bool status_frame_complete(void) {
-  static const uint8_t rows[] = {1, 3, 4, 5, 7, 8, 9, 11, 12, 13, 14, 15, 16};
-  for (size_t i = 0; i < sizeof rows / sizeof rows[0]; ++i)
-    if (!status_shadow[rows[i] - 1u][0])
-      return false;
+  if (!status_shadow[0][0])
+    return false;
+  if (ui_page != 5u) {
+    uint8_t last = ui_page == 4u ? 8u : (ui_page == 5u ? 4u : 5u);
+    for (uint8_t row = 3u; row <= last; ++row)
+      if (!status_shadow[row - 1u][0])
+        return false;
+  }
   return true;
 }
 
 static void frame_continue(void) {
-  static const uint8_t rows[] = {2, 6, 10, 17, 18, 19, 20, 21, 22, 23};
-  static const char *const section_rules[] = {
-      "────────── MOTOR  CONTROLLER ──────────────────────────────────────────────────",
-      "────────── MOTOR  POSITIONS  ──────────────────────────────────────────────────",
-      "-────── BATTERY INNFORMATION ──────────────────────────────────────────────────",
-      "── COMMANDS ───────────────────────────────────────────────────────────────────"};
-  static const char *const command_rows[] = {
-      "  batt | batt raw | batt res | batt log | batt events | batt reset | batt sim",
-      "  load | ina | adc | angle | status | stations | limits | cfg | lowendstop",
-      "  jog | step | pos | move | goto | home | stop | cal sim | cal motor",
-      "  highendstop | sel | save | export | arm | drive | disarm | clean | help | exit"};
+  static const uint8_t rows[] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21};
+  static const char *const command_rows[][4] = {
+      {"a) batt", "a1) help batt", "b) batt raw", "b1) help batt raw"},
+       {"c) batt res", "c1) help batt res", "d) batt log", "d1) help batt log"},
+       {"e) batt events", "e1) help batt events", "f) batt reset", "f1) help batt reset"},
+       {"g) batt sim", "g1) help batt sim", "h) load", "h1) help load"},
+       {"i) ina", "i1) help ina", "j) adc", "j1) help adc"},
+       {"k) angle", "k1) help angle", "l) status", "l1) help status"},
+       {"m) stations", "m1) help stations", "n) limits", "n1) help limits"},
+       {"o) cfg", "o1) help cfg", "p) lowendstop", "p1) help lowendstop"},
+       {"q) jog", "q1) help jog", "r) step", "r1) help step"},
+       {"s) pos", "s1) help pos", "t) move", "t1) help move"},
+       {"u) goto", "u1) help goto", "v) home", "v1) help home"},
+       {"w) stop", "w1) help stop", "x) buzzer", "x1) help buzzer"},
+       {"y) cal sim", "y1) help cal sim", "z) cal motor", "z1) help cal motor"},
+       {"A) highendstop", "A1) help highendstop", "B) sel", "B1) help sel"},
+       {"C) save", "C1) help save", "D) export", "D1) help export"},
+       {"E) arm", "E1) help arm", "F) drive", "F1) help drive"},
+       {"G) disarm", "G1) help disarm", "H) page", "H1) help page"},
+       {"I) clean", "I1) help clean", "J) help", "J1) help help"},
+       {"K) exit", "K1) help exit", "L) led", "L1) help led"}};
   char piece[288];
   if (!frame_phase || out_free() < sizeof piece)
     return;
   if (frame_phase <= sizeof rows / sizeof rows[0]) {
     uint8_t item = frame_phase - 1u;
     char content[256];
-    if (item <= 3u)
-      snprintf(content, sizeof content, "%s", section_rules[item]);
-    else if (item >= 4u && item <= 7u)
-      snprintf(content, sizeof content, "%s", command_rows[item - 4u]);
-    else if (item == 8u)
-      snprintf(content, sizeof content,
-               "───────────────────────────────────────────────────────────────────────────────");
-    else
-      snprintf(content, sizeof content, " Command > %s", input);
+    if (item == 0u) {
+      static const char *const titles[] = {
+          " PAGE 1  GENERAL INFORMATION",
+          " PAGE 2  MOTOR CONTROLLER",
+          " PAGE 3  MOTOR POSITIONS",
+          " PAGE 4  BATTERY INFORMATION",
+          " PAGE 5  CO2 SENSOR",
+          " PAGE 6  COMMANDS"};
+      snprintf(content, sizeof content, "──────────%s ────────────────────────────────────────────────────────────────",
+               titles[ui_page - 1u]);
+    } else if (ui_page == 6u && item >= 1u &&
+               item <= sizeof command_rows / sizeof command_rows[0]) {
+      snprintf(content, sizeof content, "  %-20s %-20s %-20s %-20s",
+               command_rows[item - 1u][0], command_rows[item - 1u][1],
+               command_rows[item - 1u][2], command_rows[item - 1u][3]);
+    } else {
+      content[0] = '\0';
+    }
     snprintf(piece, sizeof piece, "\033[%u;1H%s\033[K", rows[item], content);
     dbg_out_push(piece);
     ++frame_phase;
@@ -642,7 +707,9 @@ static void frame_continue(void) {
     return;
   }
   /* Scrolling setup is the final sequence of the frame draw. */
-  dbg_out_push("\033[24;r\033[24;1H");
+  snprintf(piece, sizeof piece, "\033[24;%ur\033[24;1H",
+           DEBUG_SCREEN_BOTTOM_ROW);
+  dbg_out_push(piece);
   frame_bytes_last = frame_bytes_current;
   ++frame_draw_count;
   frame_measuring = false;
@@ -1181,8 +1248,12 @@ static const help_entry_t help_entries[] = {
     {"adc", "adc", "read-only", "Shows raw, filtered and classified sensing."},
     {"angle", "angle", "read-only",
      "Shows the filtered ADC reading converted to degrees."},
-    {"led", "led raw ff000000", "on/off/auto, rgbw on/off, or a wire-order hex word",
-     "GP18; automatic LEDs stay off while moving; station colors show at IDLE."},
+    {"led", "led auto", "on/off/auto, rgbw on/off, or a wire-order hex word",
+     "GP0 follows pixel demand except station 5 stays powered for hazard blinking; GP18 carries data."},
+    {"buzzer", "buzzer play 3", "on, off, play 1..10, or no argument for status",
+     "Plays the randomized bird warning on BO1/BO2; BIN1/BIN2 GP6/GP7, PWMB GP16."},
+    {"page", "page 2", "no argument lists pages; page 1 to 6 selects",
+     "Lists or selects general information, motor controller, motor positions, battery, CO2 sensor, or commands."},
     {"selftest", "selftest", "no motion",
      "Checks configuration, ADC and the 1 kHz tick."},
     {"tick", "tick", "read-only", "Shows loop timing and watchdog health."},
@@ -1205,8 +1276,8 @@ static const help_entry_t help_entries[] = {
      "Requires arm; direction is fwd or rev."},
     {"findmin", "findmin", "requires arm",
      "Tests for the lowest duty that produces motion."},
-    {"batt", "batt sim 4.3", "sim range 3.9 to 4.5 V; raw, res, log, events, reset",
-     "Use batt sim off to restore INA219 voltage; simulated values are marked SIM."},
+    {"batt", "batt sim 4.3 | batt sim off", "raw, res, log, events, reset, sim <3.9..4.5>, sim off, or off",
+     "batt off and batt sim off restore physical INA219 voltage; batt sim <volts> enables simulation."},
     {"batt raw", "batt raw", "no additional arguments; read-only",
      "Reports physical INA219 bus, shunt, current and power registers plus overflow."},
     {"batt res", "batt res", "no additional arguments; read-only",
@@ -1316,7 +1387,7 @@ static void help_description(const help_entry_t *entry, char *text,
              INA219_CURRENT_LSB_UA, INA219_BUS_LSB_MV);
   } else if (!strcmp(entry->name, "led")) {
     snprintf(text, size,
-             "GP18; battery warning below %u.%03u V, critical below %u.%03u V",
+             "GP0 switches LED power; GP18 carries data; battery warning below %u.%03u V, critical below %u.%03u V",
              BATTERY_WARN_MV / 1000u, BATTERY_WARN_MV % 1000u,
              BATTERY_CRITICAL_MV / 1000u, BATTERY_CRITICAL_MV % 1000u);
   } else if (!strcmp(entry->name, "lowendstop")) {
@@ -1332,6 +1403,18 @@ static void help_description(const help_entry_t *entry, char *text,
              "cal sim: %u randomized ADC points from %u to %u, motor inhibited; cal motor: %u live station moves",
              CAL_SIM_TESTS, CFG_LOW_ENDSTOP_ADC, CFG_HIGH_ENDSTOP_ADC,
              CAL_SIM_TESTS);
+  } else if (!strcmp(entry->name, "buzzer")) {
+    snprintf(text, size,
+             "on repeats the bird warning; play accepts 1..10 calls with 200 ms gaps; PWM tones are 200..12000 Hz on differential BO1/BO2 drive");
+  } else if (!strcmp(entry->name, "pwm")) {
+    snprintf(text, size,
+             "motor channel A is GP14/PWMA; buzzer channel B is GP6/GP7 with GP16/PWMB enabled while sounding; report is read-only");
+  } else if (!strcmp(entry->name, "page")) {
+    snprintf(text, size,
+             "page 1 general; page 2 motor controller; page 3 positions; page 4 battery; page 5 CO2 sensor; page 6 command index");
+  } else if (!strcmp(entry->name, "drive")) {
+    snprintf(text, size,
+             "direction fwd or rev; duty 0..255; duration 10..2000 ms; requires the debug motor interlock to be armed");
   } else {
     snprintf(text, size, "%s", entry->limits);
   }
@@ -1371,6 +1454,46 @@ static void help_pos_detail(const char *original, const help_entry_t *entry) {
   result(original, "complete", entry->name);
 }
 
+static void help_led_detail(const char *original) {
+  static const struct {
+    const char *label;
+    const char *text;
+  } lines[] = {
+      {"Syntax", ""},
+      {"", "led [on|off|auto|rgbw on|rgbw off|raw <hex>]"},
+      {"Commands", ""},
+      {"", "led             Show power, pixel mode, RGB format, PIO and state-machine status"},
+      {"", "led auto        Enable automatic station indication and power management"},
+      {"", "led on          Force the station-5 red test color; GP0 goes HIGH"},
+      {"", "led off         Force the LED dark; GP0 goes LOW"},
+      {"", "led rgbw on     Use SK6812 G-R-B-W transmission"},
+      {"", "led rgbw off    Use WS2812 G-R-B transmission"},
+      {"", "led raw <hex>   Display a raw wire-order color"},
+      {"Raw formats", ""},
+      {"", "RGBW enabled    led raw GGRRBBWW - exactly 8 hexadecimal digits"},
+      {"", "RGBW disabled   led raw GGRRBB - exactly 6 hexadecimal digits"},
+      {"Pins", ""},
+      {"", "GP0             SK6812 power/load-switch enable, active HIGH"},
+      {"", "GP18            SK6812 serial data at 800 kHz"},
+      {"Automatic power", ""},
+      {"", "Non-zero color  GP0 HIGH; wait 300 us; transmit pixel data"},
+      {"", "Dark/off        GP0 LOW, placing the SK6812 in its unpowered sleep state"},
+      {"", "Station 5       GP0 stays HIGH; red/black pixel data produces the hazard blink"},
+      {"", "Reset/startup   GP0 LOW with the internal pull-down enabled"},
+      {"Auto indication", ""},
+      {"", "Moving          LED off, GP0 LOW"},
+      {"", "Station 1       Green/mint"},
+      {"", "Station 2       Yellow-green"},
+      {"", "Station 3       Yellow"},
+      {"", "Station 4       Pink"},
+      {"", "Station 5       Flashing red/rose plus three bird calls on arrival"},
+      {"Examples", ""},
+      {"", "led | led auto | led on | led off | led rgbw on | led raw 00ff0000"}};
+  for (size_t i = sizeof lines / sizeof lines[0]; i-- > 0;)
+    result(lines[i].label, "complete", lines[i].text);
+  result(original, "complete", "");
+}
+
 static void submit(char *typed) {
   char original[DEBUG_COMMAND_MAX + 1u], candidates[96], *arg, *word, *save;
   long value;
@@ -1379,6 +1502,49 @@ static void submit(char *typed) {
     *--end = '\0';
   strncpy(original, typed, sizeof original);
   original[sizeof original - 1u] = '\0';
+  /* Page-6 aliases are a compact command vocabulary. Preserve case here so
+     A-L can address the commands that follow the lower-case aliases. */
+  {
+    char *p = typed;
+    const char *alias = NULL;
+    char key = *p++;
+    bool upper = key >= 'A' && key <= 'L';
+    bool help_alias = *p == '1';
+    if (help_alias)
+      ++p;
+    if ((upper || (key >= 'a' && key <= 'z')) && (!*p || isspace((unsigned char)*p))) {
+      if (upper) {
+        static const char *const aliases[] = {"highendstop", "sel", "save", "export", "arm", "drive", "disarm", "page", "clean", "help", "exit", "led"};
+        alias = aliases[key - 'A'];
+      } else {
+        static const char *const aliases[] = {"batt", "batt raw", "batt res", "batt log", "batt events", "batt reset", "batt sim", "load", "ina", "adc", "angle", "status", "stations", "limits", "cfg", "lowendstop", "jog", "step", "pos", "move", "goto", "home", "stop", "buzzer", "cal sim", "cal motor"};
+        alias = aliases[key - 'a'];
+      }
+      while (isspace((unsigned char)*p))
+        ++p;
+      if (alias) {
+        char rest[DEBUG_COMMAND_MAX + 1u];
+        strncpy(rest, p, DEBUG_COMMAND_MAX);
+        rest[DEBUG_COMMAND_MAX] = '\0';
+        if (help_alias)
+          snprintf(typed, DEBUG_COMMAND_MAX + 1u, "help %s", alias);
+        else {
+          size_t used = strlen(alias);
+          if (used > DEBUG_COMMAND_MAX)
+            used = DEBUG_COMMAND_MAX;
+          memcpy(typed, alias, used);
+          if (*rest && used < DEBUG_COMMAND_MAX)
+            typed[used++] = ' ';
+          size_t remaining = DEBUG_COMMAND_MAX - used;
+          size_t take = strlen(rest);
+          if (take > remaining)
+            take = remaining;
+          memcpy(typed + used, rest, take);
+          typed[used + take] = '\0';
+        }
+      }
+    }
+  }
   for (char *p = typed; *p; ++p)
     *p = (char)tolower((unsigned char)*p);
   if (!strncmp(typed, "motor cal", 9u)) {
@@ -1468,6 +1634,8 @@ static void submit(char *typed) {
       if (entry) {
         if (!strcmp(entry->name, "pos")) {
           help_pos_detail(original, entry);
+        } else if (!strcmp(entry->name, "led")) {
+          help_led_detail(original);
         } else {
           char example[96], description[160];
           const char *example_command = !strcmp(entry->name, "batt sim")
@@ -1476,9 +1644,11 @@ static void submit(char *typed) {
           snprintf(example, sizeof example, "Command > %s", example_command);
           help_description(entry, description, sizeof description);
           result("Example", "complete", example);
-          result("Description", "complete", description);
+          result("Parameters", "complete", description);
           result("Syntax", "complete", entry->example);
-          result("Function", "complete", entry->notes);
+          result("Purpose", "complete", entry->notes);
+          result("Operational notes", "complete",
+                 "Debug-only diagnostic interface; command effects are RAM-only unless explicitly stated.");
           result(original, "complete", entry->name);
         }
       } else if (!help_setting(arg, original)) {
@@ -1499,7 +1669,11 @@ static void submit(char *typed) {
                                     : "syntax: highendstop=<0..4095>"));
   } else if (!strcmp(command, "batt")) {
     char d[768];
-    if (!arg)
+    if (arg && !strcmp(arg, "help")) {
+      result(original, "complete", "batt | batt raw | batt res | batt log | batt events | batt reset");
+      result("", "complete", "batt sim <3.9..4.5> | batt sim off | batt off");
+      return;
+    } else if (!arg)
       power_monitor_format_batt(d, sizeof d);
     else if (!strcmp(arg, "raw"))
       power_monitor_format_raw(d, sizeof d);
@@ -1512,7 +1686,7 @@ static void submit(char *typed) {
     else if (!strcmp(arg, "reset")) {
       power_monitor_reset();
       snprintf(d, sizeof d, "battery session counters cleared");
-    } else if (!strcmp(arg, "sim off")) {
+    } else if (!strcmp(arg, "off") || !strcmp(arg, "sim off")) {
       (void)power_monitor_sim_set(false, 0u);
       snprintf(d, sizeof d, "battery simulation off; using INA219 voltage");
     } else if (!strncmp(arg, "sim ", 4u)) {
@@ -1597,13 +1771,16 @@ static void submit(char *typed) {
         snprintf(detail, sizeof detail, "forced %s; PIO%u SM%u offset %u",
                  led_is_on() ? "deep red 192,4,8" : "off",
                  led_pio_index(), led_state_machine(), led_program_offset());
-      result(original, "complete", detail);
+      char status[128];
+      snprintf(status, sizeof status, "power %s on GP0; %s",
+               led_powered() ? "on" : "off", detail);
+      result(original, "complete", status);
     } else if (!strcmp(arg, "on")) {
       led_set_mode(LED_MODE_FORCED_ON);
-      result(original, "complete", "forced deep red 192,4,8");
+      result(original, "complete", "forced deep red 192,4,8; GP0 follows light demand");
     } else if (!strcmp(arg, "off")) {
       led_set_mode(LED_MODE_FORCED_OFF);
-      result(original, "complete", "forced off");
+      result(original, "complete", "forced off; GP0 low");
     } else if (!strcmp(arg, "auto")) {
       led_set_mode(LED_MODE_AUTO);
       result(original, "complete",
@@ -1638,6 +1815,44 @@ static void submit(char *typed) {
     } else
       result(original, "rejected",
              "usage: led on/off/auto, led rgbw on/off, led raw <hex>, or led");
+  } else if (!strcmp(command, "buzzer")) {
+    if (!arg) {
+      result(original, "complete", buzzer_enabled() ? "bird warning on; channel B" :
+                                                    "bird warning off; channel B");
+    } else if (!strcmp(arg, "on")) {
+      buzzer_set(true);
+      result(original, "complete", "bird warning enabled on BO1/BO2");
+    } else if (!strcmp(arg, "off")) {
+      buzzer_set(false);
+      result(original, "complete", "off");
+    } else if (!strncmp(arg, "play ", 5u)) {
+      long count;
+      if (!parse_long(arg + 5u, &count) || count < 1 || count > 10) {
+        result(original, "rejected", "usage: buzzer play 1..10");
+      } else {
+        buzzer_play((unsigned int)count);
+        result(original, "complete", "bird playback started; 200 ms gaps");
+      }
+    } else {
+      result(original, "rejected", "usage: buzzer on/off or buzzer play 1..10");
+    }
+  } else if (!strcmp(command, "page")) {
+    long requested;
+    if (!arg) {
+      result(original, "complete", "1 - General information");
+      result("", "complete", "2 - Motor controller");
+      result("", "complete", "3 - Motor positions");
+      result("", "complete", "4 - Battery information");
+      result("", "complete", "5 - CO2 sensor");
+      result("", "complete", "6 - Commands");
+    } else if (!parse_long(arg, &requested) || requested < 1 || requested > 6) {
+      result(original, "rejected", "usage: page 1..6");
+    } else {
+      ui_page = (uint8_t)requested;
+      result(original, "complete", "debug page selected");
+      if (!plain_mode)
+        dbg_render();
+    }
   } else if (!strcmp(command, "jog")) {
     if (arg && !strcmp(arg, "+"))
       value = jog_step;
@@ -2085,7 +2300,7 @@ static void submit(char *typed) {
     }
   } else if (!strcmp(command, "plain")) {
     if (!plain_mode)
-      dbg_out_push("\033[1;24r\033[?25h\033[2J\033[H");
+      dbg_out_push("\033[r\033[?25h\033[2J\033[H");
     plain_mode = true;
     result(original, "complete", "line-oriented mode; type \"exit\" to leave");
   } else if (!strcmp(command, "exit")) {
@@ -2149,9 +2364,10 @@ void dbg_event(event_kind_t kind, uint8_t arg) {
                      : kind == EV_FAULT_HOME       ? "fault: home timeout"
                      : kind == EV_STOPPED_UNKNOWN  ? "stopped, position unknown"
                                                    : "event";
-  snprintf(detail, sizeof detail, "%s%s%u", name,
-           (kind == EV_PASS || kind == EV_ARRIVE) ? ":" : "",
-           (kind == EV_PASS || kind == EV_ARRIVE) ? arg : 0u);
+  if (kind == EV_PASS || kind == EV_ARRIVE)
+    snprintf(detail, sizeof detail, "%s:%u", name, arg);
+  else
+    snprintf(detail, sizeof detail, "%s", name);
   dbg_log_push(detail);
 }
 
@@ -2164,6 +2380,11 @@ void dbg_handle_key(char c) {
 #ifdef LUFTFUGL_TRACE_INPUT
     dbg_trace_input_out(c, "ESCAPE", NULL);
 #endif
+    return;
+  }
+  if (c >= '1' && c <= '6' && input_len == 0u && !input_overflow) {
+    ui_page = (uint8_t)(c - '0');
+    dbg_render();
     return;
   }
   if (c == '\n' && swallow_lf) {
@@ -2271,6 +2492,7 @@ void dbg_init(void) {
   findmin_phase = 0u;
   trace_dump_index = trace_dump_count = 0u;
   frame_phase = 0u;
+  ui_page = 1u;
   first_result = true;
   frame_measuring = false;
   frame_bytes_current = frame_bytes_last = frame_draw_count = 0u;
@@ -2308,7 +2530,7 @@ void dbg_exit(void) {
   (void)power_monitor_sim_set(false, 0u);
   findmin_phase = 0u;
   if (!plain_mode)
-    dbg_out_push("\033[1;24r\033[?25h\033[2J\033[H");
+    dbg_out_push("\033[r\033[?25h\033[2J\033[H");
 }
 bool dbg_active(void) { return active; }
 bool dbg_plain_mode(void) { return plain_mode; }

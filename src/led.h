@@ -11,6 +11,7 @@ typedef enum {
   LED_MODE_FORCED_RAW
 } led_mode_t;
 
+void led_power_init(void);
 void led_init(void);
 void led_update(void);
 void led_set_mode(led_mode_t mode);
@@ -19,6 +20,7 @@ bool led_is_on(void);
 bool led_rgbw(void);
 void led_set_rgbw(bool enabled);
 void led_set_raw(uint32_t wire_word);
+bool led_powered(void);
 unsigned int led_pio_index(void);
 unsigned int led_state_machine(void);
 unsigned int led_program_offset(void);

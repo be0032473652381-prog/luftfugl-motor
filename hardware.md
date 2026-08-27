@@ -280,8 +280,8 @@ Sleep currents:
 | | |
 |---|---|
 | Interface | UART1 |
-| TX | GP20 to probe RX |
-| RX | GP21 from probe TX |
+| TX | GP8 RX |
+| RX | GP9 from probe TX |
 | Baud | 115200, 8N1 |
 | Flow control | none |
 | Ground | not connected; common through SWD |

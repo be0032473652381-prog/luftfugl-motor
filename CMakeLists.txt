@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.13)
 
-set(PICO_BOARD luftfugl_rp2040)
+set(PICO_BOARD vcc-gnd_yd-rp2040_4m)
 list(APPEND PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_LIST_DIR}/boards)
 
 include(pico_sdk_import.cmake)
@@ -21,6 +21,8 @@ add_executable(luftfugl
     src/controller.c
     src/console.c
     src/led.c
+    src/buzzer.c
+    src/co2.c
     src/power_monitor.c
 )
 
@@ -79,3 +81,19 @@ target_link_libraries(uart_echo2 pico_stdlib hardware_uart)
 pico_enable_stdio_uart(uart_echo2 0)
 pico_enable_stdio_usb(uart_echo2 0)
 pico_add_extra_outputs(uart_echo2)
+
+add_executable(adc_uart_test test/adc_uart_test.c)
+target_include_directories(adc_uart_test PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src)
+target_compile_options(adc_uart_test PRIVATE -Wall -Wextra)
+target_link_libraries(adc_uart_test pico_stdlib hardware_adc hardware_uart)
+pico_enable_stdio_uart(adc_uart_test 0)
+pico_enable_stdio_usb(adc_uart_test 0)
+pico_add_extra_outputs(adc_uart_test)
+
+add_executable(pot_motor_test test/pot_motor_test.c src/motor.c)
+target_include_directories(pot_motor_test PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src)
+target_compile_options(pot_motor_test PRIVATE -Wall -Wextra)
+target_link_libraries(pot_motor_test pico_stdlib hardware_adc hardware_pwm hardware_uart)
+pico_enable_stdio_uart(pot_motor_test 0)
+pico_enable_stdio_usb(pot_motor_test 0)
+pico_add_extra_outputs(pot_motor_test)
