@@ -54,6 +54,8 @@ static uint8_t saved_station_mask;
 static uint16_t jog_step;
 static char input[DEBUG_COMMAND_MAX + 1u];
 static uint8_t input_len;
+static char page6_last_input[DEBUG_COMMAND_MAX + 1u];
+static bool page6_holds_last_input;
 static char out_buf[DEBUG_OUT_BUFFER];
 static volatile uint16_t out_head, out_tail;
 static uint32_t next_refresh;
@@ -604,9 +606,12 @@ void dbg_fields_refresh(void) {
 #ifndef LUFTFUGL_TRACE_INPUT
 static void command_line_draw(void) {
   char line[80];
+  const char *shown = ui_page == 6u && page6_holds_last_input && !input_len
+                          ? page6_last_input
+                          : input;
   if (plain_mode)
     return;
-  snprintf(line, sizeof line, " Command > %s", input);
+  snprintf(line, sizeof line, " Command > %s", shown);
   if (ui_page == 6u) {
     /* Input echo must be immediate.  A queued redraw can remain behind the
      * periodic fixed-screen traffic until after Enter, making typed text
@@ -700,7 +705,10 @@ static void frame_continue(void) {
                command_rows[item - 1u][2], command_rows[item - 1u][3]);
     } else if (ui_page == 6u &&
                item == sizeof command_rows / sizeof command_rows[0] + 2u) {
-      snprintf(content, sizeof content, " Command > %s", input);
+      const char *shown = page6_holds_last_input && !input_len
+                              ? page6_last_input
+                              : input;
+      snprintf(content, sizeof content, " Command > %s", shown);
       command_dirty = false;
     } else {
       content[0] = '\0';
@@ -2449,6 +2457,11 @@ void dbg_handle_key(char c) {
       return;
     }
     input[input_len] = '\0';
+    if (ui_page == 6u && !input_overflow) {
+      strncpy(page6_last_input, input, DEBUG_COMMAND_MAX);
+      page6_last_input[DEBUG_COMMAND_MAX] = '\0';
+      page6_holds_last_input = true;
+    }
 #ifdef LUFTFUGL_TRACE_INPUT
     char submitted[DEBUG_COMMAND_MAX + 1u];
     memcpy(submitted, input, input_len + 1u);
@@ -2477,6 +2490,10 @@ void dbg_handle_key(char c) {
     return;
   }
   if (c == '\b' || c == 127) {
+    if (ui_page == 6u && page6_holds_last_input && !input_len) {
+      page6_holds_last_input = false;
+      page6_last_input[0] = '\0';
+    }
     if (input_len) {
       --input_len;
       input[input_len] = '\0';
@@ -2495,6 +2512,10 @@ void dbg_handle_key(char c) {
     return;
   }
   if (c >= 32 && c <= 126) {
+    if (ui_page == 6u && page6_holds_last_input && !input_len) {
+      page6_holds_last_input = false;
+      page6_last_input[0] = '\0';
+    }
     if (input_len < DEBUG_COMMAND_MAX) {
       input[input_len++] = c;
       input[input_len] = '\0';
@@ -2533,6 +2554,8 @@ void dbg_init(void) {
   saved_station_mask = 0u;
   jog_step = 100u;
   input_len = 0;
+  page6_last_input[0] = '\0';
+  page6_holds_last_input = false;
   out_head = out_tail = 0u;
   pending = PENDING_NONE;
   pending_target_adc = 0u;
