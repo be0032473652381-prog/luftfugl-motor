@@ -2478,6 +2478,13 @@ void dbg_handle_key(char c) {
       input[input_len] = '\0';
     }
     command_dirty = true;
+#ifndef LUFTFUGL_TRACE_INPUT
+    if (!plain_mode && ui_page == 6u && !frame_phase &&
+        out_free() > DEBUG_COMMAND_MAX + 32u) {
+      command_line_draw();
+      command_dirty = false;
+    }
+#endif
 #ifdef LUFTFUGL_TRACE_INPUT
     dbg_trace_input_out(c, "BACKSPACE", NULL);
 #endif
@@ -2494,6 +2501,13 @@ void dbg_handle_key(char c) {
       dbg_out_push(text);
     } else
       command_dirty = true;
+#ifndef LUFTFUGL_TRACE_INPUT
+    if (!plain_mode && ui_page == 6u && !frame_phase &&
+        out_free() > DEBUG_COMMAND_MAX + 32u) {
+      command_line_draw();
+      command_dirty = false;
+    }
+#endif
 #ifdef LUFTFUGL_TRACE_INPUT
     dbg_trace_input_out(c, input_overflow ? "DISCARD_OVERFLOW" : "CMDLINE",
                         NULL);
