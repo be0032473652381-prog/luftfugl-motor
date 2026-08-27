@@ -93,22 +93,20 @@ static bool hazard_lit(void) {
 }
 
 static uint32_t requested_colour(void) {
-  if (mode == LED_MODE_FORCED_RAW)
-    return rgbw_enabled ? raw_colour : raw_colour << 8;
-  if (mode == LED_MODE_FORCED_ON)
-    return station5_rose();
   if (mode == LED_MODE_FORCED_OFF)
     return 0u;
-  /* Automatic indication is permitted only while stopped inside an actual
-     station zone.  Use the instantaneous filtered classification so power is
-     removed as soon as the mechanism leaves the zone; the debounced
-     confirmed position intentionally lags and can otherwise leave the pixel
-     lit during departure. */
+  /* No mode may illuminate the pixel while moving or between stations.
+     Apply this gate before the debug forced-on/raw modes so a previous LED
+     test command cannot leave the SK6812 lit during subsequent travel. */
   if (controller_state() != ST_IDLE)
     return 0u;
   position_t station = encoder_instant();
   if (station < POS_MIN || station > POS_MAX)
     return 0u;
+  if (mode == LED_MODE_FORCED_RAW)
+    return rgbw_enabled ? raw_colour : raw_colour << 8;
+  if (mode == LED_MODE_FORCED_ON)
+    return station5_rose();
   power_sample_t battery;
   power_monitor_snapshot(&battery);
   if (battery.valid && battery.bus_mv < BATTERY_CRITICAL_MV)
