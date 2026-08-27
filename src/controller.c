@@ -531,12 +531,11 @@ void controller_tick(void) {
     motor_enable();
     motor_brake();
     state = ST_IDLE;
-    if (valid(position)) {
-      console_push_event(EV_ARRIVE, position);
-    } else {
+    if (!valid(position))
       position = POS_BETWEEN;
-      console_push_event(EV_STOPPED_UNKNOWN, 0);
-    }
+    /* Initial position classification is not a command or motion event.
+       Keep the fresh debug result area empty until something actually
+       happens after boot. */
     TICK_RETURN();
   }
 
