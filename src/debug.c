@@ -608,9 +608,13 @@ static void command_line_draw(void) {
     return;
   snprintf(line, sizeof line, " Command > %s", input);
   if (ui_page == 6u) {
-    dbg_out_push("\033[23;1H");
-    dbg_out_push(line);
-    dbg_out_push("\033[K\033[24;1H");
+    /* Input echo must be immediate.  A queued redraw can remain behind the
+     * periodic fixed-screen traffic until after Enter, making typed text
+     * invisible even though the command buffer is correct. */
+    dbg_out_drain();
+    uart_puts(uart1, "\033[23;1H");
+    uart_puts(uart1, line);
+    uart_puts(uart1, "\033[K");
     return;
   }
   char position[20];
