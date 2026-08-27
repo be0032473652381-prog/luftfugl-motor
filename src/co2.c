@@ -40,7 +40,44 @@ void co2_init(void){detected=false;variant=CO2_VARIANT_NONE;sample_valid=false;f
 void co2_tick(void){if(!detected||!powered)return;uint32_t now=to_ms_since_boot(get_absolute_time());if(warming){if((int32_t)(now-next_poll_ms)<0)return;if(!claim())return;measuring=command(CMD_START);warming=!measuring;next_poll_ms=now+5000;release();return;}if(!measuring||(int32_t)(now-next_poll_ms)<0)return;next_poll_ms=now+1000;if(!claim())return;uint16_t r;if(words(CMD_READY,&r,1,1)&&(r&0x7ff)){read_sample();next_poll_ms=now+5000;}release();}
 bool co2_detected(void){return detected;} co2_variant_t co2_variant(void){return variant;} bool co2_sample_valid(void){return sample_valid;} uint16_t co2_ppm(void){return ppm;} int16_t co2_temperature_tenths(void){return temperature_tenths;} uint16_t co2_humidity_tenths(void){return humidity_tenths;} uint32_t co2_frames_read(void){return frames;}
 static const char *zone(uint16_t v){return v<600?"excellent":v<800?"good":v<1000?"moderate":v<=2000?"poor":"hazardous";}
-void co2_format_menu(char l[18][81]){uint64_t sn=((uint64_t)serial_words[0]<<32)|((uint64_t)serial_words[1]<<16)|serial_words[2];snprintf(l[0],81,"  SCD41 %-7s I2C 0x62  serial %012llu",powered?(warming?"WARMING":"ON"):"OFF",(unsigned long long)sn);if(sample_valid){uint16_t f=filtered_valid?(uint16_t)((filtered_milli+500)/1000):ppm;snprintf(l[1],81,"  co2 filtered  %u ppm (%s)   raw %u ppm",f,zone(f),ppm);snprintf(l[2],81,"  temperature   %d.%01d C        humidity %u.%01u %%RH",temperature_tenths/10,abs(temperature_tenths%10),humidity_tenths/10,humidity_tenths%10);}else{snprintf(l[1],81,"  co2            pending measurement");snprintf(l[2],81,"  temperature    pending           humidity pending");}snprintf(l[3],81,"  filter %u/7%s   data ready %s   samples %lu",sample_count,filtered_valid?" + EMA":"",ready_latched?"yes":"no",(unsigned long)frames);snprintf(l[4],81,"  ASC %-3s  offset %.3f C  altitude %u m  mode %s",asc?"on":"off",offset_raw*175.0/65536.0,altitude,single_mode?"single":"periodic");snprintf(l[5],81,"  co2 | ready | serial | selftest");snprintf(l[6],81,"  asc [on|off] | offset [0..20 C] | altitude [0..3000 m]");snprintf(l[7],81,"  mode [periodic|single] | status | sdc41 <on|off>");snprintf(l[8],81,"  menu | help <command>   Page-5 commands are live");for(unsigned i=9;i<18;i++)l[i][0]=0;}
+void co2_format_menu(char l[18][81]) {
+  uint64_t sn = ((uint64_t)serial_words[0] << 32) |
+                ((uint64_t)serial_words[1] << 16) | serial_words[2];
+  const char *waiting = powered && warming ? "thermal stabilisation waiting" :
+                        powered ? "pending" : "sensor off";
+  snprintf(l[0], 81, "- serial      = %llu", (unsigned long long)sn);
+  snprintf(l[1], 81, "- i2c address = 0x62");
+  snprintf(l[2], 81, "  SDC41 = %s", powered ? (warming ? "WARMING UP" : "ON") : "OFF");
+  if (sample_valid && !warming && powered) {
+    uint16_t filtered = filtered_valid ?
+        (uint16_t)((filtered_milli + 500) / 1000) : ppm;
+    snprintf(l[3], 81, "- co2         = %u ppm ->>> co2 zone: '%s'", filtered,
+             zone(filtered));
+    snprintf(l[4], 81, "- co2 raw     = %u ppm", ppm);
+    snprintf(l[6], 81, "- temperature = %d.%03d degrees C",
+             temperature_tenths / 10, abs(temperature_tenths % 10) * 100);
+    snprintf(l[7], 81, "- humidity    = %u.%03u %%RH",
+             humidity_tenths / 10, (humidity_tenths % 10) * 100u);
+  } else {
+    snprintf(l[3], 81, "- co2         = %s", waiting);
+    snprintf(l[4], 81, "- co2 raw     = %s", waiting);
+    snprintf(l[6], 81, "- temperature = %s", waiting);
+    snprintf(l[7], 81, "- humidity    = %s", waiting);
+  }
+  snprintf(l[5], 81, "- filter      = %u/7 samples%s", sample_count,
+           filtered_valid ? ", median + EMA active" : " collected");
+  snprintf(l[8], 81, "- asc         = %s", asc ? "on" : "off");
+  snprintf(l[9], 81, "- offset      = %.3f degrees C",
+           offset_raw * 175.0 / 65536.0);
+  snprintf(l[10], 81, "- altitude    = %u m", altitude);
+  snprintf(l[11], 81, "- mode        = %s", single_mode ? "single" : "periodic");
+  snprintf(l[12], 81, "- data ready  = %s", ready_latched ? "yes" : "no");
+  snprintf(l[13], 81, "  Commands:");
+  snprintf(l[14], 81, "  co2 | ready | serial | selftest | asc [on|off]");
+  snprintf(l[15], 81, "  offset [degrees] | altitude [metres] | mode [periodic|single]");
+  snprintf(l[16], 81, "  status | sdc41 <on|off> | menu | help [command]");
+  l[17][0] = '\0';
+}
 
 static bool noargs(const char*a){return !a||!*a;}
 bool co2_command(const char*c,const char*a,char*o,size_t z){bool restart=false,ok=false;if(!a)a="";
