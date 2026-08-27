@@ -643,7 +643,9 @@ static bool status_frame_complete(void) {
 }
 
 static void frame_continue(void) {
-  static const uint8_t rows[] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21};
+  static const uint8_t rows[] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+                                 12, 13, 14, 15, 16, 17, 18, 19,
+                                 20, 21, 22};
   static const char *const command_rows[][4] = {
       {"a) batt", "a1) help batt", "b) batt raw", "b1) help batt raw"},
        {"c) batt res", "c1) help batt res", "d) batt log", "d1) help batt log"},
@@ -687,6 +689,10 @@ static void frame_continue(void) {
       snprintf(content, sizeof content, "  %-18.18s %-18.18s %-18.18s %-18.18s",
                command_rows[item - 1u][0], command_rows[item - 1u][1],
                command_rows[item - 1u][2], command_rows[item - 1u][3]);
+    } else if (ui_page == 6u &&
+               item == sizeof command_rows / sizeof command_rows[0] + 1u) {
+      snprintf(content, sizeof content, " Command > %s", input);
+      command_dirty = false;
     } else {
       content[0] = '\0';
     }
@@ -697,16 +703,6 @@ static void frame_continue(void) {
   }
   if (!status_frame_complete()) {
     dbg_fields_refresh();
-    return;
-  }
-  /* Page 6 fills nearly the entire fixed area.  Draw its prompt explicitly
-   * as part of the frame instead of waiting for a later dirty-line pass. */
-  if (ui_page == 6u &&
-      frame_phase == (uint8_t)(sizeof rows / sizeof rows[0] + 1u)) {
-    snprintf(piece, sizeof piece, "\033[22;1H Command > %s\033[K", input);
-    dbg_out_push(piece);
-    command_dirty = false;
-    frame_phase = (uint8_t)(frame_phase + 1u);
     return;
   }
   /* Scrolling setup is the final sequence of the frame draw. */
