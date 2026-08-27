@@ -114,8 +114,11 @@ static uint32_t co2_warm_white_breathe(uint32_t now) {
   return ((uint32_t)g << 24) | ((uint32_t)r << 16) | w;
 }
 
-static uint32_t co2_cyan(void) {
-  return colour_word(0u, 255u, 180u, LED_STATION_BRIGHTNESS_PERCENT);
+static uint32_t co2_sample_warm_white(void) {
+  /* Match the warm-up breath at its gentle 10% peak. */
+  if (!rgbw_enabled)
+    return colour_word(255u, 178u, 96u, 10u);
+  return ((uint32_t)1u << 24) | ((uint32_t)3u << 16) | 26u;
 }
 
 static uint32_t co2_error_red(void) {
@@ -174,7 +177,7 @@ static uint32_t requested_colour(void) {
   if (co2_warming_up())
     return co2_warm_white_breathe(now);
   if (!co2_filtered_valid())
-    return co2_sample_flash_active() ? co2_cyan() : 0u;
+    return co2_sample_flash_active() ? co2_sample_warm_white() : 0u;
   power_sample_t battery;
   power_monitor_snapshot(&battery);
   if (battery.valid && battery.bus_mv < BATTERY_CRITICAL_MV)
