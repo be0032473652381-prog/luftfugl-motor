@@ -2481,8 +2481,11 @@ void dbg_handle_key(char c) {
     input_overflow = false;
     command_dirty = true;
 #ifndef LUFTFUGL_TRACE_INPUT
-    if (!plain_mode && !frame_phase &&
-        out_free() > DEBUG_COMMAND_MAX + 32u) {
+    if (!plain_mode && !frame_phase && ui_page == 6u) {
+      command_line_draw();
+      command_dirty = false;
+    } else if (!plain_mode && !frame_phase &&
+               out_free() > DEBUG_COMMAND_MAX + 32u) {
       command_line_draw();
       command_dirty = false;
     }
@@ -2500,8 +2503,7 @@ void dbg_handle_key(char c) {
     }
     command_dirty = true;
 #ifndef LUFTFUGL_TRACE_INPUT
-    if (!plain_mode && ui_page == 6u && !frame_phase &&
-        out_free() > DEBUG_COMMAND_MAX + 32u) {
+    if (!plain_mode && ui_page == 6u && !frame_phase) {
       command_line_draw();
       command_dirty = false;
     }
@@ -2527,8 +2529,7 @@ void dbg_handle_key(char c) {
     } else
       command_dirty = true;
 #ifndef LUFTFUGL_TRACE_INPUT
-    if (!plain_mode && ui_page == 6u && !frame_phase &&
-        out_free() > DEBUG_COMMAND_MAX + 32u) {
+    if (!plain_mode && ui_page == 6u && !frame_phase) {
       command_line_draw();
       command_dirty = false;
     }
