@@ -37,6 +37,16 @@ static void led_data_enable(void) {
   last_colour = UINT32_MAX;
 }
 
+static void led_transmit_dark(void) {
+  if (!data_enabled)
+    led_data_enable();
+  pio_sm_put_blocking(led_pio, led_sm, 0u);
+  /* SK6812 reset/latch time is at least 80 us.  Keep the data engine alive
+     until the all-zero RGBW frame has definitely latched. */
+  sleep_us(100u);
+  last_colour = 0u;
+}
+
 static uint32_t colour_word(uint8_t r, uint8_t g, uint8_t b,
                             uint8_t brightness_percent) {
   r = (uint8_t)(((uint16_t)r * brightness_percent + 50u) / 100u);
@@ -163,6 +173,10 @@ void led_init(void) {
   mode = LED_MODE_AUTO;
   raw_colour = 0u;
   last_colour = UINT32_MAX;
+  /* GP0 is not fitted as a load-switch control on the current hardware.
+     Clear any colour retained by the externally powered pixel after reset. */
+  led_transmit_dark();
+  led_data_disable();
   led_update();
 }
 
@@ -171,8 +185,15 @@ void led_update(void) {
   bool power_required = colour != 0u || station5_hazard_selected();
   if (!power_required) {
     if (power_enabled) {
+      if (last_colour != 0u)
+        led_transmit_dark();
       led_data_disable();
       gpio_put(PIN_LED_POWER, false);
+    } else if (last_colour != 0u) {
+      /* Also cover boards where GP0 is not connected and therefore cannot
+         represent the pixel's real power state. */
+      led_transmit_dark();
+      led_data_disable();
     }
     power_enabled = false;
     power_ready_us = 0u;
