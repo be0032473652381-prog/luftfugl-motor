@@ -99,17 +99,22 @@ static uint32_t requested_colour(void) {
     return station5_rose();
   if (mode == LED_MODE_FORCED_OFF)
     return 0u;
+  /* Automatic indication is permitted only while stopped inside an actual
+     station zone.  Use the instantaneous filtered classification so power is
+     removed as soon as the mechanism leaves the zone; the debounced
+     confirmed position intentionally lags and can otherwise leave the pixel
+     lit during departure. */
+  if (controller_state() != ST_IDLE)
+    return 0u;
+  position_t station = encoder_instant();
+  if (station < POS_MIN || station > POS_MAX)
+    return 0u;
   power_sample_t battery;
   power_monitor_snapshot(&battery);
   if (battery.valid && battery.bus_mv < BATTERY_CRITICAL_MV)
     return hazard_lit() ? battery_deep_yellow() : 0u;
   if (battery.valid && battery.bus_mv < BATTERY_WARN_MV)
     return battery_deep_yellow();
-  /* Passing through a station must never display its colour. Automatic
-     indication begins only after the controller has completed arrival. */
-  if (controller_state() != ST_IDLE)
-    return 0u;
-  position_t station = encoder_confirmed();
   if (station == 1u)
     return station1_mint();
   if (station == 2u)
@@ -126,7 +131,7 @@ static uint32_t requested_colour(void) {
 
 static bool station5_hazard_selected(void) {
   return mode == LED_MODE_AUTO && controller_state() == ST_IDLE &&
-         encoder_confirmed() == POS_MAX;
+         encoder_instant() == POS_MAX;
 }
 
 void led_power_init(void) {
