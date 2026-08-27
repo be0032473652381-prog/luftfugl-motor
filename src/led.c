@@ -92,6 +92,18 @@ static bool hazard_lit(void) {
           phase < second_pulse + LED_HAZARD_PULSE_MS);
 }
 
+static position_t led_station_at_live_adc(void) {
+  uint16_t adc = encoder_average();
+  for (position_t station = POS_MIN; station <= POS_MAX; ++station) {
+    uint16_t nominal = encoder_nominal(station);
+    uint16_t delta = adc > nominal ? (uint16_t)(adc - nominal)
+                                   : (uint16_t)(nominal - adc);
+    if (delta <= LED_STATION_WINDOW_COUNTS)
+      return station;
+  }
+  return POS_BETWEEN;
+}
+
 static uint32_t requested_colour(void) {
   if (mode == LED_MODE_FORCED_OFF)
     return 0u;
@@ -100,7 +112,7 @@ static uint32_t requested_colour(void) {
      test command cannot leave the SK6812 lit during subsequent travel. */
   if (controller_state() != ST_IDLE)
     return 0u;
-  position_t station = encoder_instant();
+  position_t station = led_station_at_live_adc();
   if (station < POS_MIN || station > POS_MAX)
     return 0u;
   if (mode == LED_MODE_FORCED_RAW)
@@ -129,7 +141,7 @@ static uint32_t requested_colour(void) {
 
 static bool station5_hazard_selected(void) {
   return mode == LED_MODE_AUTO && controller_state() == ST_IDLE &&
-         encoder_instant() == POS_MAX;
+         led_station_at_live_adc() == POS_MAX;
 }
 
 void led_power_init(void) {
