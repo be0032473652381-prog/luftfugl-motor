@@ -1,6 +1,7 @@
 #include "led.h"
 
 #include "config.h"
+#include "co2.h"
 #include "controller.h"
 #include "encoder.h"
 #include "hardware/gpio.h"
@@ -20,6 +21,8 @@ static bool rgbw_enabled;
 static bool power_enabled;
 static bool data_enabled;
 static uint64_t power_ready_us;
+static bool co2_error_latched;
+static uint32_t co2_error_started_ms;
 
 static void led_data_disable(void) {
   if (data_enabled)
@@ -93,6 +96,18 @@ static uint32_t battery_deep_yellow(void) {
                      LED_BATTERY_BRIGHTNESS_PERCENT);
 }
 
+static uint32_t co2_blue(void) {
+  return colour_word(0u, 32u, 255u, LED_STATION_BRIGHTNESS_PERCENT);
+}
+
+static uint32_t co2_cyan(void) {
+  return colour_word(0u, 255u, 180u, LED_STATION_BRIGHTNESS_PERCENT);
+}
+
+static uint32_t co2_error_red(void) {
+  return colour_word(255u, 0u, 0u, LED_HAZARD_BRIGHTNESS_PERCENT);
+}
+
 static bool hazard_lit(void) {
   uint32_t phase =
       to_ms_since_boot(get_absolute_time()) % LED_HAZARD_PERIOD_MS;
@@ -125,10 +140,27 @@ static uint32_t requested_colour(void) {
   position_t station = led_station_at_live_adc();
   if (station < POS_MIN || station > POS_MAX)
     return 0u;
+  /* Station 5 hazard indication always has priority. */
+  if (mode == LED_MODE_AUTO && station == POS_MAX)
+    return hazard_lit() ? station5_rose() : 0u;
   if (mode == LED_MODE_FORCED_RAW)
     return rgbw_enabled ? raw_colour : raw_colour << 8;
   if (mode == LED_MODE_FORCED_ON)
     return station5_rose();
+  uint32_t now = to_ms_since_boot(get_absolute_time());
+  if (co2_sensor_error()) {
+    if (!co2_error_latched) {
+      co2_error_latched = true;
+      co2_error_started_ms = now;
+    }
+    uint32_t elapsed = now - co2_error_started_ms;
+    return elapsed < 1200u && (elapsed % 400u) < 200u ? co2_error_red() : 0u;
+  }
+  co2_error_latched = false;
+  if (co2_warming_up())
+    return (now % 1000u) < 500u ? co2_blue() : 0u;
+  if (!co2_filtered_valid())
+    return co2_sample_flash_active() ? co2_cyan() : 0u;
   power_sample_t battery;
   power_monitor_snapshot(&battery);
   if (battery.valid && battery.bus_mv < BATTERY_CRITICAL_MV)
@@ -143,9 +175,6 @@ static uint32_t requested_colour(void) {
     return station3_butter();
   if (station == 4u)
     return station4_peach();
-  if (station == POS_MAX) {
-    return hazard_lit() ? station5_rose() : 0u;
-  }
   return 0u;
 }
 
@@ -161,6 +190,8 @@ void led_power_init(void) {
   gpio_set_dir(PIN_LED_POWER, GPIO_OUT);
   power_enabled = false;
   power_ready_us = 0u;
+  co2_error_latched = false;
+  co2_error_started_ms = 0u;
 }
 
 void led_init(void) {

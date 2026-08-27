@@ -21,6 +21,8 @@ static uint32_t next_poll_ms, warmup_deadline_ms, last_raw_sample_ms, frames;
 static uint16_t ppm, humidity_tenths, serial_words[3], offset_raw, altitude;
 static int16_t temperature_tenths;
 static bool asc, ready_latched;
+static bool sensor_error, initialized;
+static uint8_t accepted_samples;
 static uint16_t samples[FILTER_SAMPLES];
 static uint8_t sample_count;
 static bool filtered_valid;
@@ -33,14 +35,19 @@ static bool words(uint16_t c,uint16_t *w,size_t n,uint32_t delay){uint8_t b[9];i
 static bool claim(void){return power_monitor_i2c_claim();} static void release(void){power_monitor_i2c_release();}
 static bool idle_begin(bool *restart){*restart=measuring;if(!claim())return false;if(*restart&&!command(CMD_STOP)){release();return false;}if(*restart){sleep_ms(500);measuring=false;}return true;}
 static void idle_end(bool restart){if(restart){measuring=command(CMD_START);next_poll_ms=to_ms_since_boot(get_absolute_time())+5000;}release();}
-static void reset_pipeline(uint32_t now){sample_valid=false;ready_latched=false;sample_count=0;batch_just_completed=false;filtered_valid=false;filtered_milli=0;memset(samples,0,sizeof samples);last_raw_sample_ms=now;}
+static void reset_pipeline(uint32_t now){sample_valid=false;ready_latched=false;sample_count=0;accepted_samples=0;batch_just_completed=false;filtered_valid=false;filtered_milli=0;memset(samples,0,sizeof samples);last_raw_sample_ms=now;}
 static void filter_push(uint16_t v){batch_just_completed=false;samples[sample_count++]=v;if(sample_count<7)return;for(unsigned i=1;i<7;i++){uint16_t x=samples[i];unsigned j=i;while(j&&samples[j-1]>x){samples[j]=samples[j-1];j--;}samples[j]=x;}int32_t m=(int32_t)samples[3]*1000;filtered_milli=filtered_valid?(3*m+7*filtered_milli+5)/10:m;filtered_valid=true;sample_count=0;batch_just_completed=true;}
-static bool read_sample(bool collect){uint16_t w[3];if(!words(CMD_READ,w,3,1))return false;ppm=w[0];temperature_tenths=(int16_t)(-450+(1750L*w[1]+32767)/65535L);humidity_tenths=(uint16_t)((1000UL*w[2]+32767)/65535UL);sample_valid=true;ready_latched=true;frames++;last_raw_sample_ms=to_ms_since_boot(get_absolute_time());if(collect)filter_push(ppm);return true;}
+static bool read_sample(bool collect){uint16_t w[3];if(!words(CMD_READ,w,3,1)){sensor_error=true;return false;}ppm=w[0];temperature_tenths=(int16_t)(-450+(1750L*w[1]+32767)/65535L);humidity_tenths=(uint16_t)((1000UL*w[2]+32767)/65535UL);sample_valid=true;ready_latched=true;sensor_error=false;frames++;last_raw_sample_ms=to_ms_since_boot(get_absolute_time());if(collect){if(accepted_samples<FILTER_SAMPLES)accepted_samples++;filter_push(ppm);}return true;}
 static void refresh_config(void){uint16_t w;if(words(CMD_GET_ASC,&w,1,1))asc=w==1;words(CMD_GET_OFFSET,&offset_raw,1,1);words(CMD_GET_ALTITUDE,&altitude,1,1);}
 
-void co2_init(void){uint32_t now=to_ms_since_boot(get_absolute_time());detected=false;variant=CO2_VARIANT_NONE;frames=0;powered=true;single_mode=false;warming=false;start_after_warmup=false;reset_pipeline(now);if(!claim())return;command(CMD_WAKE);sleep_ms(30);(void)command(CMD_STOP);sleep_ms(500);detected=words(CMD_SERIAL,serial_words,3,1);if(detected){variant=CO2_VARIANT_SCD41;refresh_config();measuring=command(CMD_START);if(measuring){now=to_ms_since_boot(get_absolute_time());warming=true;warmup_deadline_ms=now+60000;next_poll_ms=now+1000;reset_pipeline(now);}}release();}
-void co2_tick(void){if(!detected||!powered)return;uint32_t now=to_ms_since_boot(get_absolute_time());if(warming&&(int32_t)(now-warmup_deadline_ms)>=0){if(start_after_warmup){if(!claim())return;measuring=command(CMD_START);release();if(!measuring)return;start_after_warmup=false;}warming=false;reset_pipeline(now);next_poll_ms=now+1000;return;}if(!measuring||(int32_t)(now-next_poll_ms)<0)return;next_poll_ms=now+1000;if(!claim())return;uint16_t r;if(words(CMD_READY,&r,1,1)&&(r&0x7ff)){read_sample(!warming);next_poll_ms=now+5000;}release();}
+void co2_init(void){uint32_t now=to_ms_since_boot(get_absolute_time());initialized=true;detected=false;variant=CO2_VARIANT_NONE;frames=0;accepted_samples=0;sensor_error=false;powered=true;single_mode=false;warming=false;start_after_warmup=false;reset_pipeline(now);if(!claim()){sensor_error=true;return;}command(CMD_WAKE);sleep_ms(30);(void)command(CMD_STOP);sleep_ms(500);detected=words(CMD_SERIAL,serial_words,3,1);sensor_error=!detected;if(detected){variant=CO2_VARIANT_SCD41;refresh_config();measuring=command(CMD_START);sensor_error=!measuring;if(measuring){now=to_ms_since_boot(get_absolute_time());warming=true;warmup_deadline_ms=now+60000;next_poll_ms=now+1000;reset_pipeline(now);}}release();}
+void co2_tick(void){if(!detected||!powered)return;uint32_t now=to_ms_since_boot(get_absolute_time());if(warming&&(int32_t)(now-warmup_deadline_ms)>=0){if(start_after_warmup){if(!claim())return;measuring=command(CMD_START);sensor_error=!measuring;release();if(!measuring)return;start_after_warmup=false;}warming=false;reset_pipeline(now);next_poll_ms=now+1000;return;}if(!measuring||(int32_t)(now-next_poll_ms)<0)return;next_poll_ms=now+1000;if(!claim())return;uint16_t r;if(!words(CMD_READY,&r,1,1))sensor_error=true;else{sensor_error=false;if(r&0x7ff){read_sample(!warming);next_poll_ms=now+5000;}}release();}
 bool co2_detected(void){return detected;} co2_variant_t co2_variant(void){return variant;} bool co2_sample_valid(void){return sample_valid;} uint16_t co2_ppm(void){return ppm;} int16_t co2_temperature_tenths(void){return temperature_tenths;} uint16_t co2_humidity_tenths(void){return humidity_tenths;} uint32_t co2_frames_read(void){return frames;}
+bool co2_warming_up(void){return warming;}
+bool co2_filtered_valid(void){return filtered_valid;}
+uint8_t co2_filter_samples(void){return accepted_samples;}
+bool co2_sample_flash_active(void){uint32_t now=to_ms_since_boot(get_absolute_time());return !warming&&accepted_samples>0u&&accepted_samples<=FILTER_SAMPLES&&(uint32_t)(now-last_raw_sample_ms)<300u;}
+bool co2_sensor_error(void){return initialized&&(sensor_error||!detected);}
 static const char *zone(uint16_t v){return v<600?"excellent":v<800?"good":v<1000?"moderate":v<=2000?"poor":"hazardous";}
 void co2_format_menu(char l[18][81]) {
   uint32_t now = to_ms_since_boot(get_absolute_time());
