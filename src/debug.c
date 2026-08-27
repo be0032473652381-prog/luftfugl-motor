@@ -604,12 +604,17 @@ void dbg_fields_refresh(void) {
 #ifndef LUFTFUGL_TRACE_INPUT
 static void command_line_draw(void) {
   char line[80];
-  uint8_t row = ui_page == 6u ? 22u : 23u;
   if (plain_mode)
     return;
   snprintf(line, sizeof line, " Command > %s", input);
+  if (ui_page == 6u) {
+    dbg_out_push("\033[23;1H");
+    dbg_out_push(line);
+    dbg_out_push("\033[K\033[24;1H");
+    return;
+  }
   char position[20];
-  snprintf(position, sizeof position, "\033[s\033[%u;1H", row);
+  snprintf(position, sizeof position, "\033[s\033[23;1H");
   dbg_out_push(position);
   dbg_out_push(line);
   dbg_out_push("\033[K\033[u");
@@ -645,7 +650,7 @@ static bool status_frame_complete(void) {
 static void frame_continue(void) {
   static const uint8_t rows[] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
                                  12, 13, 14, 15, 16, 17, 18, 19,
-                                 20, 21, 22};
+                                 20, 21, 22, 23};
   static const char *const command_rows[][4] = {
       {"a) batt", "a1) help batt", "b) batt raw", "b1) help batt raw"},
        {"c) batt res", "c1) help batt res", "d) batt log", "d1) help batt log"},
@@ -690,7 +695,7 @@ static void frame_continue(void) {
                command_rows[item - 1u][0], command_rows[item - 1u][1],
                command_rows[item - 1u][2], command_rows[item - 1u][3]);
     } else if (ui_page == 6u &&
-               item == sizeof command_rows / sizeof command_rows[0] + 1u) {
+               item == sizeof command_rows / sizeof command_rows[0] + 2u) {
       snprintf(content, sizeof content, " Command > %s", input);
       command_dirty = false;
     } else {
