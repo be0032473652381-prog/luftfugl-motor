@@ -56,61 +56,76 @@ void co2_format_menu(char l[18][81]) {
   uint64_t sn = ((uint64_t)serial_words[0] << 32) |
                 ((uint64_t)serial_words[1] << 16) | serial_words[2];
   uint32_t elapsed = now - last_raw_sample_ms;
-  uint32_t raw_seconds = elapsed < 5000u ? (5000u - elapsed + 999u) / 1000u : 0u;
-  uint32_t remaining_samples = FILTER_SAMPLES - sample_count;
-  uint32_t filter_ms = remaining_samples * 5000u;
-  uint32_t filter_seconds = elapsed < filter_ms ?
-      (filter_ms - elapsed + 999u) / 1000u : 0u;
+  uint32_t sample_age = sample_valid ? elapsed / 1000u : 0u;
+  uint32_t next_seconds = measuring && (int32_t)(next_poll_ms - now) > 0 ?
+      (next_poll_ms - now + 999u) / 1000u : 0u;
   uint32_t warmup_seconds = warming && (int32_t)(warmup_deadline_ms - now) > 0 ?
       (warmup_deadline_ms - now + 999u) / 1000u : 0u;
-  const char *waiting = powered ? "pending" : "sensor off";
-  snprintf(l[0], 81, "- serial      = %llu", (unsigned long long)sn);
-  snprintf(l[1], 81, "- i2c address = 0x62");
+  uint8_t batch_count = batch_just_completed ? FILTER_SAMPLES : sample_count;
+
+  snprintf(l[0], 81, "- sensor      = %s    I2C 0x62    power %s    health %s",
+           detected ? "SCD41 detected" : "NOT DETECTED", powered ? "on" : "off",
+           sensor_error ? "ERROR" : "OK");
+  snprintf(l[1], 81, "- serial      = %llu    mode %s    frames %lu",
+           (unsigned long long)sn, single_mode ? "single" : "periodic",
+           (unsigned long)frames);
   if (initial_warmup_pending)
-    snprintf(l[2], 81, "  SDC41 waiting for motor at Station 1 before warm-up");
+    snprintf(l[2], 81, "- function    = WAITING: securing motor at Station 1");
   else if (warming)
-    snprintf(l[2], 81, "  SDC41 is Warming up (%lu sec ... counting down to 0)",
-             (unsigned long)warmup_seconds);
+    snprintf(l[2], 81, "- function    = WARM-UP: motor locked at Station 1");
+  else if (!powered)
+    snprintf(l[2], 81, "- function    = SENSOR OFF");
+  else if (!filtered_valid)
+    snprintf(l[2], 81, "- function    = COLLECTING INITIAL FILTER SAMPLES");
   else
-    snprintf(l[2], 81, "  SDC41 = %s", powered ? "ACTIVE" : "OFF");
-  if (sample_valid && !warming && powered) {
-    uint16_t filtered = filtered_valid ?
-        (uint16_t)((filtered_milli + 500) / 1000) : ppm;
-    if (filtered_valid)
-      snprintf(l[3], 81, "- co2         = %u ppm - %lu seconds ->>> co2 zone: '%s'",
-               filtered, (unsigned long)filter_seconds, zone(filtered));
-    else
-      snprintf(l[3], 81, "- co2         = pending - %lu seconds",
-               (unsigned long)filter_seconds);
-    snprintf(l[4], 81, "- co2 raw     = %u ppm - %lu seconds", ppm,
-             (unsigned long)raw_seconds);
-    snprintf(l[6], 81, "- temperature = %d.%03d degrees C",
-             temperature_tenths / 10, abs(temperature_tenths % 10) * 100);
-    snprintf(l[7], 81, "- humidity    = %u.%03u %%RH",
-             humidity_tenths / 10, (humidity_tenths % 10) * 100u);
-  } else {
-    snprintf(l[3], 81, "- co2         = %s", waiting);
-    snprintf(l[4], 81, "- co2 raw     = %s", waiting);
-    snprintf(l[6], 81, "- temperature = %s", waiting);
-    snprintf(l[7], 81, "- humidity    = %s", waiting);
+    snprintf(l[2], 81, "- function    = RUNNING: continuous filtered measurements");
+
+  if (warming)
+    snprintf(l[3], 81, "- warm-up     = %lu seconds remaining (counting down)",
+             (unsigned long)warmup_seconds);
+  else if (initial_warmup_pending)
+    snprintf(l[3], 81, "- warm-up     = pending until Station 1 is confirmed");
+  else {
+    snprintf(l[3], 81, "- warm-up     = %s", powered ? "complete" : "not active");
   }
-  static const char *const progress[FILTER_SAMPLES] = {
-      "100%", "86%", "71%", "57%", "43%", "29%", "14%"};
-  uint8_t display_count = batch_just_completed ? FILTER_SAMPLES : sample_count;
-  snprintf(l[5], 81, "- filter      = %s (%u/7 samples; median-7 then EMA alpha 0.3)",
-           display_count == FILTER_SAMPLES ? "ready" : progress[display_count],
-           display_count);
-  snprintf(l[8], 81, "- asc         = %s", asc ? "on" : "off");
-  snprintf(l[9], 81, "- offset      = %.3f degrees C",
-           offset_raw * 175.0 / 65536.0);
-  snprintf(l[10], 81, "- altitude    = %u m", altitude);
-  snprintf(l[11], 81, "- mode        = %s", single_mode ? "single" : "periodic");
-  snprintf(l[12], 81, "- data ready  = %s", ready_latched ? "yes" : "no");
-  snprintf(l[13], 81, "  Commands:");
-  snprintf(l[14], 81, "  co2 | ready | serial | selftest | asc [on|off]");
-  snprintf(l[15], 81, "  offset [degrees] | altitude [metres] | mode [periodic|single]");
-  snprintf(l[16], 81, "  status | sdc41 <on|off> | menu | help [command]");
-  l[17][0] = '\0';
+
+  if (filtered_valid)
+    snprintf(l[4], 81, "- 7-sample filter = VALID; next batch %u/7 (%u remaining)",
+             batch_count, FILTER_SAMPLES - batch_count);
+  else
+    snprintf(l[4], 81, "- 7-sample filter = %u/7 accepted (%u remaining; counting down)",
+             accepted_samples, FILTER_SAMPLES - accepted_samples);
+
+  if (filtered_valid) {
+    uint16_t filtered = (uint16_t)((filtered_milli + 500) / 1000);
+    snprintf(l[5], 81, "- CO2 VALID   = %u ppm    zone %s    updating continuously",
+             filtered, zone(filtered));
+  } else {
+    snprintf(l[5], 81, "- CO2 VALID   = pending until seven accepted samples");
+  }
+  if (sample_valid)
+    snprintf(l[6], 81, "- CO2 raw     = %u ppm    age %lu sec    next poll %lu sec",
+             ppm, (unsigned long)sample_age, (unsigned long)next_seconds);
+  else
+    snprintf(l[6], 81, "- CO2 raw     = pending    next poll %lu sec",
+             (unsigned long)next_seconds);
+  if (sample_valid) {
+    snprintf(l[7], 81, "- temperature = %d.%01d C    humidity %u.%01u %%RH",
+             temperature_tenths / 10, abs(temperature_tenths % 10),
+             humidity_tenths / 10, humidity_tenths % 10);
+  } else {
+    snprintf(l[7], 81, "- temperature = pending       humidity pending");
+  }
+  snprintf(l[8], 81, "- data ready  = %s    accepted %u    median-7 + EMA alpha 0.3",
+           ready_latched ? "yes" : "no", accepted_samples);
+  snprintf(l[9], 81, "- ASC         = %s    offset %.3f C    altitude %u m",
+           asc ? "on" : "off",
+           offset_raw * 175.0 / 65536.0, altitude);
+  snprintf(l[10], 81, "  Commands:");
+  snprintf(l[11], 81, "  co2 | ready | serial | selftest | asc [on|off]");
+  snprintf(l[12], 81, "  offset [degrees] | altitude [metres] | mode [periodic|single]");
+  snprintf(l[13], 81, "  status | sdc41 <on|off> | menu | help [command]");
+  for (unsigned i = 14; i < 18; ++i) l[i][0] = '\0';
 }
 
 static bool noargs(const char*a){return !a||!*a;}

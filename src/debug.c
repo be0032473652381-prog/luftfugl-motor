@@ -538,17 +538,21 @@ void dbg_fields_refresh(void) {
                                         : "station 5")
                                                                       : "none");
   if (ui_page == 1u) {
+    char co2_lines[18][81];
+    co2_format_menu(co2_lines);
     field(3, "  GENERAL   firmware 2.0     debug monitor active");
     field(4, "  TICK      1 kHz             watchdog 100 ms");
     field(5, "  LED       data GP18         buzzer BIN1/2 GP6/GP7");
-    field(7, "");
-    field(8, "");
-    field(9, "  1 - General information");
-    field(10, "  2 - Motor controller");
-    field(11, "  3 - Motor positions");
-    field(12, "  4 - Battery information");
-    field(13, "  5 - CO2 sensor");
-    field(14, "  6 - Commands");
+    field(7, co2_lines[2]);
+    field(8, co2_lines[3]);
+    field(9, co2_lines[4]);
+    field(10, co2_lines[5]);
+    field(12, "  1 - General information");
+    field(13, "  2 - Motor controller");
+    field(14, "  3 - Motor positions");
+    field(15, "  4 - Battery information");
+    field(16, "  5 - CO2 sensor");
+    field(17, "  6 - Commands");
   } else if (ui_page == 2u) {
     snprintf(line, sizeof line, "  %-9s%-14s%-9s%-14s%-9s%-14s",
              "STATE", state_text(controller_state()), "TARGET", target,
