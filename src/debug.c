@@ -696,6 +696,16 @@ static void frame_continue(void) {
     dbg_fields_refresh();
     return;
   }
+  /* Page 6 fills nearly the entire fixed area.  Draw its prompt explicitly
+   * as part of the frame instead of waiting for a later dirty-line pass. */
+  if (ui_page == 6u &&
+      frame_phase == (uint8_t)(sizeof rows / sizeof rows[0] + 1u)) {
+    snprintf(piece, sizeof piece, "\033[23;1H Command > %s\033[K", input);
+    dbg_out_push(piece);
+    command_dirty = false;
+    frame_phase = (uint8_t)(frame_phase + 1u);
+    return;
+  }
   /* Scrolling setup is the final sequence of the frame draw. */
   snprintf(piece, sizeof piece, "\033[24;%ur\033[24;1H",
            DEBUG_SCREEN_BOTTOM_ROW);
