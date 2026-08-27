@@ -15,6 +15,31 @@
 
 static volatile bool tick_has_run;
 
+static uint16_t adc_distance(uint16_t a, uint16_t b)
+{
+    return a > b ? a - b : b - a;
+}
+
+static void coordinate_sdc41_warmup(void)
+{
+    bool pending = co2_startup_pending();
+    bool warming = co2_warming_up();
+
+    controller_set_station1_lock(pending || warming);
+    if (!pending && !warming) return;
+
+    uint16_t current = encoder_average();
+    uint16_t station1 = encoder_nominal(POS_MIN);
+    bool at_station1 = adc_distance(current, station1) <= CFG_POS_WINDOW;
+    if (controller_state() != ST_IDLE) return;
+
+    if (!at_station1) {
+        (void)controller_request(REQ_HOME, POS_MIN);
+        return;
+    }
+    if (pending) (void)co2_begin_initial_warmup();
+}
+
 static bool on_tick(struct repeating_timer *timer)
 {
     (void)timer;
@@ -55,6 +80,7 @@ int main(void)
     for (;;) {
         console_poll();
         console_drain_events();
+        coordinate_sdc41_warmup();
         led_update();
         buzzer_tick();
         co2_tick();

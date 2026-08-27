@@ -13,6 +13,8 @@ typedef enum {
 } co2_variant_t;
 
 void co2_init(void);
+bool co2_startup_pending(void);
+bool co2_begin_initial_warmup(void);
 bool co2_detected(void);
 co2_variant_t co2_variant(void);
 void co2_tick(void);
