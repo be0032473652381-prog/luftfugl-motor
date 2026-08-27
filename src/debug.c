@@ -604,10 +604,13 @@ void dbg_fields_refresh(void) {
 #ifndef LUFTFUGL_TRACE_INPUT
 static void command_line_draw(void) {
   char line[80];
+  uint8_t row = ui_page == 6u ? 22u : 23u;
   if (plain_mode)
     return;
   snprintf(line, sizeof line, " Command > %s", input);
-  dbg_out_push("\033[s\033[23;1H");
+  char position[20];
+  snprintf(position, sizeof position, "\033[s\033[%u;1H", row);
+  dbg_out_push(position);
   dbg_out_push(line);
   dbg_out_push("\033[K\033[u");
 }
@@ -700,7 +703,7 @@ static void frame_continue(void) {
    * as part of the frame instead of waiting for a later dirty-line pass. */
   if (ui_page == 6u &&
       frame_phase == (uint8_t)(sizeof rows / sizeof rows[0] + 1u)) {
-    snprintf(piece, sizeof piece, "\033[23;1H Command > %s\033[K", input);
+    snprintf(piece, sizeof piece, "\033[22;1H Command > %s\033[K", input);
     dbg_out_push(piece);
     command_dirty = false;
     frame_phase = (uint8_t)(frame_phase + 1u);
