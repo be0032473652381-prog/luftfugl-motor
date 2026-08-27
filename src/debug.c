@@ -647,6 +647,11 @@ void dbg_render(void) {
 static bool status_frame_complete(void) {
   if (!status_shadow[0][0])
     return false;
+  /* Page 6 is entirely static below the header.  Waiting for dynamic field
+   * shadows on rows 3..5 leaves frame_phase nonzero forever and suppresses
+   * command-line echo even though the command index is already visible. */
+  if (ui_page == 6u)
+    return true;
   {
     uint8_t last = ui_page == 4u ? 8u : (ui_page == 5u ? 20u : 5u);
     for (uint8_t row = 3u; row <= last; ++row)
@@ -2481,7 +2486,7 @@ void dbg_handle_key(char c) {
     input_overflow = false;
     command_dirty = true;
 #ifndef LUFTFUGL_TRACE_INPUT
-    if (!plain_mode && !frame_phase && ui_page == 6u) {
+    if (!plain_mode && ui_page == 6u) {
       command_line_draw();
       command_dirty = false;
     } else if (!plain_mode && !frame_phase &&
@@ -2503,7 +2508,7 @@ void dbg_handle_key(char c) {
     }
     command_dirty = true;
 #ifndef LUFTFUGL_TRACE_INPUT
-    if (!plain_mode && ui_page == 6u && !frame_phase) {
+    if (!plain_mode && ui_page == 6u) {
       command_line_draw();
       command_dirty = false;
     }
@@ -2529,7 +2534,7 @@ void dbg_handle_key(char c) {
     } else
       command_dirty = true;
 #ifndef LUFTFUGL_TRACE_INPUT
-    if (!plain_mode && ui_page == 6u && !frame_phase) {
+    if (!plain_mode && ui_page == 6u) {
       command_line_draw();
       command_dirty = false;
     }
