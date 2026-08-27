@@ -679,7 +679,9 @@ static void frame_continue(void) {
                titles[ui_page - 1u]);
     } else if (ui_page == 6u && item >= 1u &&
                item <= sizeof command_rows / sizeof command_rows[0]) {
-      snprintf(content, sizeof content, "  %-20s %-20s %-20s %-20s",
+      /* Keep the complete row below 80 columns.  A wrapped command-index row
+       * would overwrite the fixed Command > line on row 23. */
+      snprintf(content, sizeof content, "  %-18.18s %-18.18s %-18.18s %-18.18s",
                command_rows[item - 1u][0], command_rows[item - 1u][1],
                command_rows[item - 1u][2], command_rows[item - 1u][3]);
     } else {
