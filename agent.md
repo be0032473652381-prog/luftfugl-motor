@@ -32,7 +32,7 @@ using a Raspberry Pi Debug Probe.
 | Item | Value |
 |---|---|
 | MCU board | YD-RP2040 dev board |
-| Flash | **4 MB, per current schematic** — a prior version of this document claimed 16 MB "confirmed from photographs"; that photograph was very likely a different physical YD-RP2040 unit (a different flash-size variant of the same board family). Confirm which board this build actually targets before trusting either number in `PICO_FLASH_SIZE_BYTES`. |
+| Flash | **4 MB, confirmed directly from silicon.** OpenOCD's own SFDP read reports `sfdp id = 0x164020 size = 4096 KiB` — this is the actual chip reporting its own size during a real flash operation, not a schematic label or a photograph of a possibly-different board. This settles the earlier discrepancy: a prior version of this document claimed 16 MB "confirmed from photographs," which was almost certainly a different physical YD-RP2040 unit. `PICO_FLASH_SIZE_BYTES` must be `4 * 1024 * 1024`. |
 | System clock | 125 MHz (SDK default) |
 | Motor | N20 DC gearmotor, integrated 4.7 kΩ potentiometer on the output shaft |
 | Driver | TB6612FNG breakout |
@@ -555,11 +555,11 @@ Consolidated from this rewrite and `hardware.md`:
   file not yet reviewed (likely an updated `console.c` or `main.c`).
 - Station-table discrepancy between `config.h` and the schematic — see
   `hardware.md` §0.
-- **Flash size, now higher priority than before**: 4 MB (schematic) vs.
-  16 MB (this document's prior claim) — confirm which board.
-  `endstop_persist()` (§4a.3) computes a physical flash address directly
-  from `PICO_FLASH_SIZE_BYTES`; getting this wrong doesn't just mislabel
-  a spec, it writes to the wrong address.
+- ~~Flash size~~ — **resolved**: 4 MB, confirmed directly via SFDP during a
+  real successful flash (§1). `endstop_persist()` (§4a.3) computes a
+  physical flash address from `PICO_FLASH_SIZE_BYTES` — confirm this
+  constant is actually set to `4 * 1024 * 1024` in the board header before
+  trusting that feature, now that the correct value is known.
 - Duty constants and `TIMEOUT_STEP_MS` — the existence of `findmin` and
   `cal motor` (§7.2) as dedicated empirical-measurement tools makes it
   more likely current values are deliberate bench results, not stale
