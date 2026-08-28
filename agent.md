@@ -165,7 +165,11 @@ Everything not listed above remains genuinely free. Every pin above is
 now confirmed **active**, not reserved-for-later — this table has changed
 twice across this review as more source files came in; treat it as
 current only as of the files actually reviewed, not as a permanent
-ceiling on what's been checked.## 3. Mechanical Constraints
+ceiling on what's been checked.
+
+---
+
+## 3. Mechanical Constraints
 
 **There are no physical end-stops.** This remains the single most
 important constraint regardless of sensing mechanism.
