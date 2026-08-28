@@ -1,8 +1,9 @@
 # luftfugl — Motor & Position Control Firmware
 
 RP2040 firmware that drives an N20 gearmotor to any of five fixed positions,
-sensed by a reed-switch resistor ladder on a single ADC pin, with a plain-text
-UART console for control and diagnostics.
+sensed by a single continuous potentiometer on one ADC pin, with a plain-text
+UART console for control and diagnostics — plus an SCD41 CO₂ sensor, a
+buzzer, and an addressable RGBW LED.
 
 Written in C against the Raspberry Pi Pico SDK. Flashed and debugged over SWD
 with a Raspberry Pi Debug Probe.
@@ -26,35 +27,43 @@ with a Raspberry Pi Debug Probe.
 
 | | |
 |---|---|
-| MCU | YD-RP2040 "Ultimate Pico", 16 MB flash, USB-C |
-| Driver | TB6612FNG breakout, channel A |
-| Motor | N20 DC gearmotor with magnet on the output |
-| Sensing | 5 reed switches → resistor ladder → GP26 (ADC0) |
-| Supplies | VM +5 V, VCC +3.3 V |
-| Console | UART0 on GP0/GP1, 115200 8N1 |
+| MCU | YD-RP2040 dev board — flash size unresolved, see `agent.md` §1 |
+| Driver | TB6612FNG, channel A (motor), channel B (buzzer) |
+| Motor | N20 DC gearmotor, integrated 4.7 kΩ potentiometer on the output shaft |
+| Sensing | Single continuous potentiometer → GP26 (ADC0), window-based classification — not reed switches |
+| Supplies | VM and VCC both +3.3 V, same rail — not a separate 5 V motor supply |
+| Console | UART**1** on GP20/GP21, 115200 8N1 |
+| Also on board | SCD41 CO₂ sensor (I²C0), SK6812RGBWW LED, INA219 power monitor |
 
 | RP2040 | Function |
-|--------|----------|
-| GP0 / GP1 | UART0 TX / RX |
-| GP2 / GP3 | AIN1 / AIN2 (direction) |
-| GP14 | PWMA (speed) |
-| GP15 | STBY (driver enable) |
-| GP26 (`A0`) | SENSE (position) |
+|---|---|
+| GP0 | LED power enable |
+| GP2 / GP3 | AIN1 / AIN2 (motor direction) |
+| GP4 / GP5 | I²C0 — SCD41 + INA219 |
+| GP6 / GP7 | BIN1 / BIN2 (buzzer direction) |
+| GP14 | PWMA (motor speed) |
+| GP15 | STBY (motor driver enable) |
+| GP16 | PWMB (buzzer) |
+| GP18 | LED data |
+| GP20 / GP21 | Console UART1 TX / RX |
+| GP26 (`A0`) | Potentiometer wiper |
 
-Full wiring, BOM and grounding notes: **[`hardware.md`](hardware.md)**.
+Full wiring, BOM and power tree: **[`hardware.md`](hardware.md)**.
 
 ---
 
 ## Documentation
 
 | File | Contents |
-|------|----------|
-| **[`agent.md`](agent.md)** | Behavioural specification — what the firmware must do. Pin assignments, ADC bands, state machine, timing, protocol, build config. The authoritative spec. |
-| **[`hardware.md`](hardware.md)** | What gets physically built. BOM, wiring tables, ladder schematic, power tree, pre-power checklist, bench measurement log, troubleshooting. |
-| **[`function-description.md`](function-description.md)** | How the code is organised. Every module, every public function, its contract and execution context. Invariants and test hooks. |
+|---|---|
+| **[`agent.md`](agent.md)** | Behavioural specification — what the firmware must do. Pin assignments, position sensing, state machine, timing, protocol, `BENCH_TEST` profile. The authoritative spec. |
+| **[`hardware.md`](hardware.md)** | What gets physically built. BOM, wiring, power tree, schematic-confirmed facts, still-open hardware questions. |
+| **[`function-description.md`](function-description.md)** | How the code is organised. Every module, every public function, its contract and execution context. |
+| **[`agent-md-discrepancy-report.md`](agent-md-discrepancy-report.md)** | What changed in `agent.md` and why — confirmed line-by-line against actual source, not assumed. |
 
-Read them in that order. `agent.md` is the source of truth; if the code and the
-spec disagree, the spec is right until it's deliberately changed.
+Read `agent.md` first. If the code and the spec disagree, the spec is right
+until it's deliberately changed — several open decisions are marked directly
+in that document as **NEEDS DECISION**, not silently resolved.
 
 ---
 
@@ -62,17 +71,21 @@ spec disagree, the spec is right until it's deliberately changed.
 
 ```
 luftfugl-motor/
-├── CMakeLists.txt
-├── pico_sdk_import.cmake
+├── CMakeLists.txt          — needs updating, see agent.md §10
 ├── boards/
-│   └── luftfugl_rp2040.h    # 16 MB flash, UART0 on GP0/GP1
 ├── src/
-│   ├── main.c               # init, main loop, 1 kHz timer
-│   ├── config.h             # every tunable constant
-│   ├── motor.c/.h           # TB6612FNG abstraction
-│   ├── encoder.c/.h         # ADC, filter, band classify, debounce
-│   ├── controller.c/.h      # state machine, limits, timeouts
-│   └── console.c/.h         # UART parser, event queue
+│   ├── main.c
+│   ├── config.h / config.c
+│   ├── motor.c/.h
+│   ├── encoder.c/.h        — potentiometer, not reed-switch, sampling
+│   ├── controller.c/.h
+│   ├── console.c/.h
+│   ├── led.c/.h
+│   ├── power_monitor.c/.h
+│   ├── ws2812.pio
+│   ├── co2.c/.h            — SCD41 driver, confirmed implemented
+│   ├── buzzer.c/.h         — confirmed implemented
+│   └── debug.c/.h          (LUFTFUGL_MONITOR builds)
 └── .vscode/
     └── launch.json
 ```
@@ -92,9 +105,6 @@ make -j4
 
 Produces `build/luftfugl.elf` and `build/luftfugl.uf2`.
 
-Build `Debug` for bring-up — breakpoints and symbols are worth far more than
-the code size during commissioning.
-
 ## Flashing
 
 Over SWD with the Debug Probe:
@@ -108,14 +118,8 @@ openocd -f interface/cmsis-dap.cfg -f target/rp2040.cfg \
 Fallback: hold BOOTSEL, plug in USB-C, drag `luftfugl.uf2` onto the mass
 storage device.
 
-Confirm the flash size once after the first flash:
-
-```sh
-picotool info
-```
-
-It should report 16 MB. If it doesn't, fix `PICO_FLASH_SIZE_BYTES` in
-`boards/luftfugl_rp2040.h` before going further.
+**Flash size is not yet confirmed** — `picotool info` should be checked
+against whichever number `agent.md` §1 settles on, not assumed to be 16 MB.
 
 ## Console
 
@@ -123,25 +127,31 @@ It should report 16 MB. If it doesn't, fix `PICO_FLASH_SIZE_BYTES` in
 minicom -b 115200 -o -D /dev/ttyACM0
 ```
 
-The Debug Probe presents SWD and UART as separate USB devices; the UART is
-usually the higher-numbered `ttyACM`.
+The Debug Probe presents SWD and UART as separate USB devices.
 
 ## Debugging
 
 `.vscode/launch.json` is configured for cortex-debug with OpenOCD. Note that
 **halting at a breakpoint does not stop the motor** — the PWM hardware keeps
-running with the CPU stopped. Prefer breaking from an idle state, or brake
-first.
+running with the CPU stopped.
 
 ---
 
 ## Command Reference
 
-Plain text, `\n` or `\r\n` terminated, case-insensitive.
+Two separate interfaces exist — see `agent.md` §7 for the full breakdown:
+
+- **Production console** (`console.c`) — the short command set below. This
+  table reflects an earlier confirmed snapshot; `agent.md` flags it as
+  possibly stale given how much else has changed, and not yet re-verified.
+- **Debug monitor** (`debug.c`, `LUFTFUGL_MONITOR` builds) — a much larger,
+  six-page fixed-screen interface with dozens of commands, including full
+  CO₂ sensor control, battery diagnostics, calibration tools, and a
+  manual motor-drive interlock. Documented in full in `agent.md` §7.2.
 
 | Command | Response |
-|---------|----------|
-| `pos` | `POS:1` … `POS:5`, or `POS:?` between reeds |
+|---|---|
+| `pos` | `POS:1` … `POS:5`, or `POS:?` |
 | `move N` | `OK: moving to N` |
 | `stop` | `OK: stopped` |
 | `home` | `OK: homing` |
@@ -150,135 +160,101 @@ Plain text, `\n` or `\r\n` terminated, case-insensitive.
 Unsolicited during a move:
 
 | Message | Meaning |
-|---------|---------|
-| `PASS:N` | Crossed reed N in transit |
+|---|---|
+| `PASS:N` | Crossed station N in transit |
 | `ARR:N` | Position N confirmed, motor stopped |
-
-Errors: `ERR: invalid target`, `ERR: at end-stop`, `ERR: busy`,
-`ERR: position unknown`, `ERR: fault`, `ERR: timeout`,
-`ERR: unknown command`, `ERR: line too long`.
-
-```
-> pos
-POS:2
-> move 5
-OK: moving to 5
-PASS:3
-PASS:4
-ARR:5
-> move 6
-ERR: at end-stop
-```
 
 ---
 
 ## How It Works
 
-**Sensing.** A 10 kΩ pull-up feeds a node tapped by five reed branches, each
-switching a different resistor to ground. One reed closes at a time, so the ADC
-reading identifies the position. All reeds open reads near full scale, which is
-"unknown", not a position.
+**Sensing.** A single continuous potentiometer, mechanically coupled to the
+motor's output shaft, feeds GP26 (ADC0). A station is confirmed when the
+filtered ADC value falls within `POS_WINDOW` counts of that station's
+nominal value — not a discrete resistor-ladder band lookup. See `agent.md`
+§2.7/§3 for the station table and its currently-unresolved discrepancy
+against the schematic.
 
-| Position | Resistor | Nominal ADC | Band |
-|----------|----------|-------------|------|
-| 1 | 1.0 kΩ | 372 | 0 – 555 |
-| 2 | 2.2 kΩ | 738 | 556 – 1023 |
-| 3 | 4.7 kΩ | 1309 | 1024 – 1678 |
-| 4 | 10 kΩ | 2047 | 1679 – 2431 |
-| 5 | 22 kΩ | 2815 | 2432 – 3455 |
-| unknown | open | 4095 | 3456 – 4095 |
+**Filtering.** Sampled at 1 kHz into a 5-deep rolling average, confirmed once
+the classification holds continuously for `DEBOUNCE_MS`.
 
-Bands are midpoints between nominal values. Verify against measured readings
-during bring-up and update `config.h` if the ladder is out of tolerance.
+**Moving.** Duty scales down approaching the target; an anti-stiction
+mechanism forces full duty if the mechanism stalls mid-move rather than
+remaining at a reduced speed that can't overcome static friction — see
+`agent.md` §4a.2.
 
-**Filtering.** Sampled at 1 kHz into a 5-deep rolling average, classified into
-a band, and confirmed once the classification holds for 12 ms. Transit
-reporting uses the unconfirmed value, because at full speed a reed may not
-dwell 12 ms.
+**Recovering.** The direction-aware `RECOVER` state described in earlier
+documentation **does not exist in the current code** — a timeout instead
+falls back to homing toward position 1 unconditionally. This is flagged as
+a genuine open decision in `agent.md` §4, not silently resolved either way.
 
-**Moving.** Travel runs at full duty until one position from the target, then
-drops to 30 % — or to creep speed if the target is 1 or 5. Arrival applies a
-short brake immediately; the mechanism never coasts to a stop.
-
-**Recovering.** If the position becomes unknown mid-operation, the motor creeps
-until a valid reed is found. Direction is chosen by proximity to a limit, not
-by travel history — creeping outward from reed 5 is what tears the harness.
-
-**Failing.** A move that overruns its deadline brakes and homes. If homing also
-overruns, the driver is disabled and the system faults until `home` or reset.
+**Failing.** A move that overruns its deadline brakes and homes. If homing
+also overruns, the driver is disabled and the system faults until `home` or
+reset.
 
 ---
 
 ## Tuning
 
-Everything adjustable lives in `src/config.h`. The values shipped are
-estimates; `hardware.md` §10 is a measurement table where each row feeds one of
-them.
-
-| Constant | Default | Set from |
-|----------|---------|----------|
-| `DUTY_NORMAL` | 200 | Travel speed that still allows reed detection |
-| `DUTY_APPROACH` | 60 | Overshoot observed at position 3 |
-| `DUTY_CREEP` | 50 | Slowest smooth motion |
-| `DUTY_MIN` | 45 | Lowest duty that breaks stiction |
-| `TIMEOUT_STEP_MS` | 1500 | ~2× measured single-step time |
-| `TIMEOUT_HOME_MS` | 6000 | ~2× measured full travel at creep |
-| `BAND_*_MAX` | see above | Measured ADC at each position |
-
-Keep the timeouts as tight as measurement allows. With no physical stops, a
-timeout is the only thing that halts a runaway home sequence.
+Everything adjustable lives in `src/config.h`. **Current values differ
+substantially from earlier documentation** — see `agent.md` §6.4/§6.5 for
+the full comparison and the open question of whether current values are
+deliberate bench corrections or drift. Tools exist specifically for
+empirical measurement: `findmin` (lowest moving duty) and `cal motor`
+(randomized station-move statistics), both in the debug monitor.
 
 ---
 
 ## Bring-Up Order
 
-Do not jump to the full state machine. Stages 1–3 with the motor **uncoupled**.
+Do not jump to the full state machine. Stages 1–3 with the motor
+**uncoupled**.
 
-1. UART only — banner prints, STBY low, no motor power
-2. ADC only — rotate by hand, log readings at all five positions
-3. Motor open-loop, uncoupled — direction, `DUTY_MIN`, brake vs coast, stall current
-4. Single step, coupled, from position 3 — measure step time
-5. Approach to a limit — watch for overshoot past reeds 1 and 5
-6. Recovery and homing — park between reeds deliberately, test both limit cases
+1. UART only — banner prints, no motor power.
+2. Potentiometer only — rotate by hand, log readings at all five positions,
+   compare against both station tables in `hardware.md` §0.
+3. Motor open-loop, uncoupled — direction, `DUTY_MIN`, brake vs. coast,
+   stall current.
+4. Single step, coupled — measure actual step time against the current
+   30-second `TIMEOUT_STEP_MS`.
+5. Approach to a limit — watch for overshoot past positions 1 and 5.
+6. Recovery and homing — test explicitly, given the open `RECOVER` question
+   above.
 
-Detail in `agent.md` §13. Pre-power electrical checklist in `hardware.md` §9.
+Full detail in `agent.md`'s Bring-Up Order section.
 
 ---
 
 ## Status
 
-Specification complete; implementation pending. Open items before the firmware
-can be considered commissioned:
+CO₂ sensing, buzzer, and LED indication are confirmed implemented and
+working — not pending, correcting earlier documentation in this project.
+Open items, consolidated in `agent.md` §12:
 
-- [ ] N20 stall current measured at 5 V, confirmed under 1.2 A
-- [ ] Bulk capacitor fitted across VM
-- [ ] ADC readings measured at all five positions, bands confirmed or adjusted
-- [ ] Duty constants tuned on the bench
-- [ ] `TIMEOUT_STEP_MS` and `TIMEOUT_HOME_MS` set from measured times
-- [ ] Recovery direction verified from just outside reed 1 and just outside reed 5
-- [ ] `picotool info` confirms 16 MB flash
+- Flash size unresolved (4 MB per schematic vs. an earlier 16 MB claim).
+- Two safety-relevant behaviors need an explicit decision: auto-home on
+  invalid boot position, and whether direction-aware recovery is needed.
+- `station1_lock`'s trigger source is unconfirmed.
+- N20 stall current not yet measured against the 1.2 A driver limit.
+- `console.c` needs re-fetching to confirm it's current.
 
 ---
 
 ## Notes
 
 The TB6612FNG has no fault output. Thermal shutdown and overcurrent are
-invisible to firmware and will present only as a move timeout. If the system
-faults repeatedly for no apparent reason, measure VM current before suspecting
-the state machine.
+invisible to firmware and present only as a move timeout.
 
-GP4–GP13 and GP16–GP28 are reserved for planned expansion — SD card, audio DAC,
-VC-02 voice module, LEDs. See `agent.md` §9 before allocating any of them.
+**GP4–GP7, GP16, GP18, and GP0 are now allocated** (I²C0, buzzer, LED) —
+not reserved for future expansion as earlier documentation stated. See
+`agent.md` §2.7 for the current complete pin picture.
 
 ---
 
 ## Specification Audit
 
-`validation-report.md` records a full review of the specification set and the
-Codex prompt: 18 findings, all fixed. Nine were build-blocking or
-safety-relevant, including a missing `pico_sdk_init()`, a stdio/raw-UART
-conflict on the console, an absent watchdog, and a floating STBY line before
-firmware runs.
-
-`agent.md` §15 resolves every point that was previously under-specified. Check
-there before concluding something is missing from the spec.
+`validation-report.md` records an earlier full review of the specification
+set: 18 findings, all fixed. `agent-md-discrepancy-report.md` records a
+second, later review specifically covering the reed-switch-to-potentiometer
+transition and everything discovered alongside it — read both for the full
+history of what's changed and why.
