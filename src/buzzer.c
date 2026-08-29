@@ -28,6 +28,16 @@ static uint32_t sequence_start;
 static uint16_t sequence_ms;
 static uint8_t plays_left;
 static bool finite_play;
+static bool tone_active;
+static uint32_t tone_deadline_ms;
+static uint16_t tone_sequence_frequency;
+static uint32_t tone_sequence_duration_ms;
+static uint32_t tone_sequence_pause_ms;
+static uint32_t tone_sequence_deadline_ms;
+static uint8_t tone_sequence_remaining;
+static uint8_t tone_sequence_total;
+static uint8_t tone_sequence_current;
+static bool tone_sequence_pause;
 static uint32_t rng = 0xA5A5A5A5u;
 
 static void buzzer_gpio_off(void) {
@@ -156,10 +166,14 @@ void buzzer_init(void) {
   pwm_config config = pwm_get_default_config();
   pwm_init(buzzer_slice, &config, false);
   enabled = false;
+  tone_active = false;
+  tone_deadline_ms = 0u;
   buzzer_gpio_off();
 }
 
 void buzzer_set(bool on) {
+  tone_active = false;
+  tone_deadline_ms = 0u;
   enabled = on;
   if (!on) {
     buzzer_gpio_off();
@@ -178,11 +192,15 @@ void buzzer_set(bool on) {
 }
 
 void buzzer_play(unsigned int count) {
+  if (tone_active || tone_sequence_remaining || tone_sequence_pause)
+    return;
   if (count < 1u)
     count = 1u;
   if (count > 10u)
     count = 10u;
   enabled = true;
+  tone_active = false;
+  tone_deadline_ms = 0u;
   finite_play = true;
   plays_left = (uint8_t)count;
   gpio_set_function(PIN_BUZZER_BIN1, GPIO_FUNC_PWM);
@@ -195,10 +213,101 @@ void buzzer_play(unsigned int count) {
   applied_index = UINT16_MAX;
 }
 
+void buzzer_tone(uint32_t frequency_hz, uint32_t duration_ms) {
+  if (frequency_hz == 0u || duration_ms == 0u)
+    return;
+  if (frequency_hz > UINT16_MAX)
+    frequency_hz = UINT16_MAX;
+  /* A fixed tone is an exclusive buzzer operation.  Leaving the bird-call
+   * player armed lets buzzer_tick() reclaim the PWM pins as soon as the tone
+   * ends, which corrupts the silent pause and subsequent battery chirps. */
+  enabled = false;
+  finite_play = false;
+  plays_left = 0u;
+  event_count = 0u;
+  event_index = 0u;
+  applied_index = UINT16_MAX;
+  buzzer_apply_frequency((uint16_t)frequency_hz);
+  tone_active = true;
+  tone_deadline_ms = to_ms_since_boot(get_absolute_time()) + duration_ms;
+}
+
+void buzzer_tone_sequence(uint32_t frequency_hz, uint32_t duration_ms,
+                          uint8_t repeat, uint32_t pause_ms) {
+  if (!frequency_hz || !duration_ms || !repeat)
+    return;
+  tone_sequence_frequency =
+      (uint16_t)(frequency_hz > UINT16_MAX ? UINT16_MAX : frequency_hz);
+  tone_sequence_duration_ms = duration_ms;
+  tone_sequence_pause_ms = pause_ms;
+  tone_sequence_remaining = (uint8_t)(repeat - 1u);
+  tone_sequence_total = repeat;
+  tone_sequence_current = 1u;
+  tone_sequence_pause = false;
+  buzzer_tone(tone_sequence_frequency, tone_sequence_duration_ms);
+}
+
+void buzzer_tone_stop(void) {
+  if (tone_active)
+    buzzer_gpio_off();
+  tone_active = false;
+  tone_deadline_ms = 0u;
+  tone_sequence_remaining = 0u;
+  tone_sequence_pause = false;
+  tone_sequence_deadline_ms = 0u;
+  applied_index = UINT16_MAX;
+}
+
+bool buzzer_tone_sequence_active(void) {
+  return tone_active || tone_sequence_pause || tone_sequence_remaining;
+}
+
+void buzzer_tone_sequence_status(uint8_t *current, uint8_t *total,
+                                 bool *paused,
+                                 uint32_t *deadline_remaining_ms) {
+  uint32_t now = to_ms_since_boot(get_absolute_time());
+  uint32_t deadline = tone_sequence_pause ? tone_sequence_deadline_ms
+                                           : tone_deadline_ms;
+  if (current)
+    *current = tone_sequence_current;
+  if (total)
+    *total = tone_sequence_total;
+  if (paused)
+    *paused = tone_sequence_pause;
+  if (deadline_remaining_ms)
+    *deadline_remaining_ms =
+        deadline && (int32_t)(deadline - now) > 0 ? deadline - now : 0u;
+}
+
 void buzzer_tick(void) {
+  uint32_t now = to_ms_since_boot(get_absolute_time());
+  if (tone_active) {
+    if (tone_deadline_ms && (int32_t)(now - tone_deadline_ms) >= 0) {
+      buzzer_gpio_off();
+      tone_active = false;
+      tone_deadline_ms = 0u;
+      applied_index = UINT16_MAX;
+      if (tone_sequence_remaining) {
+        /* Pause begins when the preceding chirp physically stops. */
+        tone_sequence_pause = true;
+        tone_sequence_deadline_ms = now + tone_sequence_pause_ms;
+      }
+    } else {
+      return;
+    }
+  }
+  if (tone_sequence_pause) {
+    if ((int32_t)(now - tone_sequence_deadline_ms) < 0)
+      return;
+    tone_sequence_pause = false;
+    --tone_sequence_remaining;
+    ++tone_sequence_current;
+    /* The next chirp begins only after the complete silent pause. */
+    buzzer_tone(tone_sequence_frequency, tone_sequence_duration_ms);
+    return;
+  }
   if (!enabled)
     return;
-  uint32_t now = to_ms_since_boot(get_absolute_time());
   if (event_count == 0u) {
     sequence_start = now;
     build_bird();
@@ -250,4 +359,4 @@ void buzzer_tick(void) {
   }
 }
 
-bool buzzer_enabled(void) { return enabled; }
+bool buzzer_enabled(void) { return enabled || tone_active; }

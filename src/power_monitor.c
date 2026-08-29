@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "hardware/gpio.h"
+#include "hardware/flash.h"
 #include "hardware/i2c.h"
 #include "hardware/regs/i2c.h"
 #include "hardware/structs/i2c.h"
@@ -9,6 +10,31 @@
 #include "pico/time.h"
 #include <stdio.h>
 #include <string.h>
+
+#define BATTERY_SETTINGS_MAGIC 0x42545431u /* "BTT1" */
+#define BATTERY_SETTINGS_VERSION 3u
+#define BATTERY_SETTINGS_FLASH_OFFSET \
+  (PICO_FLASH_SIZE_BYTES - 2u * FLASH_SECTOR_SIZE)
+
+typedef struct {
+  uint32_t magic;
+  uint16_t version;
+  uint16_t simulated_min_mv;
+  uint16_t simulated_max_mv;
+  uint16_t warning_mv;
+  uint16_t critical_mv;
+  uint16_t chirp_frequency_hz;
+  uint32_t checksum;
+  uint16_t chirp_interval_s;
+  uint8_t chirp_repeat;
+  uint8_t chirp_pause_s;
+  uint8_t chirp_duration_s;
+  uint8_t timing_reserved;
+  uint8_t padding[FLASH_PAGE_SIZE - 26u];
+} battery_settings_record_t;
+
+_Static_assert(sizeof(battery_settings_record_t) == FLASH_PAGE_SIZE,
+               "battery settings record must fill one flash page");
 
 enum { REG_CONFIG, REG_SHUNT, REG_BUS, REG_POWER, REG_CURRENT, REG_CAL };
 typedef enum { IO_IDLE, IO_WRITE, IO_READ } io_kind_t;
@@ -60,10 +86,76 @@ static int32_t move_averages_ua[RUN_CURRENT_DEPTH];
 static uint8_t move_head, move_used;
 static volatile bool simulated;
 static volatile uint16_t simulated_bus_mv;
+static uint16_t simulated_min_mv = BATTERY_SIM_DEFAULT_MIN_MV;
+static uint16_t simulated_max_mv = BATTERY_SIM_DEFAULT_MAX_MV;
+static uint16_t warning_mv = BATTERY_WARN_MV;
+static uint16_t critical_mv = BATTERY_CRITICAL_MV;
+static uint16_t chirp_frequency_hz = BATTERY_ALERT_FREQUENCY_HZ;
+static battery_chirp_timing_t chirp_timing = {
+    BATTERY_CHIRP_INTERVAL_DEFAULT_S, BATTERY_CHIRP_REPEAT_DEFAULT,
+    BATTERY_CHIRP_PAUSE_DEFAULT_S, BATTERY_CHIRP_DURATION_DEFAULT_S};
+static bool settings_loaded_from_flash;
 static notable_t events[EVENT_LOG_DEPTH];
 static uint8_t event_head, event_used;
 
 static uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
+
+static uint32_t battery_settings_checksum(const battery_settings_record_t *r) {
+  uint32_t checksum = r->magic ^ r->version ^ r->simulated_min_mv ^
+                      r->simulated_max_mv ^ r->warning_mv ^ r->critical_mv;
+  if (r->version >= 2u)
+    checksum ^= r->chirp_frequency_hz;
+  if (r->version >= 3u)
+    checksum ^= r->chirp_interval_s ^ r->chirp_repeat ^ r->chirp_pause_s ^
+                r->chirp_duration_s;
+  return checksum;
+}
+
+static bool battery_settings_valid(const battery_settings_record_t *r) {
+  return r->magic == BATTERY_SETTINGS_MAGIC &&
+         r->version >= 1u && r->version <= BATTERY_SETTINGS_VERSION &&
+         r->checksum == battery_settings_checksum(r) &&
+         r->simulated_min_mv >= BATTERY_SIM_RANGE_MIN_MV &&
+         r->simulated_max_mv <= BATTERY_SIM_RANGE_MAX_MV &&
+         r->simulated_min_mv < r->simulated_max_mv &&
+         r->warning_mv >= BATTERY_WARNING_MIN_MV &&
+         r->warning_mv <= BATTERY_WARNING_MAX_MV &&
+         r->critical_mv >= BATTERY_CRITICAL_MIN_MV &&
+         r->critical_mv <= BATTERY_CRITICAL_MAX_MV &&
+         (r->version == 1u ||
+          (r->chirp_frequency_hz >= BATTERY_ALERT_FREQUENCY_MIN_HZ &&
+           r->chirp_frequency_hz <= BATTERY_ALERT_FREQUENCY_MAX_HZ)) &&
+         (r->version < 3u ||
+          (r->chirp_interval_s >= BATTERY_CHIRP_INTERVAL_MIN_S &&
+           r->chirp_interval_s <= BATTERY_CHIRP_INTERVAL_MAX_S &&
+           r->chirp_repeat >= BATTERY_CHIRP_REPEAT_MIN &&
+           r->chirp_repeat <= BATTERY_CHIRP_REPEAT_MAX &&
+           r->chirp_pause_s >= BATTERY_CHIRP_PAUSE_MIN_S &&
+           r->chirp_pause_s <= BATTERY_CHIRP_PAUSE_MAX_S &&
+           r->chirp_duration_s >= BATTERY_CHIRP_DURATION_MIN_S &&
+           r->chirp_duration_s <= BATTERY_CHIRP_DURATION_MAX_S));
+}
+
+static void battery_settings_load(void) {
+  const battery_settings_record_t *record =
+      (const battery_settings_record_t *)(XIP_BASE +
+                                          BATTERY_SETTINGS_FLASH_OFFSET);
+  settings_loaded_from_flash = battery_settings_valid(record);
+  if (!settings_loaded_from_flash)
+    return;
+  simulated_min_mv = record->simulated_min_mv;
+  simulated_max_mv = record->simulated_max_mv;
+  warning_mv = record->warning_mv;
+  critical_mv = record->critical_mv;
+  chirp_frequency_hz = record->version >= 2u ? record->chirp_frequency_hz
+                                             : BATTERY_ALERT_FREQUENCY_HZ;
+  if (record->version >= 3u) {
+    chirp_timing.interval_s = record->chirp_interval_s;
+    chirp_timing.repeat = record->chirp_repeat;
+    chirp_timing.pause_s = record->chirp_pause_s;
+    chirp_timing.duration_s = record->chirp_duration_s;
+  }
+}
 
 /* 0.04096 / (100 uA * 0.1 ohm) = 4096.  Keep the operands visible so a
  * shunt or resolution change cannot silently leave a stale magic value. */
@@ -183,6 +275,7 @@ static void publish_sample(void) {
 }
 
 void power_monitor_init(void) {
+  battery_settings_load();
   memset((void *)&published, 0, sizeof published);
   memset(&working, 0, sizeof working);
   i2c_init(i2c0, I2C_BAUD);
@@ -344,7 +437,7 @@ void power_monitor_snapshot(power_sample_t *out) {
 }
 
 bool power_monitor_sim_set(bool enabled, uint16_t bus_mv) {
-  if (enabled && (bus_mv < 3900u || bus_mv > 4500u))
+  if (enabled && (bus_mv < simulated_min_mv || bus_mv > simulated_max_mv))
     return false;
   simulated_bus_mv = bus_mv;
   simulated = enabled;
@@ -352,6 +445,104 @@ bool power_monitor_sim_set(bool enabled, uint16_t bus_mv) {
 }
 
 bool power_monitor_sim_active(void) { return simulated; }
+
+bool power_monitor_sim_range_set(uint16_t minimum_mv, uint16_t maximum_mv) {
+  if (minimum_mv < BATTERY_SIM_RANGE_MIN_MV ||
+      maximum_mv > BATTERY_SIM_RANGE_MAX_MV || minimum_mv >= maximum_mv)
+    return false;
+  simulated_min_mv = minimum_mv;
+  simulated_max_mv = maximum_mv;
+  if (simulated && (simulated_bus_mv < minimum_mv ||
+                    simulated_bus_mv > maximum_mv))
+    simulated = false;
+  return true;
+}
+
+void power_monitor_sim_range_get(uint16_t *minimum_mv, uint16_t *maximum_mv) {
+  if (minimum_mv)
+    *minimum_mv = simulated_min_mv;
+  if (maximum_mv)
+    *maximum_mv = simulated_max_mv;
+}
+
+bool power_monitor_warning_set(uint16_t value_mv) {
+  if (value_mv < BATTERY_WARNING_MIN_MV || value_mv > BATTERY_WARNING_MAX_MV)
+    return false;
+  warning_mv = value_mv;
+  return true;
+}
+
+uint16_t power_monitor_warning_mv(void) { return warning_mv; }
+
+bool power_monitor_critical_set(uint16_t value_mv) {
+  if (value_mv < BATTERY_CRITICAL_MIN_MV ||
+      value_mv > BATTERY_CRITICAL_MAX_MV)
+    return false;
+  critical_mv = value_mv;
+  return true;
+}
+
+uint16_t power_monitor_critical_mv(void) { return critical_mv; }
+
+bool power_monitor_chirp_frequency_set(uint16_t frequency_hz) {
+  if (frequency_hz < BATTERY_ALERT_FREQUENCY_MIN_HZ ||
+      frequency_hz > BATTERY_ALERT_FREQUENCY_MAX_HZ)
+    return false;
+  chirp_frequency_hz = frequency_hz;
+  return true;
+}
+
+uint16_t power_monitor_chirp_frequency_hz(void) {
+  return chirp_frequency_hz;
+}
+
+bool power_monitor_chirp_timing_set(const battery_chirp_timing_t *timing) {
+  if (!timing || timing->interval_s < BATTERY_CHIRP_INTERVAL_MIN_S ||
+      timing->interval_s > BATTERY_CHIRP_INTERVAL_MAX_S ||
+      timing->repeat < BATTERY_CHIRP_REPEAT_MIN ||
+      timing->repeat > BATTERY_CHIRP_REPEAT_MAX ||
+      timing->pause_s < BATTERY_CHIRP_PAUSE_MIN_S ||
+      timing->pause_s > BATTERY_CHIRP_PAUSE_MAX_S ||
+      timing->duration_s < BATTERY_CHIRP_DURATION_MIN_S ||
+      timing->duration_s > BATTERY_CHIRP_DURATION_MAX_S)
+    return false;
+  chirp_timing = *timing;
+  return true;
+}
+
+void power_monitor_chirp_timing_get(battery_chirp_timing_t *timing) {
+  if (timing)
+    *timing = chirp_timing;
+}
+
+bool power_monitor_settings_save(void) {
+  battery_settings_record_t record;
+  memset(&record, 0xff, sizeof record);
+  record.magic = BATTERY_SETTINGS_MAGIC;
+  record.version = BATTERY_SETTINGS_VERSION;
+  record.simulated_min_mv = simulated_min_mv;
+  record.simulated_max_mv = simulated_max_mv;
+  record.warning_mv = warning_mv;
+  record.critical_mv = critical_mv;
+  record.chirp_frequency_hz = chirp_frequency_hz;
+  record.chirp_interval_s = chirp_timing.interval_s;
+  record.chirp_repeat = chirp_timing.repeat;
+  record.chirp_pause_s = chirp_timing.pause_s;
+  record.chirp_duration_s = chirp_timing.duration_s;
+  record.timing_reserved = 0u;
+  record.checksum = battery_settings_checksum(&record);
+  uint32_t irq_state = save_and_disable_interrupts();
+  flash_range_erase(BATTERY_SETTINGS_FLASH_OFFSET, FLASH_SECTOR_SIZE);
+  flash_range_program(BATTERY_SETTINGS_FLASH_OFFSET,
+                      (const uint8_t *)&record, sizeof record);
+  restore_interrupts(irq_state);
+  settings_loaded_from_flash = true;
+  return true;
+}
+
+bool power_monitor_settings_from_flash(void) {
+  return settings_loaded_from_flash;
+}
 
 static unsigned soc_percent(uint32_t mv) {
   static const uint16_t volts[] = {4000, 4200, 4400, 4800, 5200, 5600, 6000, 6400};
@@ -480,12 +671,12 @@ void power_monitor_format_ina(char *out, size_t size) {
            INA219_POWER_DOWN_CONFIG);
 }
 
-void power_monitor_format_menu(char lines[6][81]) {
+void power_monitor_format_menu(char lines[9][81]) {
   power_sample_t s;
   power_monitor_snapshot(&s);
   const char *battery_state = !s.valid ? "NO DATA"
-                              : s.bus_mv < BATTERY_CRITICAL_MV ? "CRITICAL"
-                              : s.bus_mv < BATTERY_WARN_MV ? "WARNING"
+                              : s.bus_mv < critical_mv ? "CRITICAL"
+                              : s.bus_mv < warning_mv ? "WARNING"
                                                          : "NORMAL";
   uint32_t elapsed = now_ms() - session_start_ms;
   uint32_t consumed_uah = (uint32_t)(measured_uas / 3600u);
@@ -515,6 +706,21 @@ void power_monitor_format_menu(char lines[6][81]) {
            (unsigned long)((elapsed / 60000u) % 60u), (long)(peak_ua / 1000),
            (long)((peak_ua < 0 ? -peak_ua : peak_ua) % 1000 / 100));
   snprintf(lines[5], 81,
+           "  LIMITS   warning <%u.%03u V  critical <%u.%03u V  chirp %u Hz",
+           warning_mv / 1000u, warning_mv % 1000u,
+           critical_mv / 1000u, critical_mv % 1000u,
+           chirp_frequency_hz);
+  snprintf(lines[6], 81,
+           "  SIM      range %u.%03u-%u.%03u V  active %s  defaults %s",
+           simulated_min_mv / 1000u, simulated_min_mv % 1000u,
+           simulated_max_mv / 1000u, simulated_max_mv % 1000u,
+           simulated ? "yes" : "no",
+           settings_loaded_from_flash ? "flash" : "compiled");
+  snprintf(lines[7], 81,
+           "  CHIRP    %u Hz  time i=%u sec. r=%u p=%u sec. d=%u sec.",
+           chirp_frequency_hz, chirp_timing.interval_s, chirp_timing.repeat,
+           chirp_timing.pause_s, chirp_timing.duration_s);
+  snprintf(lines[8], 81,
            "  MODEL    sleep %s; resistance/runtime unavailable; since boot",
            SLEEP_CURRENT_UA ? "compiled (not INA measured)" : "not measured");
 }

@@ -441,7 +441,7 @@ static void result(const char *command, const char *outcome,
              (unsigned long)((seconds / 60u) % 60u),
              (unsigned long)(seconds % 60u), command, message);
     /* Insert at the top; the terminal shifts older results down one row. */
-    dbg_out_push("\033[s\033[24;1H\033[L");
+    dbg_out_push("\033[s\033[25;1H\033[L");
     dbg_out_push(line);
     dbg_out_push("\033[K\033[u");
   }
@@ -600,10 +600,10 @@ void dbg_fields_refresh(void) {
            CFG_LOW_ENDSTOP_ADC, CFG_HIGH_ENDSTOP_ADC, guidance(adc));
   if (ui_page == 3u)
     field(5, line);
-  char power_lines[6][81];
+  char power_lines[9][81];
   power_monitor_format_menu(power_lines);
   if (ui_page == 4u)
-    for (uint8_t i = 0u; i < 6u; ++i)
+    for (uint8_t i = 0u; i < 9u; ++i)
       field((uint8_t)(3u + i), power_lines[i]);
 }
 
@@ -621,13 +621,13 @@ static void command_line_draw(void) {
      * periodic fixed-screen traffic until after Enter, making typed text
      * invisible even though the command buffer is correct. */
     dbg_out_drain();
-    uart_puts(uart1, "\033[23;1H");
+    uart_puts(uart1, "\033[24;1H");
     uart_puts(uart1, line);
     uart_puts(uart1, "\033[K");
     return;
   }
   char position[20];
-  snprintf(position, sizeof position, "\033[s\033[23;1H");
+  snprintf(position, sizeof position, "\033[s\033[24;1H");
   dbg_out_push(position);
   dbg_out_push(line);
   dbg_out_push("\033[K\033[u");
@@ -657,7 +657,7 @@ static bool status_frame_complete(void) {
   if (ui_page == 6u)
     return true;
   {
-    uint8_t last = ui_page == 4u ? 8u : (ui_page == 5u ? 20u : 5u);
+    uint8_t last = ui_page == 4u ? 11u : (ui_page == 5u ? 20u : 5u);
     for (uint8_t row = 3u; row <= last; ++row)
       if (!status_shadow[row - 1u][0])
         return false;
@@ -668,12 +668,12 @@ static bool status_frame_complete(void) {
 static void frame_continue(void) {
   static const uint8_t rows[] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
                                  12, 13, 14, 15, 16, 17, 18, 19,
-                                 20, 21, 22, 23};
+                                 20, 21, 22, 23, 24};
   static const char *const command_rows[][4] = {
       {"a) batt", "a1) help batt", "b) batt raw", "b1) help batt raw"},
        {"c) batt res", "c1) help batt res", "d) batt log", "d1) help batt log"},
        {"e) batt events", "e1) help batt events", "f) batt reset", "f1) help batt reset"},
-       {"g) batt sim", "g1) help batt sim", "h) load", "h1) help load"},
+       {"g) batt sim", "g1) help batt sim", "P) batt chirp", "P1) help batt chirp"},
        {"i) ina", "i1) help ina", "j) adc", "j1) help adc"},
        {"k) angle", "k1) help angle", "l) status", "l1) help status"},
        {"m) stations", "m1) help stations", "n) limits", "n1) help limits"},
@@ -687,8 +687,10 @@ static void frame_continue(void) {
        {"C) save", "C1) help save", "D) export", "D1) help export"},
        {"E) arm", "E1) help arm", "F) drive", "F1) help drive"},
        {"G) disarm", "G1) help disarm", "H) page", "H1) help page"},
-       {"I) clean", "I1) help clean", "J) help", "J1) help help"},
-       {"K) exit", "K1) help exit", "L) led", "L1) help led"}};
+       {"O) batt sim critical", "O1) help batt sim critical", "", ""},
+       {"K) exit", "K1) help exit", "L) led", "L1) help led"},
+       {"M) batt sim range", "M1) help sim range", "N) batt sim warn", "N1) help sim warn"},
+       {"Q) batt chirp time", "Q1) help batt chirp time", "", ""}};
   char piece[288];
   if (!frame_phase || out_free() < sizeof piece)
     return;
@@ -708,12 +710,21 @@ static void frame_continue(void) {
     } else if (ui_page == 6u && item >= 1u &&
                item <= sizeof command_rows / sizeof command_rows[0]) {
       /* Keep the complete row below 80 columns.  A wrapped command-index row
-       * would overwrite the fixed Command > line on row 23. */
-      snprintf(content, sizeof content, "  %-18.18s %-18.18s %-18.18s %-18.18s",
-               command_rows[item - 1u][0], command_rows[item - 1u][1],
-               command_rows[item - 1u][2], command_rows[item - 1u][3]);
+       * would overwrite the fixed Command > line on row 24. */
+      if (item == 4u)
+        snprintf(content, sizeof content, "  %-14.14s %-20.20s %-15.15s %-21.21s",
+                 command_rows[item - 1u][0], command_rows[item - 1u][1],
+                 command_rows[item - 1u][2], command_rows[item - 1u][3]);
+      else if (item == 18u ||
+               item == sizeof command_rows / sizeof command_rows[0])
+        snprintf(content, sizeof content, "  %-37.37s %-37.37s",
+                 command_rows[item - 1u][0], command_rows[item - 1u][1]);
+      else
+        snprintf(content, sizeof content, "  %-18.18s %-18.18s %-18.18s %-18.18s",
+                 command_rows[item - 1u][0], command_rows[item - 1u][1],
+                 command_rows[item - 1u][2], command_rows[item - 1u][3]);
     } else if (ui_page == 6u &&
-               item == sizeof command_rows / sizeof command_rows[0] + 2u) {
+               item == sizeof command_rows / sizeof command_rows[0] + 1u) {
       const char *shown = page6_holds_last_input && !input_len
                               ? page6_last_input
                               : input;
@@ -732,7 +743,7 @@ static void frame_continue(void) {
     return;
   }
   /* Scrolling setup is the final sequence of the frame draw. */
-  snprintf(piece, sizeof piece, "\033[24;%ur\033[24;1H",
+  snprintf(piece, sizeof piece, "\033[25;%ur\033[25;1H",
            DEBUG_SCREEN_BOTTOM_ROW);
   dbg_out_push(piece);
   frame_bytes_last = frame_bytes_current;
@@ -750,6 +761,147 @@ static bool parse_long(const char *text, long *value) {
   while (isspace((unsigned char)*end))
     ++end;
   return *end == '\0';
+}
+
+static bool parse_voltage_range(const char *text, uint16_t *minimum_mv,
+                                uint16_t *maximum_mv) {
+  char *end;
+  double minimum = strtod(text, &end);
+  if (end == text)
+    return false;
+  while (isspace((unsigned char)*end))
+    ++end;
+  if (*end++ != '-')
+    return false;
+  while (isspace((unsigned char)*end))
+    ++end;
+  char *maximum_end;
+  double maximum = strtod(end, &maximum_end);
+  if (maximum_end == end)
+    return false;
+  while (isspace((unsigned char)*maximum_end))
+    ++maximum_end;
+  if (*maximum_end == 'v' || *maximum_end == 'V')
+    ++maximum_end;
+  while (isspace((unsigned char)*maximum_end))
+    ++maximum_end;
+  if (*maximum_end ||
+      !(minimum >= 1.0 && maximum <= 6.0 && minimum < maximum))
+    return false;
+  *minimum_mv = (uint16_t)(minimum * 1000.0 + 0.5);
+  *maximum_mv = (uint16_t)(maximum * 1000.0 + 0.5);
+  return true;
+}
+
+static bool parse_battery_threshold(const char *text, double minimum,
+                                    double maximum, uint16_t *threshold_mv) {
+  while (isspace((unsigned char)*text))
+    ++text;
+  if (*text == '<') {
+    ++text;
+    while (isspace((unsigned char)*text))
+      ++text;
+  }
+  char *end;
+  double volts = strtod(text, &end);
+  if (end == text)
+    return false;
+  while (isspace((unsigned char)*end))
+    ++end;
+  if (*end == 'v' || *end == 'V')
+    ++end;
+  while (isspace((unsigned char)*end))
+    ++end;
+  if (*end || !(volts >= minimum && volts <= maximum))
+    return false;
+  *threshold_mv = (uint16_t)(volts * 1000.0 + 0.5);
+  return true;
+}
+
+static bool take_save_suffix(char *text) {
+  size_t length = strlen(text);
+  while (length && isspace((unsigned char)text[length - 1u]))
+    text[--length] = '\0';
+  if (length < 2u || text[length - 2u] != '/' || text[length - 1u] != 's' ||
+      (length > 2u && !isspace((unsigned char)text[length - 3u])))
+    return false;
+  length -= 2u;
+  while (length && isspace((unsigned char)text[length - 1u]))
+    --length;
+  text[length] = '\0';
+  return true;
+}
+
+static bool parse_chirp_frequency(const char *text, uint16_t *frequency_hz) {
+  char *end;
+  double frequency_khz = strtod(text, &end);
+  if (end == text)
+    return false;
+  while (isspace((unsigned char)*end))
+    ++end;
+  if (strncmp(end, "khz", 3u))
+    return false;
+  end += 3u;
+  while (isspace((unsigned char)*end))
+    ++end;
+  if (*end || !(frequency_khz >= 0.1 && frequency_khz <= 10.0))
+    return false;
+  *frequency_hz = (uint16_t)(frequency_khz * 1000.0 + 0.5);
+  return true;
+}
+
+static void parse_chirp_timing(char *text, battery_chirp_timing_t *timing,
+                               bool *defaults_used) {
+  *timing = (battery_chirp_timing_t){
+      BATTERY_CHIRP_INTERVAL_DEFAULT_S, BATTERY_CHIRP_REPEAT_DEFAULT,
+      BATTERY_CHIRP_PAUSE_DEFAULT_S, BATTERY_CHIRP_DURATION_DEFAULT_S};
+  uint8_t seen = 0u;
+  bool invalid = false;
+  char *save;
+  for (char *token = strtok_r(text, " \t", &save); token;
+       token = strtok_r(NULL, " \t", &save)) {
+    if (strlen(token) < 3u || token[1] != '=') {
+      invalid = true;
+      continue;
+    }
+    long value;
+    if (!parse_long(token + 2u, &value)) {
+      invalid = true;
+      continue;
+    }
+    if (token[0] == 'i') {
+      seen |= 1u;
+      if (value >= (long)BATTERY_CHIRP_INTERVAL_MIN_S &&
+          value <= (long)BATTERY_CHIRP_INTERVAL_MAX_S)
+        timing->interval_s = (uint16_t)value;
+      else
+        invalid = true;
+    } else if (token[0] == 'r') {
+      seen |= 2u;
+      if (value >= (long)BATTERY_CHIRP_REPEAT_MIN &&
+          value <= (long)BATTERY_CHIRP_REPEAT_MAX)
+        timing->repeat = (uint8_t)value;
+      else
+        invalid = true;
+    } else if (token[0] == 'p') {
+      seen |= 4u;
+      if (value >= (long)BATTERY_CHIRP_PAUSE_MIN_S &&
+          value <= (long)BATTERY_CHIRP_PAUSE_MAX_S)
+        timing->pause_s = (uint8_t)value;
+      else
+        invalid = true;
+    } else if (token[0] == 'd') {
+      seen |= 8u;
+      if (value >= (long)BATTERY_CHIRP_DURATION_MIN_S &&
+          value <= (long)BATTERY_CHIRP_DURATION_MAX_S)
+        timing->duration_s = (uint8_t)value;
+      else
+        invalid = true;
+    } else {
+      invalid = true;
+    }
+  }
+  *defaults_used = invalid || seen != 0x0fu;
 }
 
 static void remember_pending(pending_t kind, const char *command) {
@@ -1301,8 +1453,8 @@ static const help_entry_t help_entries[] = {
      "Requires arm; direction is fwd or rev."},
     {"findmin", "findmin", "requires arm",
      "Tests for the lowest duty that produces motion."},
-    {"batt", "batt sim 4.3 | batt sim off", "raw, res, log, events, reset, sim <3.9..4.5>, sim off, or off",
-     "batt off and batt sim off restore physical INA219 voltage; batt sim <volts> enables simulation."},
+    {"batt", "batt sim 4.3 | batt sim range 1.5-5.5 V", "raw, res, log, events, reset, sim, sim range, or off",
+     "Set/query the simulation range, simulate a voltage, or restore physical INA219 voltage."},
     {"batt raw", "batt raw", "no additional arguments; read-only",
      "Reports physical INA219 bus, shunt, current and power registers plus overflow."},
     {"batt res", "batt res", "no additional arguments; read-only",
@@ -1313,8 +1465,18 @@ static const help_entry_t help_entries[] = {
      "Lists the retained battery peak, minimum-voltage and diagnostic events."},
     {"batt reset", "batt reset", "no additional arguments",
      "Clears battery session counters and events without changing calibration."},
-    {"batt sim", "batt sim 4.3 | batt sim off", "3.9 to 4.5 V, or off",
-     "Overrides voltage for SOC and LED-alarm testing; raw registers remain physical."},
+    {"batt sim", "batt sim range 1.5-5.5 V /s | batt sim 4.3 | batt sim off", "selectable range within 1.0 to 6.0 V, or off",
+     "Overrides voltage for SOC and alarms; /s persists range and thresholds as defaults."},
+    {"batt sim range", "batt sim range 1.50-5.5 V /s", "minimum-maximum within 1.000 to 6.000 V; optional /s",
+     "Sets the accepted simulation range; /s saves all battery settings to flash."},
+    {"batt sim warning", "batt sim warning <2.400 V /s", "threshold from 1.400 to 5.400 V; optional /s",
+     "Sets the low-battery warning threshold; /s saves all battery settings to flash."},
+    {"batt sim critical", "batt sim critical <3.300 V /s", "threshold from 2.200 to 5.900 V; optional /s",
+     "Sets the critical threshold; /s saves all battery settings to flash."},
+    {"batt chirp", "batt chirp 3.50 kHz /s", "0.10 to 10.00 kHz; optional /s",
+     "Sets the tone used by the repeating critical-battery audible alert."},
+    {"batt chirp time", "batt chirp i=30 r=2 p=5 d=2 /s", "i=1..3600, r=1..10, p=1..10, d=1..5 seconds; optional /s",
+     "Configures the timing and repetition of the critical-battery chirp sequence."},
     {"load", "load", "read-only",
      "Inrush is a sampled lower bound; bench thresholds remain disabled until measured."},
     {"ina", "ina", "read-only",
@@ -1405,11 +1567,20 @@ static const help_entry_t *help_detail(const char *word) {
 
 static void help_description(const help_entry_t *entry, char *text,
                              size_t size) {
-  if (!strcmp(entry->name, "batt") || !strcmp(entry->name, "batt sim")) {
+  if (!strcmp(entry->name, "batt") || !strcmp(entry->name, "batt sim") ||
+      !strcmp(entry->name, "batt sim range") ||
+      !strcmp(entry->name, "batt sim warning") ||
+      !strcmp(entry->name, "batt sim critical")) {
+    uint16_t minimum_mv, maximum_mv;
+    power_monitor_sim_range_get(&minimum_mv, &maximum_mv);
     snprintf(text, size,
-             "simulation 3.9-4.5 V; warning below %u.%03u V; critical below %u.%03u V",
-             BATTERY_WARN_MV / 1000u, BATTERY_WARN_MV % 1000u,
-             BATTERY_CRITICAL_MV / 1000u, BATTERY_CRITICAL_MV % 1000u);
+             "simulation %u.%03u-%u.%03u V (absolute 1.000-6.000 V); warning <%u.%03u V; critical <%u.%03u V",
+             minimum_mv / 1000u, minimum_mv % 1000u,
+             maximum_mv / 1000u, maximum_mv % 1000u,
+             power_monitor_warning_mv() / 1000u,
+             power_monitor_warning_mv() % 1000u,
+             power_monitor_critical_mv() / 1000u,
+             power_monitor_critical_mv() % 1000u);
   } else if (!strcmp(entry->name, "batt res")) {
     snprintf(text, size, "minimum %u wake samples; fresh-pack reference %s",
              RPACK_MIN_SAMPLES,
@@ -1431,8 +1602,10 @@ static void help_description(const help_entry_t *entry, char *text,
   } else if (!strcmp(entry->name, "led")) {
     snprintf(text, size,
              "GP0 switches LED power; GP18 carries data; battery warning below %u.%03u V, critical below %u.%03u V",
-             BATTERY_WARN_MV / 1000u, BATTERY_WARN_MV % 1000u,
-             BATTERY_CRITICAL_MV / 1000u, BATTERY_CRITICAL_MV % 1000u);
+             power_monitor_warning_mv() / 1000u,
+             power_monitor_warning_mv() % 1000u,
+             power_monitor_critical_mv() / 1000u,
+             power_monitor_critical_mv() % 1000u);
   } else if (!strcmp(entry->name, "lowendstop")) {
     snprintf(text, size,
              "active low end-stop %u; accepted range 0..%u, must remain below station 1 (%u) and the high end-stop",
@@ -1537,6 +1710,72 @@ static void help_led_detail(const char *original) {
   result(original, "complete", "");
 }
 
+static void help_batt_chirp_detail(const char *original) {
+  static const struct {
+    const char *label;
+    const char *text;
+  } lines[] = {
+      {"Syntax", "batt chirp [<frequency> kHz] [/s]"},
+      {"Range", "0.10 to 10.00 kHz (100 to 10000 Hz)"},
+      {"Status", "batt chirp - report the active chirp frequency and default source"},
+      {"Set RAM", "batt chirp 3.50 kHz - use 3.5 kHz until reboot"},
+      {"Save flash", "batt chirp 3.50 kHz /s - save it as the power-on default"},
+      {"Trigger", "Sounds only while a valid battery reading is below the critical threshold"},
+      {"Timing", "Use help batt chirp time to configure sequence interval, repeat, pause, and duration"},
+      {"Recovery", "Stops immediately when voltage is no longer critical; no boundary chirp"},
+      {"Independence", "Audible alert remains active regardless of LED auto/on/off/raw mode"},
+      {"Persistence", "/s saves range, warning, critical, and chirp defaults together"},
+      {"Default", "Compiled default is 2.700 kHz when no valid flash record exists"},
+      {"Examples", "batt chirp | batt chirp 0.10 kHz | batt chirp 10.00 kHz /s"}};
+  for (size_t i = sizeof lines / sizeof lines[0]; i-- > 0;)
+    result(lines[i].label, "complete", lines[i].text);
+  result(original, "complete", "");
+}
+
+static void help_batt_chirp_time_detail(const char *original) {
+  static const struct {
+    const char *label;
+    const char *text;
+  } lines[] = {
+      {"", "================================================================================"},
+      {"", "BATTERY CHIRP TIMING CONFIGURATION - DEBUG MENU"},
+      {"", "================================================================================"},
+      {"Command", "batt chirp i=<interval> r=<repeat> p=<pause> d=<duration> [/s]"},
+      {"Description", "Configures the audible sequence triggered below the battery-critical threshold."},
+      {"Units", "All interval, pause, and duration values are in seconds."},
+      {"i=<interval>", "Seconds between the START of sequences; range 1-3600; default 30."},
+      {"", "Example i=30: a new sequence is scheduled every 30 seconds."},
+      {"r=<repeat>", "Number of individual chirps in each sequence; range 1-10; default 2."},
+      {"", "Example r=2: every sequence contains two chirps."},
+      {"p=<pause>", "Seconds of silence between individual chirps; range 1-10; default 5."},
+      {"", "The pause starts when one chirp ends and finishes when the next chirp starts."},
+      {"", "There are r-1 pauses; pause is irrelevant when repeat is one."},
+      {"d=<duration>", "Length of every individual chirp; range 1-5 seconds; default 3."},
+      {"/s", "Saves range, warning, critical, frequency, and timing defaults to flash."},
+      {"Example 1", "batt chirp i=30 r=2 p=5 d=2"},
+      {"", "Every 30 s: two 2 s chirps separated by 5 s of silence."},
+      {"Formula", "Sequence duration = (d * r) + (p * (r - 1))."},
+      {"Remainder", "Silence after a sequence = i - sequence duration, when the result is positive."},
+      {"Timeline", "For i=30 r=2 p=5 d=3: chirp 0-3, pause 3-8, chirp 8-11, silence 11-30."},
+      {"Example 2", "batt chirp i=10 r=3 p=2 d=1"},
+      {"", "Every 10 s: three 1 s chirps with 2 s silence between chirps."},
+      {"Example 3", "batt chirp i=60 r=1 p=10 d=4"},
+      {"", "Every 60 s: one 4 s chirp; pause is unused."},
+      {"Example 4", "batt chirp i=120 r=1 p=1 d=5 /s"},
+      {"", "Every 2 minutes: one 5 s chirp, saved as the power-on default."},
+      {"Validation", "Invalid or missing fields use defaults: i=30 r=2 p=5 d=3."},
+      {"", "Example: i=0 r=0 p=0 d=0 becomes i=30 r=2 p=5 d=3."},
+      {"Immediate", "Changes take effect immediately; an active critical sequence restarts."},
+      {"Recovery", "All chirps stop immediately when the battery is no longer critical."},
+      {"Scheduling", "Sequences never overlap; an overdue sequence starts after the prior one finishes."},
+      {"Reset RAM", "batt chirp i=30 r=2 p=5 d=3"},
+      {"Status", "batt chirp time - report current interval, repeat, pause, duration, and source."},
+      {"", "================================================================================"}};
+  for (size_t i = sizeof lines / sizeof lines[0]; i-- > 0;)
+    result(lines[i].label, "complete", lines[i].text);
+  result(original, "complete", "");
+}
+
 static void submit(char *typed) {
   char original[DEBUG_COMMAND_MAX + 1u], candidates[96], *arg, *word, *save;
   long value;
@@ -1546,18 +1785,18 @@ static void submit(char *typed) {
   strncpy(original, typed, sizeof original);
   original[sizeof original - 1u] = '\0';
   /* Page-6 aliases are a compact command vocabulary. Preserve case here so
-     A-L can address the commands that follow the lower-case aliases. */
+     A-Q can address the commands that follow the lower-case aliases. */
   {
     char *p = typed;
     const char *alias = NULL;
     char key = *p++;
-    bool upper = key >= 'A' && key <= 'L';
+    bool upper = key >= 'A' && key <= 'Q';
     bool help_alias = *p == '1';
     if (help_alias)
       ++p;
     if ((upper || (key >= 'a' && key <= 'z')) && (!*p || isspace((unsigned char)*p))) {
       if (upper) {
-        static const char *const aliases[] = {"highendstop", "sel", "save", "export", "arm", "drive", "disarm", "page", "clean", "help", "exit", "led"};
+        static const char *const aliases[] = {"highendstop", "sel", "save", "export", "arm", "drive", "disarm", "page", "clean", "help", "exit", "led", "batt sim range", "batt sim warning", "batt sim critical", "batt chirp", "batt chirp time"};
         alias = aliases[key - 'A'];
       } else {
         static const char *const aliases[] = {"batt", "batt raw", "batt res", "batt log", "batt events", "batt reset", "batt sim", "load", "ina", "adc", "angle", "status", "stations", "limits", "cfg", "lowendstop", "jog", "step", "pos", "move", "goto", "home", "stop", "buzzer", "cal sim", "cal motor"};
@@ -1697,11 +1936,13 @@ static void submit(char *typed) {
           help_pos_detail(original, entry);
         } else if (!strcmp(entry->name, "led")) {
           help_led_detail(original);
+        } else if (!strcmp(entry->name, "batt chirp")) {
+          help_batt_chirp_detail(original);
+        } else if (!strcmp(entry->name, "batt chirp time")) {
+          help_batt_chirp_time_detail(original);
         } else {
           char example[96], description[160];
-          const char *example_command = !strcmp(entry->name, "batt sim")
-                                            ? "batt sim 4.3"
-                                            : entry->example;
+          const char *example_command = entry->example;
           snprintf(example, sizeof example, "Command > %s", example_command);
           help_description(entry, description, sizeof description);
           result("Example", "complete", example);
@@ -1709,7 +1950,9 @@ static void submit(char *typed) {
           result("Syntax", "complete", entry->example);
           result("Purpose", "complete", entry->notes);
           result("Operational notes", "complete",
-                 "Debug-only diagnostic interface; command effects are RAM-only unless explicitly stated.");
+                 !strncmp(entry->name, "batt sim", 8u)
+                     ? "Without /s the setting is RAM-only; append /s to save all battery defaults in flash."
+                     : "Debug-only diagnostic interface; command effects are RAM-only unless explicitly stated.");
           result(original, "complete", entry->name);
         }
       } else if (!help_setting(arg, original)) {
@@ -1732,7 +1975,11 @@ static void submit(char *typed) {
     char d[768];
     if (arg && !strcmp(arg, "help")) {
       result(original, "complete", "batt | batt raw | batt res | batt log | batt events | batt reset");
-      result("", "complete", "batt sim <3.9..4.5> | batt sim off | batt off");
+      result("", "complete", "append /s to range, warning, critical, or chirp to save flash defaults");
+      result("", "complete", "batt sim range <1.0-6.0 V> | batt sim warning <1.4-5.4 V>");
+      result("", "complete", "batt sim critical <2.2-5.9 V> | batt sim <volts> | batt sim off");
+      result("", "complete", "batt chirp <0.10-10.00 kHz> [/s]");
+      result("", "complete", "batt chirp time i=<1-3600> r=<1-10> p=<1-10> d=<1-5> [/s]");
       return;
     } else if (!arg)
       power_monitor_format_batt(d, sizeof d);
@@ -1750,18 +1997,143 @@ static void submit(char *typed) {
     } else if (!strcmp(arg, "off") || !strcmp(arg, "sim off")) {
       (void)power_monitor_sim_set(false, 0u);
       snprintf(d, sizeof d, "battery simulation off; using INA219 voltage");
+    } else if (!strcmp(arg, "chirp time")) {
+      battery_chirp_timing_t timing;
+      uint8_t current, total;
+      bool paused;
+      uint32_t remaining_ms;
+      power_monitor_chirp_timing_get(&timing);
+      buzzer_tone_sequence_status(&current, &total, &paused, &remaining_ms);
+      snprintf(d, sizeof d,
+               "battery chirp time i=%u r=%u p=%u d=%u seconds; defaults %s; runtime %s chirp %u/%u deadline %lu ms",
+               timing.interval_s, timing.repeat, timing.pause_s,
+               timing.duration_s,
+               power_monitor_settings_from_flash() ? "flash" : "compiled",
+               paused ? "pause" : (buzzer_tone_sequence_active() ? "tone" : "idle"),
+               current, total, (unsigned long)remaining_ms);
+    } else if (!strncmp(arg, "chirp time ", 11u) ||
+               (!strncmp(arg, "chirp ", 6u) && strchr(arg + 6u, '='))) {
+      char *setting = !strncmp(arg, "chirp time ", 11u) ? arg + 11u
+                                                         : arg + 6u;
+      bool persist = take_save_suffix(setting);
+      bool defaults_used;
+      battery_chirp_timing_t timing;
+      parse_chirp_timing(setting, &timing, &defaults_used);
+      (void)power_monitor_chirp_timing_set(&timing);
+      if (persist)
+        (void)power_monitor_settings_save();
+      snprintf(d, sizeof d,
+               "battery chirp time set i=%u r=%u p=%u d=%u seconds%s%s",
+               timing.interval_s, timing.repeat, timing.pause_s,
+               timing.duration_s,
+               defaults_used ? "; defaults applied to invalid/missing values"
+                             : "",
+               persist ? "; saved to flash" : "");
+    } else if (!strcmp(arg, "chirp")) {
+      uint16_t frequency_hz = power_monitor_chirp_frequency_hz();
+      snprintf(d, sizeof d,
+               "battery critical chirp %u.%03u kHz; defaults %s",
+               frequency_hz / 1000u, frequency_hz % 1000u,
+               power_monitor_settings_from_flash() ? "flash" : "compiled");
+    } else if (!strncmp(arg, "chirp ", 6u)) {
+      char *setting = arg + 6u;
+      bool persist = take_save_suffix(setting);
+      uint16_t frequency_hz;
+      if (!parse_chirp_frequency(setting, &frequency_hz) ||
+          !power_monitor_chirp_frequency_set(frequency_hz)) {
+        result(original, "rejected",
+               "use batt chirp <0.10-10.00> kHz [/s]");
+        return;
+      }
+      if (persist)
+        (void)power_monitor_settings_save();
+      snprintf(d, sizeof d,
+               "battery critical chirp set to %u.%03u kHz%s",
+               frequency_hz / 1000u, frequency_hz % 1000u,
+               persist ? "; battery defaults saved to flash" : "");
+    } else if (!strcmp(arg, "sim warning")) {
+      uint16_t warning_mv = power_monitor_warning_mv();
+      snprintf(d, sizeof d, "battery low-warning threshold <%u.%03u V",
+               warning_mv / 1000u, warning_mv % 1000u);
+    } else if (!strncmp(arg, "sim warning ", 12u)) {
+      uint16_t warning_mv;
+      char *setting = arg + 12u;
+      bool persist = take_save_suffix(setting);
+      if (!parse_battery_threshold(setting, 1.4, 5.4, &warning_mv) ||
+          !power_monitor_warning_set(warning_mv)) {
+        result(original, "rejected",
+               "use batt sim warning <voltage> V [/s]; allowed threshold 1.400-5.400 V");
+        return;
+      }
+      if (persist)
+        (void)power_monitor_settings_save();
+      snprintf(d, sizeof d,
+               "battery low-warning threshold set to <%u.%03u V%s",
+               warning_mv / 1000u, warning_mv % 1000u,
+               persist ? "; battery defaults saved to flash" : "");
+    } else if (!strcmp(arg, "sim critical")) {
+      uint16_t critical_mv = power_monitor_critical_mv();
+      snprintf(d, sizeof d, "battery critical threshold <%u.%03u V",
+               critical_mv / 1000u, critical_mv % 1000u);
+    } else if (!strncmp(arg, "sim critical ", 13u)) {
+      uint16_t critical_mv;
+      char *setting = arg + 13u;
+      bool persist = take_save_suffix(setting);
+      if (!parse_battery_threshold(setting, 2.2, 5.9, &critical_mv) ||
+          !power_monitor_critical_set(critical_mv)) {
+        result(original, "rejected",
+               "use batt sim critical <voltage> V [/s]; allowed threshold 2.200-5.900 V");
+        return;
+      }
+      if (persist)
+        (void)power_monitor_settings_save();
+      snprintf(d, sizeof d,
+               "battery critical threshold set to <%u.%03u V%s",
+               critical_mv / 1000u, critical_mv % 1000u,
+               persist ? "; battery defaults saved to flash" : "");
+    } else if (!strcmp(arg, "sim range")) {
+      uint16_t minimum_mv, maximum_mv;
+      power_monitor_sim_range_get(&minimum_mv, &maximum_mv);
+      snprintf(d, sizeof d, "battery simulation range %u.%03u-%u.%03u V",
+               minimum_mv / 1000u, minimum_mv % 1000u,
+               maximum_mv / 1000u, maximum_mv % 1000u);
+    } else if (!strncmp(arg, "sim range ", 10u)) {
+      uint16_t minimum_mv, maximum_mv;
+      char *setting = arg + 10u;
+      bool persist = take_save_suffix(setting);
+      if (!parse_voltage_range(setting, &minimum_mv, &maximum_mv) ||
+          !power_monitor_sim_range_set(minimum_mv, maximum_mv)) {
+        result(original, "rejected",
+               "use batt sim range <minimum>-<maximum> V [/s]; absolute limits 1.000-6.000 V");
+        return;
+      }
+      if (persist)
+        (void)power_monitor_settings_save();
+      snprintf(d, sizeof d,
+               "battery simulation range set to %u.%03u-%u.%03u V%s",
+               minimum_mv / 1000u, minimum_mv % 1000u,
+               maximum_mv / 1000u, maximum_mv % 1000u,
+               persist ? "; battery defaults saved to flash" : "");
     } else if (!strncmp(arg, "sim ", 4u)) {
       char *voltage_end;
       double volts = strtod(arg + 4u, &voltage_end);
       while (isspace((unsigned char)*voltage_end))
         ++voltage_end;
-      if (voltage_end == arg + 4u || *voltage_end || volts < 3.9 ||
-          volts > 4.5) {
-        result(original, "rejected", "battery simulation range is 3.9 to 4.5 V");
+      uint16_t minimum_mv, maximum_mv;
+      power_monitor_sim_range_get(&minimum_mv, &maximum_mv);
+      uint16_t mv = volts >= 0.0 && volts <= 65.535
+                        ? (uint16_t)(volts * 1000.0 + 0.5)
+                        : 0u;
+      if (voltage_end == arg + 4u || *voltage_end ||
+          !power_monitor_sim_set(true, mv)) {
+        char detail[96];
+        snprintf(detail, sizeof detail,
+                 "battery simulation range is %u.%03u to %u.%03u V",
+                 minimum_mv / 1000u, minimum_mv % 1000u,
+                 maximum_mv / 1000u, maximum_mv % 1000u);
+        result(original, "rejected", detail);
         return;
       }
-      uint16_t mv = (uint16_t)(volts * 1000.0 + 0.5);
-      (void)power_monitor_sim_set(true, mv);
       snprintf(d, sizeof d, "battery voltage simulated at %u.%03u V",
                mv / 1000u, mv % 1000u);
     } else {

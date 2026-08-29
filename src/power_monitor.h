@@ -21,6 +21,12 @@ typedef struct {
   uint32_t power_uw;
   uint32_t sample_ms;
 } power_sample_t;
+typedef struct {
+  uint16_t interval_s;
+  uint8_t repeat;
+  uint8_t pause_s;
+  uint8_t duration_s;
+} battery_chirp_timing_t;
 
 void power_monitor_init(void);
 void power_monitor_tick(void);
@@ -38,8 +44,20 @@ void power_monitor_format_log(char *out, size_t size);
 void power_monitor_format_events(char *out, size_t size);
 void power_monitor_format_load(char *out, size_t size);
 void power_monitor_format_ina(char *out, size_t size);
-void power_monitor_format_menu(char lines[6][81]);
+void power_monitor_format_menu(char lines[9][81]);
 bool power_monitor_sim_set(bool enabled, uint16_t bus_mv);
 bool power_monitor_sim_active(void);
+bool power_monitor_sim_range_set(uint16_t minimum_mv, uint16_t maximum_mv);
+void power_monitor_sim_range_get(uint16_t *minimum_mv, uint16_t *maximum_mv);
+bool power_monitor_warning_set(uint16_t warning_mv);
+uint16_t power_monitor_warning_mv(void);
+bool power_monitor_critical_set(uint16_t critical_mv);
+uint16_t power_monitor_critical_mv(void);
+bool power_monitor_settings_save(void);
+bool power_monitor_settings_from_flash(void);
+bool power_monitor_chirp_frequency_set(uint16_t frequency_hz);
+uint16_t power_monitor_chirp_frequency_hz(void);
+bool power_monitor_chirp_timing_set(const battery_chirp_timing_t *timing);
+void power_monitor_chirp_timing_get(battery_chirp_timing_t *timing);
 
 #endif

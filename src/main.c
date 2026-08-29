@@ -14,6 +14,9 @@
 #endif
 
 static volatile bool tick_has_run;
+static bool battery_alert_critical;
+static uint32_t battery_next_sequence_ms;
+static battery_chirp_timing_t battery_timing_cache;
 
 static uint16_t adc_distance(uint16_t a, uint16_t b)
 {
@@ -38,6 +41,61 @@ static void coordinate_sdc41_warmup(void)
         return;
     }
     if (pending) (void)co2_begin_initial_warmup();
+}
+
+static bool battery_timing_changed(const battery_chirp_timing_t *timing)
+{
+    return timing->interval_s != battery_timing_cache.interval_s ||
+           timing->repeat != battery_timing_cache.repeat ||
+           timing->pause_s != battery_timing_cache.pause_s ||
+           timing->duration_s != battery_timing_cache.duration_s;
+}
+
+static void battery_sequence_start(uint32_t now,
+                                   const battery_chirp_timing_t *timing)
+{
+    buzzer_tone_sequence(power_monitor_chirp_frequency_hz(),
+                         (uint32_t)timing->duration_s * 1000u,
+                         timing->repeat,
+                         (uint32_t)timing->pause_s * 1000u);
+    /* Interval is start-to-start, independent of the time consumed by the
+     * chirps and their intervening silent pauses. */
+    battery_next_sequence_ms = now + (uint32_t)timing->interval_s * 1000u;
+}
+
+static void battery_alert_poll(void)
+{
+    power_sample_t sample;
+    battery_chirp_timing_t timing;
+    power_monitor_snapshot(&sample);
+    power_monitor_chirp_timing_get(&timing);
+    bool critical = sample.valid &&
+                    sample.bus_mv < power_monitor_critical_mv();
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    bool timing_changed = battery_timing_changed(&timing);
+    if (timing_changed)
+        battery_timing_cache = timing;
+
+    if (!critical) {
+        if (battery_alert_critical)
+            buzzer_tone_stop();
+        battery_alert_critical = false;
+        battery_next_sequence_ms = 0u;
+        return;
+    }
+    if (timing_changed && battery_alert_critical) {
+        buzzer_tone_stop();
+        battery_alert_critical = false;
+    }
+    if (!battery_alert_critical) {
+        battery_alert_critical = true;
+        battery_sequence_start(now, &timing);
+        return;
+    }
+    if (!buzzer_tone_sequence_active() && battery_next_sequence_ms &&
+        (int32_t)(now - battery_next_sequence_ms) >= 0) {
+        battery_sequence_start(now, &timing);
+    }
 }
 
 static bool on_tick(struct repeating_timer *timer)
@@ -71,6 +129,9 @@ int main(void)
     dbg_enter();
 #endif
     motor_enable();
+    battery_alert_critical = false;
+    battery_next_sequence_ms = 0u;
+    power_monitor_chirp_timing_get(&battery_timing_cache);
     if (!add_repeating_timer_us(-1000, on_tick, NULL, &timer)) {
         console_timer_alloc_failed();
     } else {
@@ -82,6 +143,7 @@ int main(void)
         console_drain_events();
         coordinate_sdc41_warmup();
         led_update();
+        battery_alert_poll();
         buzzer_tick();
         co2_tick();
 #ifdef LUFTFUGL_MONITOR

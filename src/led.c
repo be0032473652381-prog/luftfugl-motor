@@ -180,9 +180,9 @@ static uint32_t requested_colour(void) {
     return co2_sample_flash_active() ? co2_sample_warm_white() : 0u;
   power_sample_t battery;
   power_monitor_snapshot(&battery);
-  if (battery.valid && battery.bus_mv < BATTERY_CRITICAL_MV)
+  if (battery.valid && battery.bus_mv < power_monitor_critical_mv())
     return hazard_lit() ? battery_deep_yellow() : 0u;
-  if (battery.valid && battery.bus_mv < BATTERY_WARN_MV)
+  if (battery.valid && battery.bus_mv < power_monitor_warning_mv())
     return battery_deep_yellow();
   if (station == 1u)
     return station1_mint();
