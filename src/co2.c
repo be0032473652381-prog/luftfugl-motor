@@ -56,6 +56,7 @@ static move_result_t last_mapping_result;
 static bool simulated;
 static uint16_t simulated_ppm;
 static uint32_t next_sim_mapping_ms;
+static bool error_move_latched;
 
 static const char *const profile_names[CO2_PROFILE_COUNT] = {
     "living", "sleeping"};
@@ -167,6 +168,14 @@ static void apply_position_mapping(uint16_t value) {
       controller_request(REQ_MOVE, (position_t)current_level);
 }
 
+static void apply_error_position(void) {
+  if (error_move_latched)
+    return;
+  last_mapping_result = controller_request(REQ_MOVE, POS_ERROR);
+  if (last_mapping_result == MOVE_OK || last_mapping_result == MOVE_ALREADY)
+    error_move_latched = true;
+}
+
 static void refresh_active_profile(void) {
   co2_profile_t selected = gpio_get(PIN_CO2_LIMIT_AB)
                                ? CO2_PROFILE_LIVING
@@ -190,10 +199,10 @@ static void filter_push(uint16_t v){batch_just_completed=false;samples[sample_co
 static bool read_sample(bool collect){uint16_t w[3];if(!words(CMD_READ,w,3,1)){sensor_error=true;return false;}ppm=w[0];temperature_tenths=(int16_t)(-450+(1750L*w[1]+32767)/65535L);humidity_tenths=(uint16_t)((1000UL*w[2]+32767)/65535UL);sample_valid=true;ready_latched=true;sensor_error=false;frames++;last_raw_sample_ms=to_ms_since_boot(get_absolute_time());if(collect){if(accepted_samples<FILTER_SAMPLES)accepted_samples++;filter_push(ppm);}return true;}
 static void refresh_config(void){uint16_t w;if(words(CMD_GET_ASC,&w,1,1))asc=w==1;words(CMD_GET_OFFSET,&offset_raw,1,1);words(CMD_GET_ALTITUDE,&altitude,1,1);}
 
-void co2_init(void){uint32_t now=to_ms_since_boot(get_absolute_time());settings_defaults();settings_restore();gpio_init(PIN_CO2_LIMIT_AB);gpio_set_dir(PIN_CO2_LIMIT_AB,GPIO_IN);active_profile=gpio_get(PIN_CO2_LIMIT_AB)?CO2_PROFILE_LIVING:CO2_PROFILE_SLEEPING;current_level=0u;last_mapping_result=MOVE_INVALID;simulated=false;simulated_ppm=0u;next_sim_mapping_ms=0u;initialized=true;detected=false;variant=CO2_VARIANT_NONE;frames=0;accepted_samples=0;sensor_error=false;powered=true;single_mode=false;warming=false;measuring=false;start_after_warmup=false;initial_warmup_pending=false;reset_pipeline(now);if(!claim()){sensor_error=true;return;}command(CMD_WAKE);sleep_ms(30);(void)command(CMD_STOP);sleep_ms(500);detected=words(CMD_SERIAL,serial_words,3,1);sensor_error=!detected;if(detected){variant=CO2_VARIANT_SCD41;refresh_config();initial_warmup_pending=true;}release();}
+void co2_init(void){uint32_t now=to_ms_since_boot(get_absolute_time());settings_defaults();settings_restore();gpio_init(PIN_CO2_LIMIT_AB);gpio_set_dir(PIN_CO2_LIMIT_AB,GPIO_IN);active_profile=gpio_get(PIN_CO2_LIMIT_AB)?CO2_PROFILE_LIVING:CO2_PROFILE_SLEEPING;current_level=0u;last_mapping_result=MOVE_INVALID;simulated=false;simulated_ppm=0u;next_sim_mapping_ms=0u;error_move_latched=false;initialized=true;detected=false;variant=CO2_VARIANT_NONE;frames=0;accepted_samples=0;sensor_error=false;powered=true;single_mode=false;warming=false;measuring=false;start_after_warmup=false;initial_warmup_pending=false;reset_pipeline(now);if(!claim()){sensor_error=true;return;}command(CMD_WAKE);sleep_ms(30);(void)command(CMD_STOP);sleep_ms(500);detected=words(CMD_SERIAL,serial_words,3,1);sensor_error=!detected;if(detected){variant=CO2_VARIANT_SCD41;refresh_config();initial_warmup_pending=true;}release();}
 bool co2_startup_pending(void){return initial_warmup_pending;}
 bool co2_begin_initial_warmup(void){if(!initial_warmup_pending||!detected||!powered)return false;if(!claim())return false;bool ok=command(CMD_START);release();if(!ok){sensor_error=true;return false;}uint32_t now=to_ms_since_boot(get_absolute_time());measuring=true;warming=true;single_mode=false;initial_warmup_pending=false;sensor_error=false;warmup_deadline_ms=now+60000;next_poll_ms=now+1000;reset_pipeline(now);return true;}
-void co2_tick(void){refresh_active_profile();uint32_t now=to_ms_since_boot(get_absolute_time());if(simulated){if((int32_t)(now-next_sim_mapping_ms)>=0){apply_position_mapping(simulated_ppm);next_sim_mapping_ms=now+CO2_SIM_MAPPING_PERIOD_MS;}return;}if(!detected||!powered)return;if(warming&&(int32_t)(now-warmup_deadline_ms)>=0){if(start_after_warmup){if(!claim())return;measuring=command(CMD_START);sensor_error=!measuring;release();if(!measuring)return;start_after_warmup=false;}warming=false;reset_pipeline(now);next_poll_ms=now+1000;return;}if(!measuring||(int32_t)(now-next_poll_ms)<0)return;next_poll_ms=now+1000;if(!claim())return;uint16_t r;if(!words(CMD_READY,&r,1,1))sensor_error=true;else{sensor_error=false;if(r&0x7ff){read_sample(!warming);next_poll_ms=now+5000;}}release();}
+void co2_tick(void){refresh_active_profile();uint32_t now=to_ms_since_boot(get_absolute_time());if(simulated){error_move_latched=false;if((int32_t)(now-next_sim_mapping_ms)>=0){apply_position_mapping(simulated_ppm);next_sim_mapping_ms=now+CO2_SIM_MAPPING_PERIOD_MS;}return;}if(sensor_error||!detected){apply_error_position();if(!detected)return;}else error_move_latched=false;if(!powered)return;if(warming&&(int32_t)(now-warmup_deadline_ms)>=0){if(start_after_warmup){if(!claim())return;measuring=command(CMD_START);sensor_error=!measuring;release();if(!measuring){apply_error_position();return;}start_after_warmup=false;}warming=false;reset_pipeline(now);next_poll_ms=now+1000;return;}if(!measuring||(int32_t)(now-next_poll_ms)<0)return;next_poll_ms=now+1000;if(!claim())return;uint16_t r;if(!words(CMD_READY,&r,1,1)){sensor_error=true;apply_error_position();}else{sensor_error=false;error_move_latched=false;if(r&0x7ff){if(!read_sample(!warming))apply_error_position();next_poll_ms=now+5000;}}release();}
 bool co2_detected(void){return detected;} co2_variant_t co2_variant(void){return variant;} bool co2_sample_valid(void){return sample_valid;} uint16_t co2_ppm(void){return ppm;} int16_t co2_temperature_tenths(void){return temperature_tenths;} uint16_t co2_humidity_tenths(void){return humidity_tenths;} uint32_t co2_frames_read(void){return frames;}
 bool co2_warming_up(void){return warming;}
 bool co2_filtered_valid(void){return filtered_valid;}

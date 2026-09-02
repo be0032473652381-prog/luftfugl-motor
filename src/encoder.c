@@ -13,7 +13,7 @@ static volatile bool sim_active;
 static volatile uint16_t sim_value;
 #else
 static uint16_t position_adc[] = {POS_1_ADC, POS_2_ADC, POS_3_ADC, POS_4_ADC,
-                                  POS_5_ADC};
+                                  POS_5_ADC, POS_6_ADC};
 #endif
 
 uint16_t encoder_nominal(position_t position) {
@@ -46,9 +46,10 @@ void encoder_reset_nominals(void) {
   cfg.pos_3_adc = POS_3_ADC;
   cfg.pos_4_adc = POS_4_ADC;
   cfg.pos_5_adc = POS_5_ADC;
+  cfg.pos_6_adc = POS_6_ADC;
 #else
   static const uint16_t defaults[] = {POS_1_ADC, POS_2_ADC, POS_3_ADC,
-                                      POS_4_ADC, POS_5_ADC};
+                                      POS_4_ADC, POS_5_ADC, POS_6_ADC};
   for (position_t position = POS_MIN; position <= POS_MAX; ++position)
     position_adc[position - POS_MIN] = defaults[position - POS_MIN];
 #endif

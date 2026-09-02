@@ -15,6 +15,7 @@
 
 static volatile bool tick_has_run;
 static bool battery_alert_critical;
+static bool battery_error_move_latched;
 static uint32_t battery_next_sequence_ms;
 static battery_chirp_timing_t battery_timing_cache;
 
@@ -65,12 +66,11 @@ static void battery_sequence_start(uint32_t now,
 
 static void battery_alert_poll(void)
 {
-    power_sample_t sample;
     battery_chirp_timing_t timing;
-    power_monitor_snapshot(&sample);
     power_monitor_chirp_timing_get(&timing);
-    bool critical = sample.valid &&
-                    sample.bus_mv < power_monitor_critical_mv();
+    bool critical =
+        power_monitor_battery_state() == BATTERY_STATE_CRITICAL;
+    controller_set_error_position_lock(critical);
     uint32_t now = to_ms_since_boot(get_absolute_time());
     bool timing_changed = battery_timing_changed(&timing);
     if (timing_changed)
@@ -80,8 +80,14 @@ static void battery_alert_poll(void)
         if (battery_alert_critical)
             buzzer_tone_stop();
         battery_alert_critical = false;
+        battery_error_move_latched = false;
         battery_next_sequence_ms = 0u;
         return;
+    }
+    if (!battery_error_move_latched) {
+        move_result_t move = controller_request(REQ_MOVE, POS_ERROR);
+        if (move == MOVE_OK || move == MOVE_ALREADY)
+            battery_error_move_latched = true;
     }
     if (timing_changed && battery_alert_critical) {
         buzzer_tone_stop();
@@ -130,6 +136,7 @@ int main(void)
 #endif
     motor_enable();
     battery_alert_critical = false;
+    battery_error_move_latched = false;
     battery_next_sequence_ms = 0u;
     power_monitor_chirp_timing_get(&battery_timing_cache);
     if (!add_repeating_timer_us(-1000, on_tick, NULL, &timer)) {

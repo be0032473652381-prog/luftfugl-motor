@@ -104,12 +104,13 @@
 #define POS_3_ADC 1022 /*  89.8 deg */
 #define POS_4_ADC 1433 /* 126.0 deg */
 #define POS_5_ADC 1844 /* measured upper-station ADC from trace */
+#define POS_6_ADC 3000 /* physically confirmed error station */
 #define POS_WINDOW 20
 #define LED_STATION_WINDOW_COUNTS 20
 #define ARRIVAL_WINDOW_COUNTS 15
 #define APPROACH_COUNTS 300
 #define LOW_ENDSTOP_ADC 100
-#define HIGH_ENDSTOP_ADC 2000
+#define HIGH_ENDSTOP_ADC POS_6_ADC
 
 #define TICK_HZ 1000
 #define TICK_PERIOD_US 1000u
@@ -147,6 +148,12 @@
 #define INA219_POWER_DOWN_CONFIG 0x1198u
 #define INA219_INRUSH_CONFIG 0x1003u
 #define INA219_SAMPLE_PERIOD_MS 1000u
+#define BATTERY_FILTER_DEPTH 5u
+#define BATTERY_ASSERT_SAMPLES 3u
+#define BATTERY_RECOVERY_SAMPLES 5u
+#define BATTERY_HYSTERESIS_MV 50u
+#define ADC0_OFFSET_MIN_MV (-200)
+#define ADC0_OFFSET_MAX_MV 200
 
 #define ADC_MAX_VALUE 4095u
 #ifdef LUFTFUGL_MONITOR
@@ -220,8 +227,9 @@
 
 #define POS_UNKNOWN 0
 #define POS_MIN 1
-#define POS_MAX 5
-#define POS_BETWEEN 6
+#define POS_MAX 6
+#define POS_BETWEEN 7
+#define POS_ERROR 6
 typedef uint8_t position_t;
 
 typedef enum { DIR_STOP = 0, DIR_FWD, DIR_REV } direction_t;
@@ -294,7 +302,7 @@ typedef struct {
 
 typedef struct {
   uint8_t duty_normal, duty_approach, duty_creep, duty_min;
-  uint16_t pos_1_adc, pos_2_adc, pos_3_adc, pos_4_adc, pos_5_adc;
+  uint16_t pos_1_adc, pos_2_adc, pos_3_adc, pos_4_adc, pos_5_adc, pos_6_adc;
   uint16_t pos_window, approach_counts;
   uint16_t debounce_ms, brake_hold_ms;
   uint16_t low_endstop_adc, high_endstop_adc;
@@ -310,6 +318,7 @@ void cfg_reset(void);
 #define CFG_POS_3_ADC (cfg.pos_3_adc)
 #define CFG_POS_4_ADC (cfg.pos_4_adc)
 #define CFG_POS_5_ADC (cfg.pos_5_adc)
+#define CFG_POS_6_ADC (cfg.pos_6_adc)
 #define CFG_POS_WINDOW (cfg.pos_window)
 #define CFG_ARRIVAL_WINDOW ARRIVAL_WINDOW_COUNTS
 #define CFG_APPROACH_COUNTS (cfg.approach_counts)
@@ -327,6 +336,7 @@ void cfg_reset(void);
 #define CFG_POS_3_ADC POS_3_ADC
 #define CFG_POS_4_ADC POS_4_ADC
 #define CFG_POS_5_ADC POS_5_ADC
+#define CFG_POS_6_ADC POS_6_ADC
 #define CFG_POS_WINDOW POS_WINDOW
 #define CFG_ARRIVAL_WINDOW ARRIVAL_WINDOW_COUNTS
 #define CFG_APPROACH_COUNTS APPROACH_COUNTS

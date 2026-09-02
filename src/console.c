@@ -157,7 +157,7 @@ static void handle_move(char *argument) {
     write_line("ERR: invalid target");
     return;
   }
-  if (target < POS_MIN || target > POS_MAX)
+  if (target < POS_MIN || target > 5)
     result = MOVE_INVALID;
   else
     result = controller_request(REQ_MOVE, (position_t)target);
@@ -234,7 +234,7 @@ static void handle_setpos(char *argument) {
   station = strtol(argument, &end, 10);
   while (isspace((unsigned char)*end))
     end++;
-  if (end == argument || *end || station < POS_MIN || station > POS_MAX) {
+  if (end == argument || *end || station < POS_MIN || station > 5) {
     write_line("ERR: invalid target");
     return;
   }
@@ -253,7 +253,7 @@ static void handle_setpos(char *argument) {
 }
 static void console_savepos(void) {
   char output[32];
-  for (position_t p = POS_MIN; p <= POS_MAX; ++p) {
+  for (position_t p = POS_MIN; p <= 5u; ++p) {
     snprintf(output, sizeof output, "#define POS_%u_ADC %u", p,
              encoder_nominal(p));
     write_line(output);
@@ -450,7 +450,7 @@ void console_drain_events(void) {
     event_t event = event_queue[event_tail];
     char output[32];
     event_tail = (uint8_t)((event_tail + 1u) % EVENT_QUEUE_DEPTH);
-    if (event.kind == EV_ARRIVE && event.arg == POS_MAX)
+    if (event.kind == EV_ARRIVE && event.arg == 5u)
       buzzer_play(BUZZER_STATION_5_PLAYS);
 #ifdef LUFTFUGL_MONITOR
     if (dbg_active()) {

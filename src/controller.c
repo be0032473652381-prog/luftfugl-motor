@@ -20,6 +20,7 @@ static volatile position_t position, target;
 static direction_t last_direction;
 static volatile request_kind_t mailbox;
 static volatile bool station1_lock;
+static volatile bool error_position_lock;
 static volatile position_t mailbox_arg;
 static volatile int16_t mailbox_delta;
 static volatile uint16_t mailbox_value;
@@ -215,6 +216,7 @@ void controller_init(void) {
   last_direction = DIR_REV;
   mailbox = REQ_NONE;
   station1_lock = false;
+  error_position_lock = false;
   mailbox_delta = 0;
   mailbox_value = 0u;
   brake_until_ms = 0;
@@ -245,15 +247,26 @@ void controller_init(void) {
 }
 
 void controller_set_station1_lock(bool locked) { station1_lock = locked; }
+void controller_set_error_position_lock(bool locked) {
+  error_position_lock = locked;
+}
 
 move_result_t controller_request(request_kind_t kind, position_t arg) {
   uint32_t now = now_ms();
-  if (kind == REQ_STOP || kind == REQ_HOME) {
+  if (kind == REQ_STOP) {
     mailbox_arg = arg;
     mailbox = kind;
     return MOVE_OK;
   }
-  if (station1_lock && (kind != REQ_MOVE || arg != POS_MIN))
+  if (error_position_lock && (kind != REQ_MOVE || arg != POS_ERROR))
+    return MOVE_BUSY;
+  if (kind == REQ_HOME) {
+    mailbox_arg = arg;
+    mailbox = kind;
+    return MOVE_OK;
+  }
+  if (station1_lock && !error_position_lock &&
+      (kind != REQ_MOVE || arg != POS_MIN))
     return MOVE_BUSY;
   if (arg < POS_MIN || arg > POS_MAX)
     return MOVE_INVALID;
@@ -284,7 +297,7 @@ move_result_t controller_request(request_kind_t kind, position_t arg) {
 jog_result_t controller_request_jog(int16_t delta, uint16_t *from_adc) {
   uint16_t current;
 
-  if (station1_lock)
+  if (station1_lock || error_position_lock)
     return JOG_BUSY;
   if (delta < -(int16_t)ADC_MAX_VALUE || delta > (int16_t)ADC_MAX_VALUE)
     return JOG_INVALID;
@@ -339,7 +352,7 @@ move_result_t controller_request_reset_positions(void) {
 #ifdef LUFTFUGL_MONITOR
 move_result_t controller_debug_goto_adc(uint16_t adc) {
   uint32_t now = now_ms();
-  if (station1_lock)
+  if (station1_lock || error_position_lock)
     return MOVE_BUSY;
   if (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING
 #ifdef LUFTFUGL_DEBUG

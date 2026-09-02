@@ -13,6 +13,7 @@ void cfg_reset(void)
     cfg.pos_3_adc = POS_3_ADC;
     cfg.pos_4_adc = POS_4_ADC;
     cfg.pos_5_adc = POS_5_ADC;
+    cfg.pos_6_adc = POS_6_ADC;
     cfg.pos_window = POS_WINDOW;
     cfg.approach_counts = APPROACH_COUNTS;
     cfg.debounce_ms = DEBOUNCE_MS;

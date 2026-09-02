@@ -498,7 +498,7 @@ static const char *guidance(uint16_t adc) {
   if (saved_station_mask == 0x1fu)
     return "type \"export\" and copy the lines into config.h";
   if (selected_station < POS_MIN || selected_station > POS_MAX)
-    return "calibration: sel <1-5>, save";
+    return "calibration: sel <1-6>, save";
   int16_t error = (int16_t)encoder_nominal(selected_station) - (int16_t)adc;
   if (error > (int16_t)CFG_POS_WINDOW || error < -(int16_t)CFG_POS_WINDOW) {
     uint16_t distance = error < 0 ? (uint16_t)-error : (uint16_t)error;
@@ -538,14 +538,10 @@ void dbg_fields_refresh(void) {
     snprintf(target, sizeof target, "station %u", controller_target());
     snprintf(error, sizeof error, "%+d", (int16_t)target_adc - (int16_t)adc);
   }
-  snprintf(selected, sizeof selected, "%s",
-           selected_station >= POS_MIN && selected_station <= POS_MAX ?
-               (selected_station == 1   ? "station 1"
-                : selected_station == 2 ? "station 2"
-                : selected_station == 3 ? "station 3"
-                : selected_station == 4 ? "station 4"
-                                        : "station 5")
-                                                                      : "none");
+  if (selected_station >= POS_MIN && selected_station <= POS_MAX)
+    snprintf(selected, sizeof selected, "station %u", selected_station);
+  else
+    snprintf(selected, sizeof selected, "none");
   if (ui_page == 1u) {
     char co2_lines[18][81];
     co2_format_menu(co2_lines);
@@ -580,17 +576,18 @@ void dbg_fields_refresh(void) {
     for (uint8_t i = 0u; i < 18u; ++i)
       field((uint8_t)(3u + i), co2_lines[i]);
   }
-  char s1[12], s2[12], s3[12], s4[12], s5[12];
+  char s1[12], s2[12], s3[12], s4[12], s5[12], s6[12];
   snprintf(s1, sizeof s1, "1:%5u", encoder_nominal(1));
   snprintf(s2, sizeof s2, "2:%5u", encoder_nominal(2));
   snprintf(s3, sizeof s3, "3:%5u", encoder_nominal(3));
   snprintf(s4, sizeof s4, "4:%5u", encoder_nominal(4));
   snprintf(s5, sizeof s5, "5:%5u", encoder_nominal(5));
-  snprintf(line, sizeof line, "  %-15.15s%-15.15s%-15.15s%-15.15s%-15.15s",
-           s1, s2, s3, s4, s5);
+  snprintf(s6, sizeof s6, "6:%5u", encoder_nominal(6));
+  snprintf(line, sizeof line, "  %-12.12s%-12.12s%-12.12s%-12.12s%-12.12s%-12.12s",
+           s1, s2, s3, s4, s5, s6);
   if (ui_page == 3u)
     field(3, line);
-  char a1[12], a2[12], a3[12], a4[12], a5[12], value[8];
+  char a1[12], a2[12], a3[12], a4[12], a5[12], a6[12], value[8];
   print_angle(value, sizeof value, encoder_nominal(1));
   snprintf(a1, sizeof a1, "%s deg", value);
   print_angle(value, sizeof value, encoder_nominal(2));
@@ -601,18 +598,20 @@ void dbg_fields_refresh(void) {
   snprintf(a4, sizeof a4, "%s deg", value);
   print_angle(value, sizeof value, encoder_nominal(5));
   snprintf(a5, sizeof a5, "%s deg", value);
-  snprintf(line, sizeof line, "  %-15s%-15s%-15s%-15s%-15s",
-           a1, a2, a3, a4, a5);
+  print_angle(value, sizeof value, encoder_nominal(6));
+  snprintf(a6, sizeof a6, "%s deg", value);
+  snprintf(line, sizeof line, "  %-12.12s%-12.12s%-12.12s%-12.12s%-12.12s%-12.12s",
+           a1, a2, a3, a4, a5, a6);
   if (ui_page == 3u)
     field(4, line);
   snprintf(line, sizeof line, "  lowendstop: %u   highendstop: %u   ▸ %.30s",
            CFG_LOW_ENDSTOP_ADC, CFG_HIGH_ENDSTOP_ADC, guidance(adc));
   if (ui_page == 3u)
     field(5, line);
-  char power_lines[9][81];
+  char power_lines[10][81];
   power_monitor_format_menu(power_lines);
   if (ui_page == 4u)
-    for (uint8_t i = 0u; i < 9u; ++i)
+    for (uint8_t i = 0u; i < 10u; ++i)
       field((uint8_t)(3u + i), power_lines[i]);
 }
 
@@ -668,7 +667,7 @@ static bool status_frame_complete(void) {
   if (ui_page == 6u)
     return true;
   {
-    uint8_t last = ui_page == 4u ? 11u : (ui_page == 5u ? 20u : 5u);
+    uint8_t last = ui_page == 4u ? 12u : (ui_page == 5u ? 20u : 5u);
     for (uint8_t row = 3u; row <= last; ++row)
       if (!status_shadow[row - 1u][0])
         return false;
@@ -706,7 +705,8 @@ static void frame_continue(void) {
        {"R) co2living", "R1) help co2living", "S) co2sleeping", "S1) help co2sleep"},
        {"T) co2cfg", "T1) help co2cfg", "U) co2sim", "U1) help co2sim"},
        {"V) co2limit", "V1) help co2limit", "W) co2save", "W1) help co2save"},
-       {"X) co2defaults", "X1) help defaults", "", ""}};
+       {"X) co2defaults", "X1) help defaults", "", ""},
+       {"Y) adc0offset", "Y1) help adc0offset", "", ""}};
   char piece[288];
   if (!frame_phase || out_free() < sizeof piece)
     return;
@@ -956,7 +956,7 @@ static void print_limits(const char *command) {
 }
 
 static void print_stations(const char *command) {
-  char lines[9][80], angle[12];
+  char lines[10][80], angle[12];
   uint16_t current = encoder_average();
   snprintf(lines[0], sizeof lines[0], "STATIONS                 stored      angle      from here");
   for (position_t p = POS_MIN; p <= POS_MAX; ++p) {
@@ -967,17 +967,17 @@ static void print_stations(const char *command) {
     snprintf(lines[p], sizeof lines[p], "  %u                     %6u      %5s deg    %+6ld%s", p, nominal, angle, (long)delta, distance <= CFG_POS_WINDOW ? "  <-- here" : "");
   }
   print_angle(angle, sizeof angle, current);
-  snprintf(lines[6], sizeof lines[6], "  current                %6u      %5s deg", current, angle);
-  snprintf(lines[7], sizeof lines[7], "  spacing              %u  %u  %u  %u counts", encoder_nominal(2) - encoder_nominal(1), encoder_nominal(3) - encoder_nominal(2), encoder_nominal(4) - encoder_nominal(3), encoder_nominal(5) - encoder_nominal(4));
+  snprintf(lines[7], sizeof lines[7], "  current                %6u      %5s deg", current, angle);
+  snprintf(lines[8], sizeof lines[8], "  spacing          %u %u %u %u %u counts", encoder_nominal(2) - encoder_nominal(1), encoder_nominal(3) - encoder_nominal(2), encoder_nominal(4) - encoder_nominal(3), encoder_nominal(5) - encoder_nominal(4), encoder_nominal(6) - encoder_nominal(5));
   if (selected_station >= POS_MIN && selected_station <= POS_MAX)
-    snprintf(lines[8], sizeof lines[8], "  selected              %6u", selected_station);
+    snprintf(lines[9], sizeof lines[9], "  selected              %6u", selected_station);
   else
-    snprintf(lines[8], sizeof lines[8], "  selected                none");
+    snprintf(lines[9], sizeof lines[9], "  selected                none");
   if (plain_mode) {
-    for (size_t i = 0; i < 9; ++i)
+    for (size_t i = 0; i < 10; ++i)
       result(i ? "" : command, "complete", lines[i]);
   } else {
-    for (size_t i = 9; i-- > 0;)
+    for (size_t i = 10; i-- > 0;)
       result(i ? "" : command, "complete", lines[i]);
   }
 }
@@ -1016,7 +1016,7 @@ static bool cfg_setting_known(const char *key) {
   static const char *const names[] = {
       "DUTY_NORMAL", "DUTY_APPROACH", "DUTY_CREEP", "DUTY_MIN",
       "APPROACH_COUNTS", "POS_WINDOW", "DEBOUNCE_MS", "BRAKE_HOLD_MS",
-      "POS_1_ADC", "POS_2_ADC", "POS_3_ADC", "POS_4_ADC", "POS_5_ADC",
+      "POS_1_ADC", "POS_2_ADC", "POS_3_ADC", "POS_4_ADC", "POS_5_ADC", "POS_6_ADC",
       "LOW_ENDSTOP_ADC", "HIGH_ENDSTOP_ADC"};
   for (size_t i = 0; i < sizeof names / sizeof names[0]; ++i)
     if (!strcmp(key, names[i]))
@@ -1025,7 +1025,7 @@ static bool cfg_setting_known(const char *key) {
 }
 
 static bool endstop_values_valid(uint16_t low, uint16_t high) {
-  return low < high && low <= CFG_POS_1_ADC && high >= CFG_POS_5_ADC;
+  return low < high && low <= CFG_POS_1_ADC && high >= CFG_POS_6_ADC;
 }
 
 static void endstop_restore(void) {
@@ -1072,7 +1072,7 @@ static void endstop_clear_persist(void) {
 static uint16_t cfg_smallest_gap(const cfg_t *values) {
   const uint16_t positions[] = {values->pos_1_adc, values->pos_2_adc,
                                 values->pos_3_adc, values->pos_4_adc,
-                                values->pos_5_adc};
+                                values->pos_5_adc, values->pos_6_adc};
   uint16_t smallest = ADC_MAX_VALUE;
   for (size_t i = 1; i < sizeof positions / sizeof positions[0]; ++i) {
     if (positions[i] <= positions[i - 1u])
@@ -1171,6 +1171,8 @@ static bool cfg_update(const char *key, long value, char *reason,
     next.pos_4_adc = (uint16_t)value;
   else if (!strcmp(key, "POS_5_ADC"))
     next.pos_5_adc = (uint16_t)value;
+  else if (!strcmp(key, "POS_6_ADC"))
+    next.pos_6_adc = (uint16_t)value;
   else if (!strcmp(key, "LOW_ENDSTOP_ADC"))
     next.low_endstop_adc = (uint16_t)value;
   else if (!strcmp(key, "HIGH_ENDSTOP_ADC"))
@@ -1181,11 +1183,11 @@ static bool cfg_update(const char *key, long value, char *reason,
     return false;
   }
   if (next.pos_1_adc < next.low_endstop_adc ||
-      next.pos_5_adc > next.high_endstop_adc) {
+      next.pos_6_adc > next.high_endstop_adc) {
     snprintf(reason, reason_size,
              "end-stop would exclude a configured station");
     snprintf(advice, advice_size,
-             "keep the end-stops outside stations 1 and 5");
+             "keep the end-stops outside stations 1 and 6");
     return false;
   }
   if (next.duty_min > next.duty_creep) {
@@ -1213,7 +1215,7 @@ static bool cfg_update(const char *key, long value, char *reason,
   uint16_t smallest_gap = cfg_smallest_gap(&next);
   if (!smallest_gap) {
     snprintf(reason, reason_size, "station values would not stay ascending");
-    snprintf(advice, advice_size, "keep POS_1_ADC through POS_5_ADC increasing");
+    snprintf(advice, advice_size, "keep POS_1_ADC through POS_6_ADC increasing");
     return false;
   }
   uint16_t window_max = (uint16_t)((smallest_gap - 1u) / 4u);
@@ -1270,10 +1272,12 @@ static void print_cfg(const char *command) {
                  "0..4095, must stay ascending");
   cfg_table_line("POS_5_ADC", live.pos_5_adc, POS_5_ADC,
                  "0..4095, must stay ascending");
+  cfg_table_line("POS_6_ADC", live.pos_6_adc, POS_6_ADC,
+                 "0..4095, CO2 error station");
   cfg_table_line("LOW_ENDSTOP_ADC", live.low_endstop_adc, LOW_ENDSTOP_ADC,
                  "0..4095, below station 1");
   cfg_table_line("HIGH_ENDSTOP_ADC", live.high_endstop_adc, HIGH_ENDSTOP_ADC,
-                 "0..4095, above station 5");
+                 "0..4095, at or above station 6");
   result("", "complete", "* differs from compiled default");
   result("", "complete",
          "cfg DUTY_NORMAL 40 changes one; cfg reset restores defaults");
@@ -1402,13 +1406,13 @@ static const help_entry_t help_entries[] = {
      "Shows examples, limits and plain-language notes."},
     {"diag", "diag", "read-only",
      "Shows temporary UART receive and main-loop timing counters."},
-    {"sel", "sel 3", "station 1 to 5",
+    {"sel", "sel 3", "station 1 to 6",
      "Chooses which station save will update."},
     {"jog", "jog +2000", "-4095 to +4095 counts",
      "Creep speed only; 100 counts is roughly 7 degrees."},
     {"step", "step 250", "10, 25, 100, 250 or 500",
      "Changes the suggested calibration step."},
-    {"save", "save 3", "station 1 to 5",
+    {"save", "save 3", "station 1 to 6",
      "Without a number, saves the selected station."},
     {"stations", "stations", "read-only",
      "Shows stored readings and difference from now."},
@@ -1416,7 +1420,7 @@ static const help_entry_t help_entries[] = {
      "One count is about 0.09 degrees; values come from the live configuration."},
     {"lowendstop", "lowendstop=100", "ADC 0 to 4095; must be below high end-stop and station 1",
      "Sets the lower potentiometer travel limit in RAM; it takes effect immediately."},
-    {"highendstop", "highendstop=2000", "ADC 0 to 4095; must be above low end-stop and station 5",
+    {"highendstop", "highendstop=3000", "ADC 0 to 4095; must be above low end-stop and at or above station 6",
      "Sets the upper potentiometer travel limit in RAM; it takes effect immediately."},
     {"export", "export", "read-only",
      "Prints values ready to paste into config.h."},
@@ -1424,8 +1428,8 @@ static const help_entry_t help_entries[] = {
      "Restarts from flash; prints resetting before rebooting."},
     {"bootsel", "bootsel", "no arguments",
      "Restarts into the USB bootloader for recovery."},
-    {"move", "move 2", "station 1 to 5", "Uses closed-loop position control."},
-    {"pos", "pos 3", "station 1 to 5",
+    {"move", "move 2", "station 1 to 6", "Uses closed-loop position control."},
+    {"pos", "pos 6", "station 1 to 6",
      "Alias for move; uses closed-loop position control."},
     {"goto", "goto 4000", "ADC range 0 to 4095",
      "Moves directly to one raw ADC target; movement is not wrap-aware."},
@@ -1493,6 +1497,8 @@ static const help_entry_t help_entries[] = {
      "Inrush is a sampled lower bound; bench thresholds remain disabled until measured."},
     {"ina", "ina", "read-only",
      "Shows computed calibration, conversion configuration and MODE 000 idle state."},
+    {"adc0offset", "ADC0OFFSET=+45MV /s", "signed offset -200 to +200 mV; optional /s",
+     "Adds a calibration correction before battery filtering; /s saves all battery settings to flash."},
     {"co2", "co2", "no arguments",
      "Shows the filtered and raw SCD41 measurement; single mode starts a 5-second shot."},
     {"co2living", "co2living", "read-only",
@@ -1638,7 +1644,7 @@ static void help_description(const help_entry_t *entry, char *text,
              CFG_LOW_ENDSTOP_ADC, ADC_MAX_VALUE, encoder_nominal(POS_MIN));
   } else if (!strcmp(entry->name, "highendstop")) {
     snprintf(text, size,
-             "active high end-stop %u; accepted range 0..%u, must remain above station 5 (%u) and the low end-stop",
+             "active high end-stop %u; accepted range 0..%u, must remain at or above station 6 (%u) and the low end-stop",
              CFG_HIGH_ENDSTOP_ADC, ADC_MAX_VALUE, encoder_nominal(POS_MAX));
   } else if (!strcmp(entry->name, "cal")) {
     snprintf(text, size,
@@ -1667,9 +1673,9 @@ static void help_pos_detail(const char *original, const help_entry_t *entry) {
   snprintf(detail, sizeof detail, "Command > %s", entry->example);
   result("Example", "complete", detail);
   snprintf(detail, sizeof detail,
-           "targets: 1=%u, 2=%u, 3=%u, 4=%u, 5=%u ADC counts",
+           "targets: 1=%u, 2=%u, 3=%u, 4=%u, 5=%u, 6=%u ADC counts",
            encoder_nominal(1), encoder_nominal(2), encoder_nominal(3),
-           encoder_nominal(4), encoder_nominal(5));
+           encoder_nominal(4), encoder_nominal(5), encoder_nominal(6));
   result("Positions", "complete", detail);
   snprintf(detail, sizeof detail,
            "target band is nominal +/-%u counts; sensing uses a %u-sample rolling average",
@@ -1685,12 +1691,12 @@ static void help_pos_detail(const char *original, const help_entry_t *entry) {
            CFG_DUTY_CREEP);
   result("Approach", "complete", detail);
   result("Braking", "complete",
-         "positions 2-4 brake only after confirmed arrival; positions 1 and 5 brake on the first in-band sample, then confirm");
+         "every station uses target-window braking and settled arrival confirmation; station 1 homing also uses directional crossing protection");
   result("Limits", "complete",
-         "no wrap-around or physical end-stops; outward movement from positions 1 and 5 is rejected");
+         "no wrap-around; configured motion range is station 1 through station 6, with station 6 reserved for CO2 errors");
   result("Rejects", "complete",
          "rejects an invalid station, unknown starting position, or a controller that is already moving");
-  result("Syntax", "complete", "pos <1-5>");
+  result("Syntax", "complete", "pos <1-6>");
   result("Function", "complete",
          "moves to one configured station through the normal closed-loop, filtered and limit-enforced controller path");
   result(original, "complete", entry->name);
@@ -1816,13 +1822,13 @@ static void submit(char *typed) {
     char *p = typed;
     const char *alias = NULL;
     char key = *p++;
-    bool upper = key >= 'A' && key <= 'X';
+    bool upper = key >= 'A' && key <= 'Y';
     bool help_alias = *p == '1';
     if (help_alias)
       ++p;
     if ((upper || (key >= 'a' && key <= 'z')) && (!*p || isspace((unsigned char)*p))) {
       if (upper) {
-        static const char *const aliases[] = {"highendstop", "sel", "save", "export", "arm", "drive", "disarm", "page", "clean", "help", "exit", "led", "batt sim range", "batt sim warning", "batt sim critical", "batt chirp", "batt chirp time", "co2living", "co2sleeping", "co2cfg", "co2sim", "co2limit", "co2save", "co2defaults"};
+        static const char *const aliases[] = {"highendstop", "sel", "save", "export", "arm", "drive", "disarm", "page", "clean", "help", "exit", "led", "batt sim range", "batt sim warning", "batt sim critical", "batt chirp", "batt chirp time", "co2living", "co2sleeping", "co2cfg", "co2sim", "co2limit", "co2save", "co2defaults", "adc0offset"};
         alias = aliases[key - 'A'];
       } else {
         static const char *const aliases[] = {"batt", "batt raw", "batt res", "batt log", "batt events", "batt reset", "batt sim", "load", "ina", "adc", "angle", "status", "stations", "limits", "cfg", "lowendstop", "jog", "step", "pos", "move", "goto", "home", "stop", "buzzer", "cal sim", "cal motor"};
@@ -1855,6 +1861,8 @@ static void submit(char *typed) {
   }
   for (char *p = typed; *p; ++p)
     *p = (char)tolower((unsigned char)*p);
+  if (!strncmp(typed, "adc0offset=", 11u))
+    typed[10] = ' ';
   if (!strncmp(typed, "motor cal", 9u)) {
     char alias[DEBUG_COMMAND_MAX + 1u];
     snprintf(alias, sizeof alias, "cal motor%s", typed + 9u);
@@ -1989,7 +1997,8 @@ static void submit(char *typed) {
           result("Syntax", "complete", entry->example);
           result("Purpose", "complete", entry->notes);
           result("Operational notes", "complete",
-                 !strncmp(entry->name, "batt sim", 8u)
+                 (!strncmp(entry->name, "batt sim", 8u) ||
+                  !strcmp(entry->name, "adc0offset"))
                      ? "Without /s the setting is RAM-only; append /s to save all battery defaults in flash."
                      : "Debug-only diagnostic interface; command effects are RAM-only unless explicitly stated.");
           result(original, "complete", entry->name);
@@ -2188,6 +2197,40 @@ static void submit(char *typed) {
     char d[512];
     power_monitor_format_ina(d, sizeof d);
     result(original, "complete", d);
+  } else if (!strcmp(command, "adc0offset")) {
+    if (!arg) {
+      char detail[96];
+      snprintf(detail, sizeof detail,
+               "ADC0 battery-voltage offset %+d mV; active in RAM",
+               power_monitor_adc0_offset_mv());
+      result(original, "complete", detail);
+    } else {
+      bool persist = take_save_suffix(arg);
+      char *endptr;
+      long offset = strtol(arg, &endptr, 10);
+      while (isspace((unsigned char)*endptr))
+        ++endptr;
+      if (!strncmp(endptr, "mv", 2u))
+        endptr += 2;
+      while (isspace((unsigned char)*endptr))
+        ++endptr;
+      if (endptr == arg || *endptr || offset < ADC0_OFFSET_MIN_MV ||
+          offset > ADC0_OFFSET_MAX_MV ||
+          !power_monitor_adc0_offset_set((int16_t)offset)) {
+        result(original, "rejected",
+               "use ADC0OFFSET=<-200..+200>MV [/s]");
+        return;
+      }
+      if (persist && !power_monitor_settings_save()) {
+        result(original, "rejected", "failed to save ADC0 offset to flash");
+        return;
+      }
+      char detail[128];
+      snprintf(detail, sizeof detail,
+               "ADC0 battery-voltage offset set to %+ld mV%s; filter restarting",
+               offset, persist ? "; saved to flash" : " (RAM only)");
+      result(original, "complete", detail);
+    }
   } else if (!strcmp(command, "diag")) {
     char d[192];
     console_diag_format(d, sizeof d);
@@ -2209,12 +2252,7 @@ static void submit(char *typed) {
     position_t p = encoder_instant();
     snprintf(d, sizeof d, "raw %u avg %u pos %s", encoder_raw(),
              encoder_average(),
-             p >= 1 && p <= 5 ? (p == 1   ? "1"
-                                 : p == 2 ? "2"
-                                 : p == 3 ? "3"
-                                 : p == 4 ? "4"
-                                          : "5")
-                              : "?");
+             p >= POS_MIN && p <= POS_MAX ? (char [2]){'0' + p, '\0'} : "?");
     result(original, "complete", d);
   } else if (!strcmp(command, "angle")) {
     char angle[12], detail[48];
@@ -2233,7 +2271,7 @@ static void submit(char *typed) {
                    led_is_on() ? "on" : "off", station,
                    led_rgbw() ? "RGBW" : "RGB");
         else
-          snprintf(detail, sizeof detail, "station 5: %s    (position unknown)",
+          snprintf(detail, sizeof detail, "automatic: %s    (position unknown)",
                    led_is_on() ? "on" : "off");
       } else if (led_mode() == LED_MODE_FORCED_RAW)
         snprintf(detail, sizeof detail, "forced raw; %s; GP18; PIO%u SM%u",
@@ -2362,8 +2400,8 @@ static void submit(char *typed) {
     jog_step = (uint16_t)value;
     result(original, "complete", "default jog step updated");
   } else if (!strcmp(command, "sel")) {
-    if (!parse_long(arg, &value) || value < 1 || value > 5) {
-      result(original, "rejected", "station out of range 1-5");
+    if (!parse_long(arg, &value) || value < POS_MIN || value > POS_MAX) {
+      result(original, "rejected", "station out of range 1-6");
       return;
     }
     selected_station = (position_t)value;
@@ -2374,8 +2412,8 @@ static void submit(char *typed) {
   } else if (!strcmp(command, "save")) {
     position_t station = selected_station;
     if (arg) {
-      if (!parse_long(arg, &value) || value < 1 || value > 5) {
-        result(original, "rejected", "station out of range 1-5");
+      if (!parse_long(arg, &value) || value < POS_MIN || value > POS_MAX) {
+        result(original, "rejected", "station out of range 1-6");
         return;
       }
       station = (position_t)value;
@@ -2423,8 +2461,8 @@ static void submit(char *typed) {
   } else if (!strcmp(command, "export"))
     export_positions(original);
   else if (!strcmp(command, "move") || !strcmp(command, "pos")) {
-    if (!parse_long(arg, &value) || value < 1 || value > 5) {
-      result(original, "rejected", "station must be 1 to 5");
+    if (!parse_long(arg, &value) || value < POS_MIN || value > POS_MAX) {
+      result(original, "rejected", "station must be 1 to 6");
       return;
     }
     move_result_t r = controller_request(REQ_MOVE, (position_t)value);
@@ -2654,8 +2692,8 @@ static void submit(char *typed) {
         result(original, "rejected",
                "simulation is off; type \"sim on\" first");
       else if (!parse_long(from_text, &from) || !parse_long(to_text, &to) ||
-               !parse_long(ms_text, &ms) || from < 1 || from > 5 || to < 1 ||
-               to > 5 || from == to || ms < 1 || ms > 10000)
+               !parse_long(ms_text, &ms) || from < POS_MIN || from > POS_MAX || to < POS_MIN ||
+               to > POS_MAX || from == to || ms < 1 || ms > 10000)
         result(original, "rejected", "try \"sim travel 1 5 300\"");
       else {
         sim_travel_from = encoder_nominal((position_t)from);

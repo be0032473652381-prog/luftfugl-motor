@@ -159,14 +159,13 @@ static uint32_t requested_colour(void) {
     return 0u;
   /* Battery state outranks every colour-producing mode, including CO2
      warm-up, initial filter sampling, sensor errors and debug overrides. */
-  power_sample_t battery;
-  power_monitor_snapshot(&battery);
-  if (battery.valid && battery.bus_mv < power_monitor_critical_mv())
+  battery_state_t battery_state = power_monitor_battery_state();
+  if (battery_state == BATTERY_STATE_CRITICAL)
     return hazard_lit() ? battery_deep_yellow() : 0u;
-  if (battery.valid && battery.bus_mv < power_monitor_warning_mv())
+  if (battery_state == BATTERY_STATE_WARNING)
     return battery_deep_yellow();
   /* Station 5 outranks normal/debug colour modes when battery state is OK. */
-  if (mode == LED_MODE_AUTO && station == POS_MAX)
+  if (mode == LED_MODE_AUTO && station == 5u)
     return hazard_lit() ? station5_rose() : 0u;
   if (mode == LED_MODE_FORCED_RAW)
     return rgbw_enabled ? raw_colour : raw_colour << 8;
@@ -199,7 +198,7 @@ static uint32_t requested_colour(void) {
 
 static bool station5_hazard_selected(void) {
   return mode == LED_MODE_AUTO && controller_state() == ST_IDLE &&
-         led_station_at_live_adc() == POS_MAX;
+         led_station_at_live_adc() == 5u;
 }
 
 void led_power_init(void) {

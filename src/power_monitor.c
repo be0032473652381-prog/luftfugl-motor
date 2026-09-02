@@ -12,7 +12,7 @@
 #include <string.h>
 
 #define BATTERY_SETTINGS_MAGIC 0x42545431u /* "BTT1" */
-#define BATTERY_SETTINGS_VERSION 3u
+#define BATTERY_SETTINGS_VERSION 4u
 #define BATTERY_SETTINGS_FLASH_OFFSET \
   (PICO_FLASH_SIZE_BYTES - 2u * FLASH_SECTOR_SIZE)
 
@@ -30,7 +30,8 @@ typedef struct {
   uint8_t chirp_pause_s;
   uint8_t chirp_duration_s;
   uint8_t timing_reserved;
-  uint8_t padding[FLASH_PAGE_SIZE - 26u];
+  int16_t adc0_offset_mv;
+  uint8_t padding[FLASH_PAGE_SIZE - 28u];
 } battery_settings_record_t;
 
 _Static_assert(sizeof(battery_settings_record_t) == FLASH_PAGE_SIZE,
@@ -86,11 +87,18 @@ static int32_t move_averages_ua[RUN_CURRENT_DEPTH];
 static uint8_t move_head, move_used;
 static volatile bool simulated;
 static volatile uint16_t simulated_bus_mv;
+static uint16_t voltage_samples[BATTERY_FILTER_DEPTH];
+static uint8_t voltage_head;
+static volatile uint8_t voltage_used;
+static volatile uint32_t filtered_bus_mv;
+static volatile battery_state_t battery_state;
+static volatile uint8_t warning_count, critical_count, recovery_count;
 static uint16_t simulated_min_mv = BATTERY_SIM_DEFAULT_MIN_MV;
 static uint16_t simulated_max_mv = BATTERY_SIM_DEFAULT_MAX_MV;
 static uint16_t warning_mv = BATTERY_WARN_MV;
 static uint16_t critical_mv = BATTERY_CRITICAL_MV;
 static uint16_t chirp_frequency_hz = BATTERY_ALERT_FREQUENCY_HZ;
+static int16_t adc0_offset_mv;
 static battery_chirp_timing_t chirp_timing = {
     BATTERY_CHIRP_INTERVAL_DEFAULT_S, BATTERY_CHIRP_REPEAT_DEFAULT,
     BATTERY_CHIRP_PAUSE_DEFAULT_S, BATTERY_CHIRP_DURATION_DEFAULT_S};
@@ -100,6 +108,86 @@ static uint8_t event_head, event_used;
 
 static uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
 
+_Static_assert(BATTERY_FILTER_DEPTH >= 3u &&
+                   (BATTERY_FILTER_DEPTH & 1u) == 1u,
+               "battery median depth must be odd and at least three");
+
+static uint32_t recovery_threshold(uint16_t threshold_mv) {
+  return (uint32_t)threshold_mv + BATTERY_HYSTERESIS_MV;
+}
+
+static void battery_state_update(uint32_t mv) {
+  if (battery_state == BATTERY_STATE_CRITICAL) {
+    if (mv >= recovery_threshold(critical_mv)) {
+      if (recovery_count < BATTERY_RECOVERY_SAMPLES)
+        ++recovery_count;
+      if (recovery_count >= BATTERY_RECOVERY_SAMPLES) {
+        battery_state = mv < warning_mv ? BATTERY_STATE_WARNING
+                                        : BATTERY_STATE_NORMAL;
+        recovery_count = 0u;
+      }
+    } else {
+      recovery_count = 0u;
+    }
+    return;
+  }
+
+  if (mv < critical_mv) {
+    if (critical_count < BATTERY_ASSERT_SAMPLES)
+      ++critical_count;
+    if (critical_count >= BATTERY_ASSERT_SAMPLES) {
+      battery_state = BATTERY_STATE_CRITICAL;
+      warning_count = critical_count = recovery_count = 0u;
+    }
+  } else {
+    critical_count = 0u;
+  }
+
+  if (battery_state == BATTERY_STATE_NORMAL) {
+    if (mv < warning_mv) {
+      if (warning_count < BATTERY_ASSERT_SAMPLES)
+        ++warning_count;
+      if (warning_count >= BATTERY_ASSERT_SAMPLES) {
+        battery_state = BATTERY_STATE_WARNING;
+        warning_count = recovery_count = 0u;
+      }
+    } else {
+      warning_count = 0u;
+    }
+  } else if (battery_state == BATTERY_STATE_WARNING) {
+    if (mv >= recovery_threshold(warning_mv)) {
+      if (recovery_count < BATTERY_RECOVERY_SAMPLES)
+        ++recovery_count;
+      if (recovery_count >= BATTERY_RECOVERY_SAMPLES) {
+        battery_state = BATTERY_STATE_NORMAL;
+        recovery_count = 0u;
+      }
+    } else {
+      recovery_count = 0u;
+    }
+  }
+}
+
+static void voltage_filter_push(uint16_t mv) {
+  uint16_t ordered[BATTERY_FILTER_DEPTH];
+  voltage_samples[voltage_head] = mv;
+  voltage_head = (uint8_t)((voltage_head + 1u) % BATTERY_FILTER_DEPTH);
+  if (voltage_used < BATTERY_FILTER_DEPTH)
+    ++voltage_used;
+  for (uint8_t i = 0u; i < voltage_used; ++i) {
+    uint16_t value = voltage_samples[i];
+    uint8_t j = i;
+    while (j && ordered[j - 1u] > value) {
+      ordered[j] = ordered[j - 1u];
+      --j;
+    }
+    ordered[j] = value;
+  }
+  filtered_bus_mv = ordered[voltage_used / 2u];
+  if (voltage_used == BATTERY_FILTER_DEPTH)
+    battery_state_update(filtered_bus_mv);
+}
+
 static uint32_t battery_settings_checksum(const battery_settings_record_t *r) {
   uint32_t checksum = r->magic ^ r->version ^ r->simulated_min_mv ^
                       r->simulated_max_mv ^ r->warning_mv ^ r->critical_mv;
@@ -108,6 +196,8 @@ static uint32_t battery_settings_checksum(const battery_settings_record_t *r) {
   if (r->version >= 3u)
     checksum ^= r->chirp_interval_s ^ r->chirp_repeat ^ r->chirp_pause_s ^
                 r->chirp_duration_s;
+  if (r->version >= 4u)
+    checksum ^= (uint16_t)r->adc0_offset_mv;
   return checksum;
 }
 
@@ -133,7 +223,10 @@ static bool battery_settings_valid(const battery_settings_record_t *r) {
            r->chirp_pause_s >= BATTERY_CHIRP_PAUSE_MIN_S &&
            r->chirp_pause_s <= BATTERY_CHIRP_PAUSE_MAX_S &&
            r->chirp_duration_s >= BATTERY_CHIRP_DURATION_MIN_S &&
-           r->chirp_duration_s <= BATTERY_CHIRP_DURATION_MAX_S));
+           r->chirp_duration_s <= BATTERY_CHIRP_DURATION_MAX_S)) &&
+         (r->version < 4u ||
+          (r->adc0_offset_mv >= ADC0_OFFSET_MIN_MV &&
+           r->adc0_offset_mv <= ADC0_OFFSET_MAX_MV));
 }
 
 static void battery_settings_load(void) {
@@ -155,6 +248,7 @@ static void battery_settings_load(void) {
     chirp_timing.pause_s = record->chirp_pause_s;
     chirp_timing.duration_s = record->chirp_duration_s;
   }
+  adc0_offset_mv = record->version >= 4u ? record->adc0_offset_mv : 0;
 }
 
 /* 0.04096 / (100 uA * 0.1 ohm) = 4096.  Keep the operands visible so a
@@ -239,11 +333,15 @@ static void publish_sample(void) {
   working.calibration_written = true;
   working.calibration_raw = calibration_value();
   working.config_raw = inrush ? INA219_INRUSH_CONFIG : INA219_NORMAL_CONFIG;
-  working.bus_mv = (uint32_t)(working.bus_raw >> 3) * INA219_BUS_LSB_MV;
+  int32_t corrected_mv =
+      (int32_t)((uint32_t)(working.bus_raw >> 3) * INA219_BUS_LSB_MV) +
+      adc0_offset_mv;
+  working.bus_mv = corrected_mv > 0 ? (uint32_t)corrected_mv : 0u;
   working.shunt_uv = (int32_t)working.shunt_raw * INA219_SHUNT_LSB_UV;
   working.current_ua = (int32_t)working.current_raw * INA219_CURRENT_LSB_UA;
   working.power_uw = (uint32_t)working.power_raw * INA219_POWER_LSB_UW;
   if (working.valid) {
+    voltage_filter_push(simulated ? simulated_bus_mv : working.bus_mv);
     if (sample_count && ms != previous_ms) {
       uint32_t dt = ms - previous_ms;
       int32_t average_ua = (working.current_ua + previous_ua) / 2;
@@ -278,6 +376,11 @@ void power_monitor_init(void) {
   battery_settings_load();
   memset((void *)&published, 0, sizeof published);
   memset(&working, 0, sizeof working);
+  memset(voltage_samples, 0, sizeof voltage_samples);
+  voltage_head = voltage_used = 0u;
+  filtered_bus_mv = 0u;
+  battery_state = BATTERY_STATE_NORMAL;
+  warning_count = critical_count = recovery_count = 0u;
   i2c_init(i2c0, I2C_BAUD);
   gpio_set_function(PIN_I2C_SDA, GPIO_FUNC_I2C);
   gpio_set_function(PIN_I2C_SCL, GPIO_FUNC_I2C);
@@ -429,12 +532,16 @@ void power_monitor_i2c_release(void) {
 
 void power_monitor_snapshot(power_sample_t *out) {
   *out = published;
+  out->filtered_bus_mv = filtered_bus_mv;
+  out->filter_valid = voltage_used == BATTERY_FILTER_DEPTH;
   if (simulated) {
     out->valid = true;
     out->overflow = false;
     out->bus_mv = simulated_bus_mv;
   }
 }
+
+battery_state_t power_monitor_battery_state(void) { return battery_state; }
 
 bool power_monitor_sim_set(bool enabled, uint16_t bus_mv) {
   if (enabled && (bus_mv < simulated_min_mv || bus_mv > simulated_max_mv))
@@ -469,6 +576,8 @@ bool power_monitor_warning_set(uint16_t value_mv) {
   if (value_mv < BATTERY_WARNING_MIN_MV || value_mv > BATTERY_WARNING_MAX_MV)
     return false;
   warning_mv = value_mv;
+  battery_state = BATTERY_STATE_NORMAL;
+  warning_count = critical_count = recovery_count = 0u;
   return true;
 }
 
@@ -479,6 +588,8 @@ bool power_monitor_critical_set(uint16_t value_mv) {
       value_mv > BATTERY_CRITICAL_MAX_MV)
     return false;
   critical_mv = value_mv;
+  battery_state = BATTERY_STATE_NORMAL;
+  warning_count = critical_count = recovery_count = 0u;
   return true;
 }
 
@@ -529,6 +640,7 @@ bool power_monitor_settings_save(void) {
   record.chirp_repeat = chirp_timing.repeat;
   record.chirp_pause_s = chirp_timing.pause_s;
   record.chirp_duration_s = chirp_timing.duration_s;
+  record.adc0_offset_mv = adc0_offset_mv;
   record.timing_reserved = 0u;
   record.checksum = battery_settings_checksum(&record);
   uint32_t irq_state = save_and_disable_interrupts();
@@ -543,6 +655,19 @@ bool power_monitor_settings_save(void) {
 bool power_monitor_settings_from_flash(void) {
   return settings_loaded_from_flash;
 }
+
+bool power_monitor_adc0_offset_set(int16_t offset_mv) {
+  if (offset_mv < ADC0_OFFSET_MIN_MV || offset_mv > ADC0_OFFSET_MAX_MV)
+    return false;
+  adc0_offset_mv = offset_mv;
+  voltage_head = voltage_used = 0u;
+  filtered_bus_mv = 0u;
+  battery_state = BATTERY_STATE_NORMAL;
+  warning_count = critical_count = recovery_count = 0u;
+  return true;
+}
+
+int16_t power_monitor_adc0_offset_mv(void) { return adc0_offset_mv; }
 
 static unsigned soc_percent(uint32_t mv) {
   static const uint16_t volts[] = {4000, 4200, 4400, 4800, 5200, 5600, 6000, 6400};
@@ -569,6 +694,7 @@ void power_monitor_format_batt(char *out, size_t size) {
     power_monitor_request_sample();
     return;
   }
+  uint32_t display_mv = s.filter_valid ? s.filtered_bus_mv : s.bus_mv;
   snprintf(out, size,
            " BATTERY\r\n"
            "   bus voltage      %lu.%03lu V    state of charge   ~%u%% (estimate)\r\n"
@@ -577,8 +703,9 @@ void power_monitor_format_batt(char *out, size_t size) {
            "   pack resistance  unavailable  (need idle/load wake integration)\r\n"
            "   consumed         %lu.%03lu mAh since boot\r\n"
            "   sleep current    %s",
-           (unsigned long)(s.bus_mv / 1000u), (unsigned long)(s.bus_mv % 1000u),
-           soc_percent(s.bus_mv), (long)(s.current_ua / 1000),
+           (unsigned long)(display_mv / 1000u),
+           (unsigned long)(display_mv % 1000u), soc_percent(display_mv),
+           (long)(s.current_ua / 1000),
            (long)((s.current_ua < 0 ? -s.current_ua : s.current_ua) % 1000 / 100),
            (unsigned long)(BATTERY_CAPACITY_MAH -
              (consumed_uah / 1000u > BATTERY_CAPACITY_MAH ? BATTERY_CAPACITY_MAH : consumed_uah / 1000u)),
@@ -671,7 +798,7 @@ void power_monitor_format_ina(char *out, size_t size) {
            INA219_POWER_DOWN_CONFIG);
 }
 
-void power_monitor_format_menu(char lines[9][81]) {
+void power_monitor_format_menu(char lines[10][81]) {
   power_sample_t s;
   power_monitor_snapshot(&s);
   const battery_settings_record_t *saved =
@@ -697,19 +824,20 @@ void power_monitor_format_menu(char lines[9][81]) {
     saved_timing.pause_s = saved->chirp_pause_s;
     saved_timing.duration_s = saved->chirp_duration_s;
   }
-  const char *battery_state = !s.valid ? "NO DATA"
-                              : s.bus_mv < critical_mv ? "CRITICAL"
-                              : s.bus_mv < warning_mv ? "WARNING"
-                                                         : "NORMAL";
+  const char *state_text = !s.valid || !s.filter_valid ? "FILTERING"
+                           : battery_state == BATTERY_STATE_CRITICAL ? "CRITICAL"
+                           : battery_state == BATTERY_STATE_WARNING  ? "WARNING"
+                                                                      : "NORMAL";
+  uint32_t display_mv = s.filter_valid ? s.filtered_bus_mv : s.bus_mv;
   uint32_t elapsed = now_ms() - session_start_ms;
   uint32_t consumed_uah = (uint32_t)(measured_uas / 3600u);
   snprintf(lines[0], 81,
            "  BATTERY  %lu.%03lu V  %ld.%01ld mA  %lu mW  SOC ~%u%% est  %s%s",
-           (unsigned long)(s.bus_mv / 1000u), (unsigned long)(s.bus_mv % 1000u),
+           (unsigned long)(display_mv / 1000u), (unsigned long)(display_mv % 1000u),
            (long)(s.current_ua / 1000),
            (long)((s.current_ua < 0 ? -s.current_ua : s.current_ua) % 1000 / 100),
-           (unsigned long)(s.power_uw / 1000u), soc_percent(s.bus_mv),
-           battery_state, simulated ? " SIM" : "");
+           (unsigned long)(s.power_uw / 1000u), soc_percent(display_mv),
+           state_text, simulated ? " SIM" : "");
   snprintf(lines[1], 81,
            "  RAW      bus %04x  shunt %04x  current %04x  power %04x  overflow %s",
            s.bus_raw, (uint16_t)s.shunt_raw, (uint16_t)s.current_raw,
@@ -744,6 +872,11 @@ void power_monitor_format_menu(char lines[9][81]) {
            saved_chirp, saved_timing.interval_s, saved_timing.repeat,
            saved_timing.pause_s, saved_timing.duration_s);
   snprintf(lines[8], 81,
+           "  FILTER   median %u/%u  W %u/%u C %u/%u rec %u/%u  offset %+d mV",
+           voltage_used, BATTERY_FILTER_DEPTH, warning_count,
+           BATTERY_ASSERT_SAMPLES, critical_count, BATTERY_ASSERT_SAMPLES,
+           recovery_count, BATTERY_RECOVERY_SAMPLES, adc0_offset_mv);
+  snprintf(lines[9], 81,
            "  MODEL    sleep %s; resistance/runtime unavailable; since boot",
            SLEEP_CURRENT_UA ? "compiled (not INA measured)" : "not measured");
 }
