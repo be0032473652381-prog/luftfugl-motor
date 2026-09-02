@@ -102,6 +102,14 @@ static uint32_t cal_sim_random(void) {
 static void result(const char *command, const char *outcome,
                    const char *detail);
 
+static uint8_t command_row(void) {
+  return ui_page == 6u ? DEBUG_PAGE6_COMMAND_ROW : DEBUG_COMMAND_ROW;
+}
+
+static uint8_t event_top_row(void) {
+  return ui_page == 6u ? DEBUG_PAGE6_EVENT_TOP_ROW : DEBUG_EVENT_TOP_ROW;
+}
+
 static position_t cal_sim_nearest(uint16_t adc, uint16_t *error_out) {
   position_t best = POS_MIN;
   uint16_t best_error = UINT16_MAX;
@@ -441,7 +449,8 @@ static void result(const char *command, const char *outcome,
              (unsigned long)((seconds / 60u) % 60u),
              (unsigned long)(seconds % 60u), command, message);
     /* Insert at the top; the terminal shifts older results down one row. */
-    dbg_out_push("\033[s\033[25;1H\033[L");
+    snprintf(esc, sizeof esc, "\033[s\033[%u;1H\033[L", event_top_row());
+    dbg_out_push(esc);
     dbg_out_push(line);
     dbg_out_push("\033[K\033[u");
   }
@@ -621,13 +630,15 @@ static void command_line_draw(void) {
      * periodic fixed-screen traffic until after Enter, making typed text
      * invisible even though the command buffer is correct. */
     dbg_out_drain();
-    uart_puts(uart1, "\033[24;1H");
+    char position[20];
+    snprintf(position, sizeof position, "\033[%u;1H", command_row());
+    uart_puts(uart1, position);
     uart_puts(uart1, line);
     uart_puts(uart1, "\033[K");
     return;
   }
   char position[20];
-  snprintf(position, sizeof position, "\033[s\033[24;1H");
+  snprintf(position, sizeof position, "\033[s\033[%u;1H", command_row());
   dbg_out_push(position);
   dbg_out_push(line);
   dbg_out_push("\033[K\033[u");
@@ -668,7 +679,8 @@ static bool status_frame_complete(void) {
 static void frame_continue(void) {
   static const uint8_t rows[] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
                                  12, 13, 14, 15, 16, 17, 18, 19,
-                                 20, 21, 22, 23, 24};
+                                 20, 21, 22, 23, 24, 25, 26, 27,
+                                 28, 29, 30};
   static const char *const command_rows[][4] = {
       {"a) batt", "a1) help batt", "b) batt raw", "b1) help batt raw"},
        {"c) batt res", "c1) help batt res", "d) batt log", "d1) help batt log"},
@@ -687,10 +699,14 @@ static void frame_continue(void) {
        {"C) save", "C1) help save", "D) export", "D1) help export"},
        {"E) arm", "E1) help arm", "F) drive", "F1) help drive"},
        {"G) disarm", "G1) help disarm", "H) page", "H1) help page"},
-       {"O) batt sim critical", "O1) help batt sim critical", "", ""},
+       {"O) batt critical", "O1) help critical", "", ""},
        {"K) exit", "K1) help exit", "L) led", "L1) help led"},
        {"M) batt sim range", "M1) help sim range", "N) batt sim warn", "N1) help sim warn"},
-       {"Q) batt chirp time", "Q1) help batt chirp time", "", ""}};
+       {"Q) chirp time", "Q1) help chirp time", "", ""},
+       {"R) co2living", "R1) help co2living", "S) co2sleeping", "S1) help co2sleep"},
+       {"T) co2cfg", "T1) help co2cfg", "U) co2sim", "U1) help co2sim"},
+       {"V) co2limit", "V1) help co2limit", "W) co2save", "W1) help co2save"},
+       {"X) co2defaults", "X1) help defaults", "", ""}};
   char piece[288];
   if (!frame_phase || out_free() < sizeof piece)
     return;
@@ -710,15 +726,11 @@ static void frame_continue(void) {
     } else if (ui_page == 6u && item >= 1u &&
                item <= sizeof command_rows / sizeof command_rows[0]) {
       /* Keep the complete row below 80 columns.  A wrapped command-index row
-       * would overwrite the fixed Command > line on row 24. */
+       * would overwrite the fixed command-entry line. */
       if (item == 4u)
         snprintf(content, sizeof content, "  %-14.14s %-20.20s %-15.15s %-21.21s",
                  command_rows[item - 1u][0], command_rows[item - 1u][1],
                  command_rows[item - 1u][2], command_rows[item - 1u][3]);
-      else if (item == 18u ||
-               item == sizeof command_rows / sizeof command_rows[0])
-        snprintf(content, sizeof content, "  %-37.37s %-37.37s",
-                 command_rows[item - 1u][0], command_rows[item - 1u][1]);
       else
         snprintf(content, sizeof content, "  %-18.18s %-18.18s %-18.18s %-18.18s",
                  command_rows[item - 1u][0], command_rows[item - 1u][1],
@@ -743,8 +755,8 @@ static void frame_continue(void) {
     return;
   }
   /* Scrolling setup is the final sequence of the frame draw. */
-  snprintf(piece, sizeof piece, "\033[25;%ur\033[25;1H",
-           DEBUG_SCREEN_BOTTOM_ROW);
+  snprintf(piece, sizeof piece, "\033[%u;%ur\033[%u;1H",
+           event_top_row(), DEBUG_SCREEN_BOTTOM_ROW, event_top_row());
   dbg_out_push(piece);
   frame_bytes_last = frame_bytes_current;
   ++frame_draw_count;
@@ -1483,6 +1495,20 @@ static const help_entry_t help_entries[] = {
      "Shows computed calibration, conversion configuration and MODE 000 idle state."},
     {"co2", "co2", "no arguments",
      "Shows the filtered and raw SCD41 measurement; single mode starts a 5-second shot."},
+    {"co2living", "co2living", "read-only",
+     "Lists all five living-room CO2 ranges with stations and air-quality functions."},
+    {"co2sleeping", "co2sleeping", "read-only",
+     "Lists all five sleeping-room CO2 ranges with stations and air-quality functions."},
+    {"co2cfg", "co2cfg", "read-only",
+     "Shows both five-level CO2 profiles, the active selection, and flash source."},
+    {"co2sim", "co2sim=440", "200 to 6000 ppm, or off",
+     "Replaces SCD41 readings and exercises normal CO2-to-station control until off."},
+    {"co2limit", "co2limit living 2 999", "profile, level 1-4, maximum ppm",
+     "Changes one range boundary in RAM; level 5 remains open-ended."},
+    {"co2save", "co2save", "idle controller",
+     "Saves both profiles and the active profile to dedicated flash storage."},
+    {"co2defaults", "co2defaults", "no arguments",
+     "Restores schematic CO2 defaults in RAM; use co2save to persist them."},
     {"ready", "ready", "no arguments",
      "Shows and clears the SCD41 latched data-ready indication."},
     {"serial", "serial", "no arguments",
@@ -1790,13 +1816,13 @@ static void submit(char *typed) {
     char *p = typed;
     const char *alias = NULL;
     char key = *p++;
-    bool upper = key >= 'A' && key <= 'Q';
+    bool upper = key >= 'A' && key <= 'X';
     bool help_alias = *p == '1';
     if (help_alias)
       ++p;
     if ((upper || (key >= 'a' && key <= 'z')) && (!*p || isspace((unsigned char)*p))) {
       if (upper) {
-        static const char *const aliases[] = {"highendstop", "sel", "save", "export", "arm", "drive", "disarm", "page", "clean", "help", "exit", "led", "batt sim range", "batt sim warning", "batt sim critical", "batt chirp", "batt chirp time"};
+        static const char *const aliases[] = {"highendstop", "sel", "save", "export", "arm", "drive", "disarm", "page", "clean", "help", "exit", "led", "batt sim range", "batt sim warning", "batt sim critical", "batt chirp", "batt chirp time", "co2living", "co2sleeping", "co2cfg", "co2sim", "co2limit", "co2save", "co2defaults"};
         alias = aliases[key - 'A'];
       } else {
         static const char *const aliases[] = {"batt", "batt raw", "batt res", "batt log", "batt events", "batt reset", "batt sim", "load", "ina", "adc", "angle", "status", "stations", "limits", "cfg", "lowendstop", "jog", "step", "pos", "move", "goto", "home", "stop", "buzzer", "cal sim", "cal motor"};
@@ -1839,6 +1865,12 @@ static void submit(char *typed) {
     snprintf(alias, sizeof alias, "stop%s", typed + 10u);
     strncpy(typed, alias, DEBUG_COMMAND_MAX);
     typed[DEBUG_COMMAND_MAX] = '\0';
+  }
+  if (!strncmp(typed, "co2sim=", 7u)) {
+    char detail[192];
+    bool ok = co2_command("co2sim", typed + 7u, detail, sizeof detail);
+    result(original, ok ? "complete" : "rejected", detail);
+    return;
   }
   const char *endstop_key = NULL;
   const char *endstop_value = NULL;
@@ -1905,13 +1937,18 @@ static void submit(char *typed) {
     result(original, "rejected", "unexpected argument; try help <command>");
     return;
   }
-  bool sdc_page_command = ui_page == 5u &&
+  bool co2_config_command =
+      !strcmp(command, "co2living") || !strcmp(command, "co2sleeping") ||
+      !strcmp(command, "co2cfg") || !strcmp(command, "co2sim") ||
+      !strcmp(command, "co2limit") || !strcmp(command, "co2save") ||
+      !strcmp(command, "co2defaults");
+  bool sdc_page_command = co2_config_command || (ui_page == 5u &&
       (!strcmp(command, "co2") || !strcmp(command, "ready") ||
        !strcmp(command, "serial") || !strcmp(command, "selftest") ||
        !strcmp(command, "asc") || !strcmp(command, "offset") ||
        !strcmp(command, "altitude") || !strcmp(command, "mode") ||
        !strcmp(command, "status") || !strcmp(command, "sdc41") ||
-       !strcmp(command, "menu"));
+       !strcmp(command, "menu")));
   if (sdc_page_command) {
     char detail[192];
     bool ok = co2_command(command, arg, detail, sizeof detail);
@@ -1925,7 +1962,9 @@ static void submit(char *typed) {
       dbg_render();
   } else if (!strcmp(command, "help")) {
     if (arg) {
-      const char *sdc_help = ui_page == 5u ? co2_command_help(arg) : NULL;
+      const char *sdc_help = ui_page == 5u && strcmp(arg, "co2profile")
+                                 ? co2_command_help(arg)
+                                 : NULL;
       const help_entry_t *entry = sdc_help ? NULL : help_detail(arg);
       if (sdc_help) {
         result("Purpose", "complete", sdc_help);

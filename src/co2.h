@@ -12,6 +12,15 @@ typedef enum {
   CO2_VARIANT_OTHER
 } co2_variant_t;
 
+typedef enum {
+  CO2_PROFILE_LIVING = 0,
+  CO2_PROFILE_SLEEPING,
+  CO2_PROFILE_COUNT
+} co2_profile_t;
+
+#define CO2_LEVEL_COUNT 5u
+#define CO2_EDITABLE_LIMIT_COUNT (CO2_LEVEL_COUNT - 1u)
+
 void co2_init(void);
 bool co2_startup_pending(void);
 bool co2_begin_initial_warmup(void);
@@ -28,6 +37,12 @@ bool co2_filtered_valid(void);
 uint8_t co2_filter_samples(void);
 bool co2_sample_flash_active(void);
 bool co2_sensor_error(void);
+bool co2_sim_active(void);
+uint16_t co2_sim_ppm(void);
+co2_profile_t co2_active_profile(void);
+uint8_t co2_level(void);
+uint16_t co2_profile_limit(co2_profile_t profile, uint8_t level);
+bool co2_settings_from_flash(void);
 void co2_format_menu(char lines[18][81]);
 bool co2_command(const char *command, const char *args, char *out, size_t size);
 const char *co2_command_help(const char *command);

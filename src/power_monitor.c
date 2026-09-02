@@ -674,6 +674,29 @@ void power_monitor_format_ina(char *out, size_t size) {
 void power_monitor_format_menu(char lines[9][81]) {
   power_sample_t s;
   power_monitor_snapshot(&s);
+  const battery_settings_record_t *saved =
+      (const battery_settings_record_t *)(XIP_BASE +
+                                          BATTERY_SETTINGS_FLASH_OFFSET);
+  bool saved_valid = battery_settings_valid(saved);
+  uint16_t saved_sim_min = saved_valid ? saved->simulated_min_mv
+                                       : BATTERY_SIM_DEFAULT_MIN_MV;
+  uint16_t saved_sim_max = saved_valid ? saved->simulated_max_mv
+                                       : BATTERY_SIM_DEFAULT_MAX_MV;
+  uint16_t saved_warning = saved_valid ? saved->warning_mv : BATTERY_WARN_MV;
+  uint16_t saved_critical = saved_valid ? saved->critical_mv
+                                        : BATTERY_CRITICAL_MV;
+  uint16_t saved_chirp = saved_valid && saved->version >= 2u
+                             ? saved->chirp_frequency_hz
+                             : BATTERY_ALERT_FREQUENCY_HZ;
+  battery_chirp_timing_t saved_timing = {
+      BATTERY_CHIRP_INTERVAL_DEFAULT_S, BATTERY_CHIRP_REPEAT_DEFAULT,
+      BATTERY_CHIRP_PAUSE_DEFAULT_S, BATTERY_CHIRP_DURATION_DEFAULT_S};
+  if (saved_valid && saved->version >= 3u) {
+    saved_timing.interval_s = saved->chirp_interval_s;
+    saved_timing.repeat = saved->chirp_repeat;
+    saved_timing.pause_s = saved->chirp_pause_s;
+    saved_timing.duration_s = saved->chirp_duration_s;
+  }
   const char *battery_state = !s.valid ? "NO DATA"
                               : s.bus_mv < critical_mv ? "CRITICAL"
                               : s.bus_mv < warning_mv ? "WARNING"
@@ -706,20 +729,20 @@ void power_monitor_format_menu(char lines[9][81]) {
            (unsigned long)((elapsed / 60000u) % 60u), (long)(peak_ua / 1000),
            (long)((peak_ua < 0 ? -peak_ua : peak_ua) % 1000 / 100));
   snprintf(lines[5], 81,
-           "  LIMITS   warning <%u.%03u V  critical <%u.%03u V  chirp %u Hz",
-           warning_mv / 1000u, warning_mv % 1000u,
-           critical_mv / 1000u, critical_mv % 1000u,
-           chirp_frequency_hz);
+           "  LIMITS   warning <%u.%03u V  critical <%u.%03u V  chirp %u Hz [%s]",
+           saved_warning / 1000u, saved_warning % 1000u,
+           saved_critical / 1000u, saved_critical % 1000u,
+           saved_chirp, saved_valid ? "flash" : "compiled");
   snprintf(lines[6], 81,
-           "  SIM      range %u.%03u-%u.%03u V  active %s  defaults %s",
-           simulated_min_mv / 1000u, simulated_min_mv % 1000u,
-           simulated_max_mv / 1000u, simulated_max_mv % 1000u,
+           "  SIM      saved range %u.%03u-%u.%03u V  active %s  defaults %s",
+           saved_sim_min / 1000u, saved_sim_min % 1000u,
+           saved_sim_max / 1000u, saved_sim_max % 1000u,
            simulated ? "yes" : "no",
-           settings_loaded_from_flash ? "flash" : "compiled");
+           saved_valid ? "flash" : "compiled");
   snprintf(lines[7], 81,
            "  CHIRP    %u Hz  time i=%u sec. r=%u p=%u sec. d=%u sec.",
-           chirp_frequency_hz, chirp_timing.interval_s, chirp_timing.repeat,
-           chirp_timing.pause_s, chirp_timing.duration_s);
+           saved_chirp, saved_timing.interval_s, saved_timing.repeat,
+           saved_timing.pause_s, saved_timing.duration_s);
   snprintf(lines[8], 81,
            "  MODEL    sleep %s; resistance/runtime unavailable; since boot",
            SLEEP_CURRENT_UA ? "compiled (not INA measured)" : "not measured");
