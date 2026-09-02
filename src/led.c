@@ -157,7 +157,15 @@ static uint32_t requested_colour(void) {
   position_t station = led_station_at_live_adc();
   if (station < POS_MIN || station > POS_MAX)
     return 0u;
-  /* Station 5 hazard indication always has priority. */
+  /* Battery state outranks every colour-producing mode, including CO2
+     warm-up, initial filter sampling, sensor errors and debug overrides. */
+  power_sample_t battery;
+  power_monitor_snapshot(&battery);
+  if (battery.valid && battery.bus_mv < power_monitor_critical_mv())
+    return hazard_lit() ? battery_deep_yellow() : 0u;
+  if (battery.valid && battery.bus_mv < power_monitor_warning_mv())
+    return battery_deep_yellow();
+  /* Station 5 outranks normal/debug colour modes when battery state is OK. */
   if (mode == LED_MODE_AUTO && station == POS_MAX)
     return hazard_lit() ? station5_rose() : 0u;
   if (mode == LED_MODE_FORCED_RAW)
@@ -178,12 +186,6 @@ static uint32_t requested_colour(void) {
     return co2_warm_white_breathe(now);
   if (!co2_filtered_valid())
     return co2_sample_flash_active() ? co2_sample_warm_white() : 0u;
-  power_sample_t battery;
-  power_monitor_snapshot(&battery);
-  if (battery.valid && battery.bus_mv < power_monitor_critical_mv())
-    return hazard_lit() ? battery_deep_yellow() : 0u;
-  if (battery.valid && battery.bus_mv < power_monitor_warning_mv())
-    return battery_deep_yellow();
   if (station == 1u)
     return station1_mint();
   if (station == 2u)
