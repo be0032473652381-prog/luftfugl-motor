@@ -648,6 +648,19 @@ static void command_line_draw(void) {
 }
 #endif
 
+static void ds3231_timer_draw(const char *detail) {
+  char text[128];
+  if (plain_mode) {
+    snprintf(text, sizeof text, "\r%-79.79s", detail);
+  } else {
+    uint8_t row = ui_page == 6u ? DEBUG_PAGE6_DS3231_TIMER_ROW
+                                : DEBUG_DS3231_TIMER_ROW;
+    snprintf(text, sizeof text, "\033[s\033[%u;1H %-78.78s\033[K\033[u", row,
+             detail);
+  }
+  dbg_out_push(text);
+}
+
 void dbg_render(void) {
   if (plain_mode)
     return;
@@ -740,7 +753,7 @@ static void frame_continue(void) {
                  command_rows[item - 1u][0], command_rows[item - 1u][1],
                  command_rows[item - 1u][2], command_rows[item - 1u][3]);
     } else if (ui_page == 6u &&
-               item == sizeof command_rows / sizeof command_rows[0] + 1u) {
+               item == sizeof command_rows / sizeof command_rows[0] + 2u) {
       const char *shown = page6_holds_last_input && !input_len
                               ? page6_last_input
                               : input;
@@ -1985,7 +1998,10 @@ static void submit(char *typed) {
     bool ok = event_timer_format_countdown(detail, sizeof detail);
     ds3231_timer_stream = ok;
     ds3231_timer_next_ms = ms_now() + DEBUG_DS3231_TIMER_STREAM_MS;
-    result(original, ok ? "complete" : "rejected", detail);
+    if (ok)
+      ds3231_timer_draw(detail);
+    else
+      result(original, "rejected", detail);
     return;
   }
   if (arg && (!strcmp(command, "status") || !strcmp(command, "adc") ||
@@ -2954,7 +2970,7 @@ void dbg_handle_key(char c) {
     input[0] = '\0';
     input_overflow = false;
     command_dirty = true;
-    result("DS3231 timer", "complete", "countdown stopped");
+    ds3231_timer_draw("DS3231 timer: countdown stopped");
     return;
   }
   if (c == 27) {
@@ -3158,10 +3174,12 @@ void dbg_poll(void) {
   if (active && ds3231_timer_stream &&
       (int32_t)(now - ds3231_timer_next_ms) >= 0) {
     char detail[96];
-    if (!event_timer_format_countdown(detail, sizeof detail))
+    if (!event_timer_format_countdown(detail, sizeof detail)) {
       ds3231_timer_stream = false;
-    result("DS3231 timer", ds3231_timer_stream ? "active" : "rejected",
-           detail);
+      result("DS3231 timer", "rejected", detail);
+    } else {
+      ds3231_timer_draw(detail);
+    }
     ds3231_timer_next_ms = now + DEBUG_DS3231_TIMER_STREAM_MS;
   }
   if (trace_dump_index < trace_dump_count && !dbg_out_pending()) {
