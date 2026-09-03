@@ -6,6 +6,7 @@
 #include "hardware/clocks.h"
 #include "hardware/flash.h"
 #include "hardware/gpio.h"
+#include "hardware/i2c.h"
 #include "hardware/pwm.h"
 #include "hardware/structs/pwm.h"
 #include "hardware/uart.h"
@@ -1397,6 +1398,38 @@ static void export_positions(const char *command) {
   }
 }
 
+static bool ds3231_temperature_format(char *text, size_t size) {
+  uint8_t reg = DS3231_TEMP_MSB_REGISTER;
+  uint8_t raw[2];
+  if (!power_monitor_i2c_claim()) {
+    snprintf(text, size, "I2C busy; retry");
+    return false;
+  }
+
+  int written = i2c_write_blocking(i2c0, DS3231_ADDRESS, &reg, 1u, true);
+  int read = written == 1
+                 ? i2c_read_blocking(i2c0, DS3231_ADDRESS, raw,
+                                     sizeof raw, false)
+                 : PICO_ERROR_GENERIC;
+  power_monitor_i2c_release();
+  if (written != 1 || read != (int)sizeof raw) {
+    snprintf(text, size, "DS3231 temperature read failed at I2C 0x%02X",
+             DS3231_ADDRESS);
+    return false;
+  }
+
+  int16_t encoded = (int16_t)((uint16_t)raw[0] << 8u | raw[1]);
+  int32_t centidegrees =
+      (encoded / 64) * DS3231_TEMP_QUARTER_CENTIDEGREES;
+  uint32_t magnitude = centidegrees < 0
+                           ? (uint32_t)(-centidegrees)
+                           : (uint32_t)centidegrees;
+  snprintf(text, size, "DS3231 temperature %s%lu.%02lu C (raw %02X %02X)",
+           centidegrees < 0 ? "-" : "", (unsigned long)(magnitude / 100u),
+           (unsigned long)(magnitude % 100u), raw[0], raw[1]);
+  return true;
+}
+
 typedef struct {
   const char *name, *example, *limits, *notes;
 } help_entry_t;
@@ -1497,6 +1530,8 @@ static const help_entry_t help_entries[] = {
      "Inrush is a sampled lower bound; bench thresholds remain disabled until measured."},
     {"ina", "ina", "read-only",
      "Shows computed calibration, conversion configuration and MODE 000 idle state."},
+    {"rtctemp", "rtctemp", "read-only",
+     "Reads the DS3231 temperature registers over the shared I2C bus."},
     {"adc0offset", "ADC0OFFSET=+45MV /s", "signed offset -200 to +200 mV; optional /s",
      "Adds a calibration correction before battery filtering; /s saves all battery settings to flash."},
     {"co2", "co2", "no arguments",
@@ -1940,6 +1975,7 @@ static void submit(char *typed) {
               !strcmp(command, "pins") || !strcmp(command, "pwm") ||
               !strcmp(command, "findmin") || !strcmp(command, "plain") ||
               !strcmp(command, "load") || !strcmp(command, "ina") ||
+              !strcmp(command, "rtctemp") ||
               !strcmp(command, "clean") ||
               !strcmp(command, "bootsel") || !strcmp(command, "exit"))) {
     result(original, "rejected", "unexpected argument; try help <command>");
@@ -2197,6 +2233,10 @@ static void submit(char *typed) {
     char d[512];
     power_monitor_format_ina(d, sizeof d);
     result(original, "complete", d);
+  } else if (!strcmp(command, "rtctemp")) {
+    char d[128];
+    bool ok = ds3231_temperature_format(d, sizeof d);
+    result(original, ok ? "complete" : "rejected", d);
   } else if (!strcmp(command, "adc0offset")) {
     if (!arg) {
       char detail[96];
