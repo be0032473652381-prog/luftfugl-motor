@@ -683,7 +683,7 @@ static void frame_continue(void) {
                                  20, 21, 22, 23, 24, 25, 26, 27,
                                  28, 29, 30};
   static const char *const command_rows[][4] = {
-      {"a) batt", "a1) help batt", "b) batt raw", "b1) help batt raw"},
+      {"a) batt", "a1) help batt", "stop eventtimer=0", "help stop"},
       {"c) batt res", "c1) help batt res", "d) batt log", "d1) help batt log"},
       {"e) batt events", "e1) help batt events", "f) batt reset", "f1) help batt reset"},
       {"g) batt sim", "g1) help batt sim", "P) batt chirp", "P1) help batt chirp"},
@@ -703,7 +703,7 @@ static void frame_continue(void) {
       {"O) batt critical", "O1) help critical", "Z) rtctemp", "Z1) help rtctemp"},
       {"K) exit", "K1) help exit", "L) led", "L1) help led"},
       {"M) batt sim range", "M1) help sim range", "N) batt sim warn", "N1) help sim warn"},
-      {"Q) chirp time", "Q1) help chirp time", "stop eventtimer=0", "help stop"},
+      {"Q) chirp time", "Q1) help chirp time", "b) batt raw", "b1) help batt raw"},
       {"R) co2living", "R1) help co2living", "S) co2sleeping", "S1) help co2sleep"},
       {"T) co2cfg", "T1) help co2cfg", "U) co2sim", "U1) help co2sim"},
       {"V) co2limit", "V1) help co2limit", "W) co2save", "W1) help co2save"},
