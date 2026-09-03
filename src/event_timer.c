@@ -24,6 +24,7 @@ static bool alert_active;
 static bool alert_lit;
 static uint8_t alert_transitions;
 static uint32_t alert_deadline_ms;
+static uint32_t alarm_target_week_seconds;
 
 static uint8_t bcd_to_binary(uint8_t value) {
   return (uint8_t)((value >> 4u) * 10u + (value & 0x0fu));
@@ -83,6 +84,8 @@ static bool arm_next_alarm(void) {
         binary_to_bcd((uint8_t)((seconds / 60u) % 60u)),
         binary_to_bcd((uint8_t)(seconds / 3600u)),
         (uint8_t)(DS3231_ALARM_DY_DT | binary_to_bcd(day))};
+    alarm_target_week_seconds =
+        ((uint32_t)day - 1u) * 86400u + seconds;
     status = (uint8_t)(status & ~DS3231_STATUS_A1F);
     control = (uint8_t)(control | DS3231_CONTROL_INTCN | DS3231_CONTROL_A1IE);
     ok = write_registers(DS3231_REG_ALARM1, alarm, sizeof alarm) &&
@@ -180,5 +183,42 @@ bool event_timer_stop(char *detail, size_t size) {
     buzzer_tone_stop();
   alert_active = false;
   snprintf(detail, size, "event timer stopped until reset");
+  return true;
+}
+
+bool event_timer_format_countdown(char *detail, size_t size) {
+  if (!timer_enabled) {
+    snprintf(detail, size, "DS3231 timer stopped");
+    return false;
+  }
+  if (alarm_pending || !gpio_get(PIN_DS3231_INT)) {
+    snprintf(detail, size, "DS3231 timer: 0 seconds remaining");
+    return true;
+  }
+  if (!power_monitor_i2c_claim()) {
+    snprintf(detail, size, "I2C busy; retry");
+    return false;
+  }
+  uint8_t time[4];
+  bool ok = read_registers(DS3231_REG_TIME, time, sizeof time);
+  power_monitor_i2c_release();
+  if (!ok) {
+    snprintf(detail, size, "DS3231 timer read failed");
+    return false;
+  }
+  uint8_t day = bcd_to_binary((uint8_t)(time[3] & 0x07u));
+  if (day < 1u || day > 7u) {
+    snprintf(detail, size, "DS3231 timer has invalid day value");
+    return false;
+  }
+  uint32_t now = ((uint32_t)day - 1u) * 86400u;
+  now += (uint32_t)hour_24(time[2]) * 3600u;
+  now += (uint32_t)bcd_to_binary((uint8_t)(time[1] & 0x7fu)) * 60u;
+  now += bcd_to_binary((uint8_t)(time[0] & 0x7fu));
+  uint32_t remaining = alarm_target_week_seconds >= now
+                           ? alarm_target_week_seconds - now
+                           : alarm_target_week_seconds + 604800u - now;
+  snprintf(detail, size, "DS3231 timer: %lu seconds remaining",
+           (unsigned long)remaining);
   return true;
 }

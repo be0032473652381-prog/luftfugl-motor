@@ -7,5 +7,6 @@
 void event_timer_init(void);
 void event_timer_poll(void);
 bool event_timer_stop(char *detail, size_t size);
+bool event_timer_format_countdown(char *detail, size_t size);
 
 #endif

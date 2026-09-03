@@ -684,7 +684,7 @@ static void frame_continue(void) {
                                  28, 29, 30};
   static const char *const command_rows[][4] = {
       {"a) batt", "a1) help batt", "stop eventtimer=0", "help stop"},
-      {"c) batt res", "c1) help batt res", "d) batt log", "d1) help batt log"},
+      {"c) batt res", "c1) help batt res", "DS3231 timer", "help DS3231 timer"},
       {"e) batt events", "e1) help batt events", "f) batt reset", "f1) help batt reset"},
       {"g) batt sim", "g1) help batt sim", "P) batt chirp", "P1) help batt chirp"},
       {"i) ina", "i1) help ina", "j) adc", "j1) help adc"},
@@ -707,7 +707,7 @@ static void frame_continue(void) {
       {"R) co2living", "R1) help co2living", "S) co2sleeping", "S1) help co2sleep"},
       {"T) co2cfg", "T1) help co2cfg", "U) co2sim", "U1) help co2sim"},
       {"V) co2limit", "V1) help co2limit", "W) co2save", "W1) help co2save"},
-      {"X) co2defaults", "X1) help defaults", "", ""},
+      {"X) co2defaults", "X1) help defaults", "d) batt log", "d1) help batt log"},
       {"Y) adc0offset", "Y1) help adc0offset", "", ""}};
   char piece[288];
   if (!frame_phase || out_free() < sizeof piece)
@@ -1533,6 +1533,10 @@ static const help_entry_t help_entries[] = {
      "Shows computed calibration, conversion configuration and MODE 000 idle state."},
     {"rtctemp", "rtctemp", "read-only",
      "Reads the DS3231 temperature registers over the shared I2C bus."},
+    {"ds3231", "DS3231 timer", "timer",
+     "Shows the seconds remaining until GPIO17 receives the next DS3231 alarm interrupt."},
+    {"ds3231 timer", "DS3231 timer", "read-only",
+     "Shows the seconds remaining until GPIO17 receives the next DS3231 alarm interrupt."},
     {"adc0offset", "ADC0OFFSET=+45MV /s", "signed offset -200 to +200 mV; optional /s",
      "Adds a calibration correction before battery filtering; /s saves all battery settings to flash."},
     {"co2", "co2", "no arguments",
@@ -1966,6 +1970,16 @@ static void submit(char *typed) {
   if (arg && !strcmp(command, "stop") && !strcmp(arg, "eventtimer=0")) {
     char detail[96];
     bool ok = event_timer_stop(detail, sizeof detail);
+    result(original, ok ? "complete" : "rejected", detail);
+    return;
+  }
+  if (!strcmp(command, "ds3231")) {
+    char detail[96];
+    if (!arg || strcmp(arg, "timer")) {
+      result(original, "rejected", "use DS3231 timer");
+      return;
+    }
+    bool ok = event_timer_format_countdown(detail, sizeof detail);
     result(original, ok ? "complete" : "rejected", detail);
     return;
   }
