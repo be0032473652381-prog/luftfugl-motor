@@ -9,6 +9,7 @@
 #include "buzzer.h"
 #include "co2.h"
 #include "power_monitor.h"
+#include "event_timer.h"
 #ifdef LUFTFUGL_MONITOR
 #include "debug.h"
 #endif
@@ -129,6 +130,7 @@ int main(void)
     encoder_init();
     led_init();
     power_monitor_init();
+    event_timer_init();
     co2_init();
     controller_init();
 #ifdef LUFTFUGL_MONITOR
@@ -151,6 +153,7 @@ int main(void)
         coordinate_sdc41_warmup();
         led_update();
         battery_alert_poll();
+        event_timer_poll();
         buzzer_tick();
         co2_tick();
 #ifdef LUFTFUGL_MONITOR

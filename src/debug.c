@@ -16,6 +16,7 @@
 #include "led.h"
 #include "buzzer.h"
 #include "co2.h"
+#include "event_timer.h"
 #include "power_monitor.h"
 #include "pico/bootrom.h"
 #include "pico/time.h"
@@ -702,7 +703,7 @@ static void frame_continue(void) {
       {"O) batt critical", "O1) help critical", "Z) rtctemp", "Z1) help rtctemp"},
       {"K) exit", "K1) help exit", "L) led", "L1) help led"},
       {"M) batt sim range", "M1) help sim range", "N) batt sim warn", "N1) help sim warn"},
-      {"Q) chirp time", "Q1) help chirp time", "", ""},
+      {"Q) chirp time", "Q1) help chirp time", "stop eventtimer=0", "help stop"},
       {"R) co2living", "R1) help co2living", "S) co2sleeping", "S1) help co2sleep"},
       {"T) co2cfg", "T1) help co2cfg", "U) co2sim", "U1) help co2sim"},
       {"V) co2limit", "V1) help co2limit", "W) co2save", "W1) help co2save"},
@@ -1468,8 +1469,8 @@ static const help_entry_t help_entries[] = {
      "Moves directly to one raw ADC target; movement is not wrap-aware."},
     {"home", "home", "no arguments",
      "Returns to station 1 through the guarded home path."},
-    {"stop", "stop", "no arguments",
-     "Brakes immediately; a period works without Enter."},
+    {"stop", "stop | stop eventtimer=0", "no argument, or eventtimer=0",
+     "Brakes immediately, or disables the repeating DS3231 event timer until reset."},
     {"status", "status", "read-only", "Shows the full controller state."},
     {"adc", "adc", "read-only", "Shows raw, filtered and classified sensing."},
     {"angle", "angle", "read-only",
@@ -1960,6 +1961,12 @@ static void submit(char *typed) {
       snprintf(detail, sizeof detail, "no command called \"%s\", try \"help\"",
                word);
     result(original, "rejected", detail);
+    return;
+  }
+  if (arg && !strcmp(command, "stop") && !strcmp(arg, "eventtimer=0")) {
+    char detail[96];
+    bool ok = event_timer_stop(detail, sizeof detail);
+    result(original, ok ? "complete" : "rejected", detail);
     return;
   }
   if (arg && (!strcmp(command, "status") || !strcmp(command, "adc") ||

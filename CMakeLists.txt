@@ -24,6 +24,7 @@ add_executable(luftfugl
     src/buzzer.c
     src/co2.c
     src/power_monitor.c
+    src/event_timer.c
 )
 
 pico_generate_pio_header(luftfugl ${CMAKE_CURRENT_LIST_DIR}/src/ws2812.pio)
