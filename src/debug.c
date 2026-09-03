@@ -697,33 +697,32 @@ static void frame_continue(void) {
                                  12, 13, 14, 15, 16, 17, 18, 19,
                                  20, 21, 22, 23, 24, 25, 26, 27,
                                  28, 29, 30};
-  static const char *const command_rows[][4] = {
-      {"a) batt", "a1) help batt", "stop eventtimer=0", "help stop"},
-      {"c) batt res", "c1) help batt res", "DS3231 timer", "help DS3231 timer"},
-      {"e) batt events", "e1) help batt events", "f) batt reset", "f1) help batt reset"},
-      {"g) batt sim", "g1) help batt sim", "P) batt chirp", "P1) help batt chirp"},
-      {"i) ina", "i1) help ina", "j) adc", "j1) help adc"},
-      {"k) angle", "k1) help angle", "l) status", "l1) help status"},
-      {"m) stations", "m1) help stations", "n) limits", "n1) help limits"},
-      {"o) cfg", "o1) help cfg", "p) lowendstop", "p1) help lowendstop"},
-      {"q) jog", "q1) help jog", "r) step", "r1) help step"},
-      {"s) pos", "s1) help pos", "t) move", "t1) help move"},
-      {"u) goto", "u1) help goto", "v) home", "v1) help home"},
-      {"w) stop", "w1) help stop", "x) buzzer", "x1) help buzzer"},
-      {"y) cal sim", "y1) help cal sim", "z) cal motor", "z1) help cal motor"},
-      {"A) highendstop", "A1) help highendstop", "B) sel", "B1) help sel"},
-      {"C) save", "C1) help save", "D) export", "D1) help export"},
-      {"E) arm", "E1) help arm", "F) drive", "F1) help drive"},
-      {"G) disarm", "G1) help disarm", "H) page", "H1) help page"},
-      {"O) batt critical", "O1) help critical", "Z) rtctemp", "Z1) help rtctemp"},
-      {"K) exit", "K1) help exit", "L) led", "L1) help led"},
-      {"M) batt sim range", "M1) help sim range", "N) batt sim warn", "N1) help sim warn"},
-      {"Q) chirp time", "Q1) help chirp time", "b) batt raw", "b1) help batt raw"},
-      {"R) co2living", "R1) help co2living", "S) co2sleeping", "S1) help co2sleep"},
-      {"T) co2cfg", "T1) help co2cfg", "U) co2sim", "U1) help co2sim"},
-      {"V) co2limit", "V1) help co2limit", "W) co2save", "W1) help co2save"},
-      {"X) co2defaults", "X1) help defaults", "d) batt log", "d1) help batt log"},
-      {"Y) adc0offset", "Y1) help adc0offset", "", ""}};
+  static const char *const command_rows[][3] = {
+      {"adc", "adc0offset", "altitude"},
+      {"angle", "arm", "asc"},
+      {"batt", "batt chirp", "batt chirp time"},
+      {"batt events", "batt log", "batt raw"},
+      {"batt res", "batt reset", "batt sim"},
+      {"batt sim critical", "batt sim range", "batt sim warning"},
+      {"bootsel", "buzzer", "cal"},
+      {"cfg", "clean", "co2"},
+      {"co2cfg", "co2defaults", "co2limit"},
+      {"co2living", "co2save", "co2sim"},
+      {"co2sleeping", "diag", "disarm"},
+      {"drive", "ds3231", "ds3231 stop"},
+      {"ds3231 timer", "exit", "export"},
+      {"findmin", "goto", "help"},
+      {"highendstop", "home", "ina"},
+      {"jog", "led", "limits"},
+      {"load", "lowendstop", "menu"},
+      {"mode", "move", "offset"},
+      {"page", "pins", "plain"},
+      {"pos", "pwm", "ready"},
+      {"reset", "rtctemp", "save"},
+      {"sdc41", "sel", "selftest"},
+      {"serial", "sim", "stations"},
+      {"status", "step", "stop"},
+      {"tick", "trace", ""}};
   char piece[288];
   if (!frame_phase || out_free() < sizeof piece)
     return;
@@ -744,16 +743,15 @@ static void frame_continue(void) {
                item <= sizeof command_rows / sizeof command_rows[0]) {
       /* Keep the complete row below 80 columns.  A wrapped command-index row
        * would overwrite the fixed command-entry line. */
-      if (item == 4u)
-        snprintf(content, sizeof content, "  %-14.14s %-20.20s %-15.15s %-21.21s",
-                 command_rows[item - 1u][0], command_rows[item - 1u][1],
-                 command_rows[item - 1u][2], command_rows[item - 1u][3]);
-      else
-        snprintf(content, sizeof content, "  %-18.18s %-18.18s %-18.18s %-18.18s",
-                 command_rows[item - 1u][0], command_rows[item - 1u][1],
-                 command_rows[item - 1u][2], command_rows[item - 1u][3]);
+      snprintf(content, sizeof content, "  %-24.24s %-24.24s %-24.24s",
+               command_rows[item - 1u][0], command_rows[item - 1u][1],
+               command_rows[item - 1u][2]);
     } else if (ui_page == 6u &&
-               item == sizeof command_rows / sizeof command_rows[0] + 2u) {
+               item == sizeof command_rows / sizeof command_rows[0] + 1u) {
+      snprintf(content, sizeof content,
+               "  Help: help <command>   examples: help DS3231 timer | help DS3231 stop");
+    } else if (ui_page == 6u &&
+               item == 28u) {
       const char *shown = page6_holds_last_input && !input_len
                               ? page6_last_input
                               : input;
@@ -1484,8 +1482,8 @@ static const help_entry_t help_entries[] = {
      "Moves directly to one raw ADC target; movement is not wrap-aware."},
     {"home", "home", "no arguments",
      "Returns to station 1 through the guarded home path."},
-    {"stop", "stop | stop eventtimer=0", "no argument, or eventtimer=0",
-     "Brakes immediately, or disables the repeating DS3231 event timer until reset."},
+    {"stop", "stop", "no arguments",
+     "Brakes immediately; a period works without Enter."},
     {"status", "status", "read-only", "Shows the full controller state."},
     {"adc", "adc", "read-only", "Shows raw, filtered and classified sensing."},
     {"angle", "angle", "read-only",
@@ -1548,8 +1546,10 @@ static const help_entry_t help_entries[] = {
      "Shows computed calibration, conversion configuration and MODE 000 idle state."},
     {"rtctemp", "rtctemp", "read-only",
      "Reads the DS3231 temperature registers over the shared I2C bus."},
-    {"ds3231", "DS3231 timer", "timer",
-     "Updates the seconds remaining every second until q or Q is received."},
+    {"ds3231", "DS3231 timer | DS3231 stop", "timer or stop",
+     "Streams the alarm countdown, or disables the event timer until reset."},
+    {"ds3231 stop", "DS3231 stop", "no additional arguments",
+     "Disables the repeating DS3231 event timer until the next reset."},
     {"ds3231 timer", "DS3231 timer", "read-only",
      "Updates the seconds remaining every second until q or Q is received."},
     {"adc0offset", "ADC0OFFSET=+45MV /s", "signed offset -200 to +200 mV; optional /s",
@@ -1982,17 +1982,16 @@ static void submit(char *typed) {
     result(original, "rejected", detail);
     return;
   }
-  if (arg && !strcmp(command, "stop") && !strcmp(arg, "eventtimer=0")) {
-    char detail[96];
-    bool ok = event_timer_stop(detail, sizeof detail);
-    ds3231_timer_stream = false;
-    result(original, ok ? "complete" : "rejected", detail);
-    return;
-  }
   if (!strcmp(command, "ds3231")) {
     char detail[96];
+    if (arg && !strcmp(arg, "stop")) {
+      bool ok = event_timer_stop(detail, sizeof detail);
+      ds3231_timer_stream = false;
+      result(original, ok ? "complete" : "rejected", detail);
+      return;
+    }
     if (!arg || strcmp(arg, "timer")) {
-      result(original, "rejected", "use DS3231 timer");
+      result(original, "rejected", "use DS3231 timer or DS3231 stop");
       return;
     }
     bool ok = event_timer_format_countdown(detail, sizeof detail);
