@@ -71,6 +71,8 @@ static bool frame_measuring;
 static uint32_t frame_bytes_current, frame_bytes_last, frame_draw_count;
 static uint16_t field_bytes_last;
 static bool first_result;
+static bool ds3231_timer_stream;
+static uint32_t ds3231_timer_next_ms;
 static bool sim_travel_active;
 static bool cal_sim_active, cal_sim_waiting;
 static uint8_t cal_sim_count, cal_sim_misses;
@@ -1534,9 +1536,9 @@ static const help_entry_t help_entries[] = {
     {"rtctemp", "rtctemp", "read-only",
      "Reads the DS3231 temperature registers over the shared I2C bus."},
     {"ds3231", "DS3231 timer", "timer",
-     "Shows the seconds remaining until GPIO17 receives the next DS3231 alarm interrupt."},
+     "Updates the seconds remaining every second until q or Q is received."},
     {"ds3231 timer", "DS3231 timer", "read-only",
-     "Shows the seconds remaining until GPIO17 receives the next DS3231 alarm interrupt."},
+     "Updates the seconds remaining every second until q or Q is received."},
     {"adc0offset", "ADC0OFFSET=+45MV /s", "signed offset -200 to +200 mV; optional /s",
      "Adds a calibration correction before battery filtering; /s saves all battery settings to flash."},
     {"co2", "co2", "no arguments",
@@ -1970,6 +1972,7 @@ static void submit(char *typed) {
   if (arg && !strcmp(command, "stop") && !strcmp(arg, "eventtimer=0")) {
     char detail[96];
     bool ok = event_timer_stop(detail, sizeof detail);
+    ds3231_timer_stream = false;
     result(original, ok ? "complete" : "rejected", detail);
     return;
   }
@@ -1980,6 +1983,8 @@ static void submit(char *typed) {
       return;
     }
     bool ok = event_timer_format_countdown(detail, sizeof detail);
+    ds3231_timer_stream = ok;
+    ds3231_timer_next_ms = ms_now() + DEBUG_DS3231_TIMER_STREAM_MS;
     result(original, ok ? "complete" : "rejected", detail);
     return;
   }
@@ -2943,6 +2948,15 @@ void dbg_event(event_kind_t kind, uint8_t arg) {
 }
 
 void dbg_handle_key(char c) {
+  if (ds3231_timer_stream && (c == 'q' || c == 'Q')) {
+    ds3231_timer_stream = false;
+    input_len = 0u;
+    input[0] = '\0';
+    input_overflow = false;
+    command_dirty = true;
+    result("DS3231 timer", "complete", "countdown stopped");
+    return;
+  }
   if (c == 27) {
     input_len = 0;
     input[0] = '\0';
@@ -3095,6 +3109,8 @@ void dbg_init(void) {
   frame_phase = 0u;
   ui_page = 1u;
   first_result = true;
+  ds3231_timer_stream = false;
+  ds3231_timer_next_ms = 0u;
   frame_measuring = false;
   frame_bytes_current = frame_bytes_last = frame_draw_count = 0u;
   field_bytes_last = 0u;
@@ -3121,6 +3137,7 @@ void dbg_exit(void) {
   /* Leaving the UI must still hand motor and simulation changes to the tick. */
   (void)controller_debug_request(&request);
   active = echo_enabled = armed = false;
+  ds3231_timer_stream = false;
   sim_travel_active = false;
   cal_sim_active = false;
   cal_sim_waiting = false;
@@ -3138,6 +3155,15 @@ bool dbg_plain_mode(void) { return plain_mode; }
 bool dbg_motor_armed(void) { return armed; }
 void dbg_poll(void) {
   uint32_t now = ms_now();
+  if (active && ds3231_timer_stream &&
+      (int32_t)(now - ds3231_timer_next_ms) >= 0) {
+    char detail[96];
+    if (!event_timer_format_countdown(detail, sizeof detail))
+      ds3231_timer_stream = false;
+    result("DS3231 timer", ds3231_timer_stream ? "active" : "rejected",
+           detail);
+    ds3231_timer_next_ms = now + DEBUG_DS3231_TIMER_STREAM_MS;
+  }
   if (trace_dump_index < trace_dump_count && !dbg_out_pending()) {
     motion_trace_entry_t entry;
     if (controller_motion_trace_get(trace_dump_index, &entry)) {
