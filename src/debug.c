@@ -683,31 +683,31 @@ static void frame_continue(void) {
                                  28, 29, 30};
   static const char *const command_rows[][4] = {
       {"a) batt", "a1) help batt", "b) batt raw", "b1) help batt raw"},
-       {"c) batt res", "c1) help batt res", "d) batt log", "d1) help batt log"},
-       {"e) batt events", "e1) help batt events", "f) batt reset", "f1) help batt reset"},
-       {"g) batt sim", "g1) help batt sim", "P) batt chirp", "P1) help batt chirp"},
-       {"i) ina", "i1) help ina", "j) adc", "j1) help adc"},
-       {"k) angle", "k1) help angle", "l) status", "l1) help status"},
-       {"m) stations", "m1) help stations", "n) limits", "n1) help limits"},
-       {"o) cfg", "o1) help cfg", "p) lowendstop", "p1) help lowendstop"},
-       {"q) jog", "q1) help jog", "r) step", "r1) help step"},
-       {"s) pos", "s1) help pos", "t) move", "t1) help move"},
-       {"u) goto", "u1) help goto", "v) home", "v1) help home"},
-       {"w) stop", "w1) help stop", "x) buzzer", "x1) help buzzer"},
-       {"y) cal sim", "y1) help cal sim", "z) cal motor", "z1) help cal motor"},
-       {"A) highendstop", "A1) help highendstop", "B) sel", "B1) help sel"},
-       {"C) save", "C1) help save", "D) export", "D1) help export"},
-       {"E) arm", "E1) help arm", "F) drive", "F1) help drive"},
-       {"G) disarm", "G1) help disarm", "H) page", "H1) help page"},
-       {"O) batt critical", "O1) help critical", "", ""},
-       {"K) exit", "K1) help exit", "L) led", "L1) help led"},
-       {"M) batt sim range", "M1) help sim range", "N) batt sim warn", "N1) help sim warn"},
-       {"Q) chirp time", "Q1) help chirp time", "", ""},
-       {"R) co2living", "R1) help co2living", "S) co2sleeping", "S1) help co2sleep"},
-       {"T) co2cfg", "T1) help co2cfg", "U) co2sim", "U1) help co2sim"},
-       {"V) co2limit", "V1) help co2limit", "W) co2save", "W1) help co2save"},
-       {"X) co2defaults", "X1) help defaults", "", ""},
-       {"Y) adc0offset", "Y1) help adc0offset", "", ""}};
+      {"c) batt res", "c1) help batt res", "d) batt log", "d1) help batt log"},
+      {"e) batt events", "e1) help batt events", "f) batt reset", "f1) help batt reset"},
+      {"g) batt sim", "g1) help batt sim", "P) batt chirp", "P1) help batt chirp"},
+      {"i) ina", "i1) help ina", "j) adc", "j1) help adc"},
+      {"k) angle", "k1) help angle", "l) status", "l1) help status"},
+      {"m) stations", "m1) help stations", "n) limits", "n1) help limits"},
+      {"o) cfg", "o1) help cfg", "p) lowendstop", "p1) help lowendstop"},
+      {"q) jog", "q1) help jog", "r) step", "r1) help step"},
+      {"s) pos", "s1) help pos", "t) move", "t1) help move"},
+      {"u) goto", "u1) help goto", "v) home", "v1) help home"},
+      {"w) stop", "w1) help stop", "x) buzzer", "x1) help buzzer"},
+      {"y) cal sim", "y1) help cal sim", "z) cal motor", "z1) help cal motor"},
+      {"A) highendstop", "A1) help highendstop", "B) sel", "B1) help sel"},
+      {"C) save", "C1) help save", "D) export", "D1) help export"},
+      {"E) arm", "E1) help arm", "F) drive", "F1) help drive"},
+      {"G) disarm", "G1) help disarm", "H) page", "H1) help page"},
+      {"O) batt critical", "O1) help critical", "Z) rtctemp", "Z1) help rtctemp"},
+      {"K) exit", "K1) help exit", "L) led", "L1) help led"},
+      {"M) batt sim range", "M1) help sim range", "N) batt sim warn", "N1) help sim warn"},
+      {"Q) chirp time", "Q1) help chirp time", "", ""},
+      {"R) co2living", "R1) help co2living", "S) co2sleeping", "S1) help co2sleep"},
+      {"T) co2cfg", "T1) help co2cfg", "U) co2sim", "U1) help co2sim"},
+      {"V) co2limit", "V1) help co2limit", "W) co2save", "W1) help co2save"},
+      {"X) co2defaults", "X1) help defaults", "", ""},
+      {"Y) adc0offset", "Y1) help adc0offset", "", ""}};
   char piece[288];
   if (!frame_phase || out_free() < sizeof piece)
     return;
@@ -1857,13 +1857,13 @@ static void submit(char *typed) {
     char *p = typed;
     const char *alias = NULL;
     char key = *p++;
-    bool upper = key >= 'A' && key <= 'Y';
+    bool upper = key >= 'A' && key <= 'Z';
     bool help_alias = *p == '1';
     if (help_alias)
       ++p;
     if ((upper || (key >= 'a' && key <= 'z')) && (!*p || isspace((unsigned char)*p))) {
       if (upper) {
-        static const char *const aliases[] = {"highendstop", "sel", "save", "export", "arm", "drive", "disarm", "page", "clean", "help", "exit", "led", "batt sim range", "batt sim warning", "batt sim critical", "batt chirp", "batt chirp time", "co2living", "co2sleeping", "co2cfg", "co2sim", "co2limit", "co2save", "co2defaults", "adc0offset"};
+        static const char *const aliases[] = {"highendstop", "sel", "save", "export", "arm", "drive", "disarm", "page", "clean", "help", "exit", "led", "batt sim range", "batt sim warning", "batt sim critical", "batt chirp", "batt chirp time", "co2living", "co2sleeping", "co2cfg", "co2sim", "co2limit", "co2save", "co2defaults", "adc0offset", "rtctemp"};
         alias = aliases[key - 'A'];
       } else {
         static const char *const aliases[] = {"batt", "batt raw", "batt res", "batt log", "batt events", "batt reset", "batt sim", "load", "ina", "adc", "angle", "status", "stations", "limits", "cfg", "lowendstop", "jog", "step", "pos", "move", "goto", "home", "stop", "buzzer", "cal sim", "cal motor"};
