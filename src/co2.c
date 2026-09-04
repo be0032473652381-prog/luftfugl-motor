@@ -171,7 +171,7 @@ static void apply_position_mapping(uint16_t value) {
 static void apply_error_position(void) {
   if (error_move_latched)
     return;
-  last_mapping_result = controller_request(REQ_MOVE, POS_ERROR);
+  last_mapping_result = controller_request(REQ_MOVE, EVENT_POS);
   if (last_mapping_result == MOVE_OK || last_mapping_result == MOVE_ALREADY)
     error_move_latched = true;
 }
@@ -235,9 +235,9 @@ void co2_format_menu(char l[18][81]) {
            (unsigned long long)sn, single_mode ? "single" : "periodic",
            (unsigned long)frames);
   if (initial_warmup_pending)
-    snprintf(l[2], 81, "- function    = WAITING: securing motor at Station 1");
+    snprintf(l[2], 81, "- function    = WAITING: securing motor at Station 6");
   else if (warming)
-    snprintf(l[2], 81, "- function    = WARM-UP: motor locked at Station 1");
+    snprintf(l[2], 81, "- function    = WARM-UP: motor locked at Station 6");
   else if (!powered)
     snprintf(l[2], 81, "- function    = SENSOR OFF");
   else if (!filtered_valid)
@@ -249,7 +249,7 @@ void co2_format_menu(char l[18][81]) {
     snprintf(l[3], 81, "- warm-up     = %lu seconds remaining (counting down)",
              (unsigned long)warmup_seconds);
   else if (initial_warmup_pending)
-    snprintf(l[3], 81, "- warm-up     = pending until Station 1 is confirmed");
+    snprintf(l[3], 81, "- warm-up     = pending until Station 6 is confirmed");
   else {
     snprintf(l[3], 81, "- warm-up     = %s", powered ? "complete" : "not active");
   }
@@ -317,6 +317,6 @@ if(!strcmp(c,"asc")){bool set=*a,v=asc;if(set&&strcmp(a,"on")&&strcmp(a,"off")){
 if(!strcmp(c,"offset")){char*e=NULL;double v=*a?strtod(a,&e):0;bool set=*a;if(set&&(*e||v<0||v>20)){snprintf(o,z,"offset range is 0 to 20 degrees C");return false;}uint16_t w=set?(uint16_t)(v*65536.0/175.0+0.5):0;if(!idle_begin(&restart)){snprintf(o,z,"I2C busy or stop failed; retry");return false;}ok=set?command_word(CMD_SET_OFFSET,w):words(CMD_GET_OFFSET,&w,1,1);idle_end(restart);if(ok)offset_raw=w;snprintf(o,z,ok?"offset: %s%.3f C":"offset operation failed",set?"set ":"",w*175.0/65536.0);return ok;}
 if(!strcmp(c,"altitude")){char*e=NULL;long v=*a?strtol(a,&e,10):0;bool set=*a;if(set&&(*e||v<0||v>3000)){snprintf(o,z,"altitude range is 0 to 3000 metres");return false;}uint16_t w=(uint16_t)v;if(!idle_begin(&restart)){snprintf(o,z,"I2C busy or stop failed; retry");return false;}ok=set?command_word(CMD_SET_ALTITUDE,w):words(CMD_GET_ALTITUDE,&w,1,1);idle_end(restart);if(ok)altitude=w;if(ok)snprintf(o,z,"altitude: %s%u m",set?"set ":"",w);else snprintf(o,z,"altitude operation failed");return ok;}
 if(!strcmp(c,"mode")){if(!*a){snprintf(o,z,"mode: %s",single_mode?"single":"periodic");return true;}if(strcmp(a,"single")&&strcmp(a,"periodic")){snprintf(o,z,"usage: mode [periodic|single]");return false;}bool s=!strcmp(a,"single");if(s==single_mode){snprintf(o,z,"mode: already %s",a);return true;}if(!claim()){snprintf(o,z,"I2C busy; retry");return false;}ok=command(s?CMD_STOP:CMD_START);if(ok){single_mode=s;measuring=!s;}release();snprintf(o,z,ok?"mode: set %s":"mode switch failed",a);return ok;}
-if(!strcmp(c,"sdc41")){if(strcmp(a,"on")&&strcmp(a,"off")){snprintf(o,z,"usage: sdc41 <on|off>");return false;}if((!strcmp(a,"on")&&powered)||(!strcmp(a,"off")&&!powered)){snprintf(o,z,"SCD41 already %s",powered?"on":"off");return false;}if(!claim()){snprintf(o,z,"I2C busy; retry");return false;}if(!strcmp(a,"off")){ok=!measuring||command(CMD_STOP);if(measuring)sleep_ms(500);if(ok)ok=command(CMD_POWER_DOWN);if(ok){powered=false;measuring=false;warming=false;start_after_warmup=false;initial_warmup_pending=false;reset_pipeline(to_ms_since_boot(get_absolute_time()));}}else{ok=command(CMD_WAKE);sleep_ms(30);uint32_t now=to_ms_since_boot(get_absolute_time());if(ok){powered=true;warming=false;start_after_warmup=false;measuring=false;initial_warmup_pending=true;reset_pipeline(now);}}release();if(!ok)snprintf(o,z,"SCD41 power command failed");else if(powered)snprintf(o,z,"SCD41: on; moving to Station 1 before warm-up");else snprintf(o,z,"SCD41: off");return ok;}
+if(!strcmp(c,"sdc41")){if(strcmp(a,"on")&&strcmp(a,"off")){snprintf(o,z,"usage: sdc41 <on|off>");return false;}if((!strcmp(a,"on")&&powered)||(!strcmp(a,"off")&&!powered)){snprintf(o,z,"SCD41 already %s",powered?"on":"off");return false;}if(!claim()){snprintf(o,z,"I2C busy; retry");return false;}if(!strcmp(a,"off")){ok=!measuring||command(CMD_STOP);if(measuring)sleep_ms(500);if(ok)ok=command(CMD_POWER_DOWN);if(ok){powered=false;measuring=false;warming=false;start_after_warmup=false;initial_warmup_pending=false;reset_pipeline(to_ms_since_boot(get_absolute_time()));}}else{ok=command(CMD_WAKE);sleep_ms(30);uint32_t now=to_ms_since_boot(get_absolute_time());if(ok){powered=true;warming=false;start_after_warmup=false;measuring=false;initial_warmup_pending=true;reset_pipeline(now);}}release();if(!ok)snprintf(o,z,"SCD41 power command failed");else if(powered)snprintf(o,z,"SCD41: on; moving to Station 6 before warm-up");else snprintf(o,z,"SCD41: off");return ok;}
 if(!strcmp(c,"status")||!strcmp(c,"menu")){snprintf(o,z,"SCD41 %s; mode %s; ASC %s; samples %lu; ready %s",powered?"on":"off",single_mode?"single":"periodic",asc?"on":"off",(unsigned long)frames,ready_latched?"yes":"no");return true;}snprintf(o,z,"unknown SDC41 command");return false;}
 const char *co2_command_help(const char*c){static const struct{const char*n,*h;}x[]={{"co2","co2: latest periodic reading or 5-second single shot"},{"co2living","co2living: list all five living-room ranges, stations, and functions"},{"co2sleeping","co2sleeping: list all five sleeping-room ranges, stations, and functions"},{"co2cfg","co2cfg: show GP10-selected profile, both profiles, source, and mapped level"},{"co2limit","co2limit <profile> <level 1-4> <max ppm>: edit one upper bound in RAM"},{"co2save","co2save: save both profile limits to flash"},{"co2defaults","co2defaults: restore schematic defaults in RAM"},{"ready","ready: show and clear latched data-ready state"},{"serial","serial: read the 48-bit SCD41 serial number"},{"selftest","selftest: stop measurement and run the approximately 10-second sensor test"},{"asc","asc [on|off]: read or set automatic self-calibration"},{"offset","offset [degrees]: read or set 0..20 C temperature offset"},{"altitude","altitude [metres]: read or set 0..3000 m"},{"mode","mode [periodic|single]: read or select measurement mode"},{"status","status: show SCD41 mode, ASC, samples, and ready state"},{"sdc41","sdc41 <on|off>: protocol power-down or wake/start"},{"menu","menu: redraw Page 5 live SCD41 menu"}};for(size_t i=0;i<sizeof x/sizeof x[0];i++)if(!strcmp(c,x[i].n))return x[i].h;return NULL;}

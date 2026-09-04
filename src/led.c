@@ -68,7 +68,7 @@ static uint32_t colour_word(uint8_t r, uint8_t g, uint8_t b,
 
 static uint32_t station5_rose(void) {
   return colour_word(LED_STATION5_R, LED_STATION5_G, LED_STATION5_B,
-                     LED_HAZARD_BRIGHTNESS_PERCENT);
+                     LED_STATION_BRIGHTNESS_PERCENT);
 }
 
 static uint32_t station4_peach(void) {
@@ -91,9 +91,14 @@ static uint32_t station1_mint(void) {
                      LED_STATION_BRIGHTNESS_PERCENT);
 }
 
-static uint32_t battery_deep_yellow(void) {
+static uint32_t battery_warning_orange(void) {
   return colour_word(LED_BATTERY_R, LED_BATTERY_G, LED_BATTERY_B,
-                     LED_BATTERY_BRIGHTNESS_PERCENT);
+                     LED_BATTERY_WARNING_BRIGHTNESS_PERCENT);
+}
+
+static uint32_t battery_critical_orange(void) {
+  return colour_word(LED_BATTERY_R, LED_BATTERY_G, LED_BATTERY_B,
+                     LED_BATTERY_CRITICAL_BRIGHTNESS_PERCENT);
 }
 
 static bool battery_warning_flash_lit(uint32_t now) {
@@ -171,15 +176,15 @@ static uint32_t requested_colour(void) {
      borrows only its brief pulse so the primary CO2 colour remains useful. */
   battery_state_t battery_state = power_monitor_battery_state();
   if (battery_state == BATTERY_STATE_CRITICAL)
-    return hazard_lit() ? battery_deep_yellow() : 0u;
+    return hazard_lit() ? battery_critical_orange() : 0u;
   /* A low-battery warning must remain noticeable without hiding the CO2
      level that is the product's primary indication. */
   if (battery_state == BATTERY_STATE_WARNING &&
       battery_warning_flash_lit(now))
-    return battery_deep_yellow();
-  /* Station 5 outranks normal/debug colour modes outside a battery pulse. */
+    return battery_warning_orange();
+  /* Station 5 is a normal static CO2 colour outside a battery pulse. */
   if (mode == LED_MODE_AUTO && station == 5u)
-    return hazard_lit() ? station5_rose() : 0u;
+    return station5_rose();
   if (mode == LED_MODE_FORCED_RAW)
     return rgbw_enabled ? raw_colour : raw_colour << 8;
   if (mode == LED_MODE_FORCED_ON)
@@ -206,11 +211,6 @@ static uint32_t requested_colour(void) {
   if (station == 4u)
     return station4_peach();
   return 0u;
-}
-
-static bool station5_hazard_selected(void) {
-  return mode == LED_MODE_AUTO && controller_state() == ST_IDLE &&
-         led_station_at_live_adc() == 5u;
 }
 
 void led_power_init(void) {
@@ -243,7 +243,7 @@ void led_init(void) {
 
 void led_update(void) {
   uint32_t colour = requested_colour();
-  bool power_required = colour != 0u || station5_hazard_selected();
+  bool power_required = colour != 0u;
   if (!power_required) {
     if (power_enabled) {
       if (last_colour != 0u)

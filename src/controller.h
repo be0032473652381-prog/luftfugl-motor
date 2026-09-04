@@ -3,7 +3,7 @@
 #include "config.h"
 void controller_init(void);
 move_result_t controller_request(request_kind_t kind, position_t arg);
-void controller_set_station1_lock(bool locked);
+void controller_set_startup_lock(bool locked);
 void controller_set_error_position_lock(bool locked);
 jog_result_t controller_request_jog(int16_t delta, uint16_t *from_adc);
 move_result_t controller_request_setpos(position_t position, uint16_t adc);

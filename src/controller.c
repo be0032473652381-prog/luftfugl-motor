@@ -19,7 +19,7 @@ static volatile sys_state_t state;
 static volatile position_t position, target;
 static direction_t last_direction;
 static volatile request_kind_t mailbox;
-static volatile bool station1_lock;
+static volatile bool startup_lock;
 static volatile bool error_position_lock;
 static volatile position_t mailbox_arg;
 static volatile int16_t mailbox_delta;
@@ -97,9 +97,10 @@ static uint8_t speed_for_error(int16_t error) {
 
 static void arrive(position_t p, uint32_t now);
 
-static void begin_home(uint32_t now) {
+static void begin_home(uint32_t now, position_t requested_target) {
+  position_t home_target = valid(requested_target) ? requested_target : POS_MIN;
   uint16_t current = encoder_average();
-  uint16_t target_adc = encoder_nominal(POS_MIN);
+  uint16_t target_adc = encoder_nominal(home_target);
   int16_t error = (int16_t)target_adc - (int16_t)current;
   motor_brake();
   jog_move = false;
@@ -111,12 +112,12 @@ static void begin_home(uint32_t now) {
   motion_trace_reset(now);
 #endif
   if (error_magnitude(error) <= CFG_ARRIVAL_WINDOW) {
-    target = POS_MIN;
-    arrive(POS_MIN, now);
+    target = home_target;
+    arrive(home_target, now);
     return;
   }
   motor_enable();
-  target = POS_MIN;
+  target = home_target;
   motion_start_adc = current;
   motion_target_adc = target_adc;
   previous_motion_adc = current;
@@ -215,7 +216,7 @@ void controller_init(void) {
   target = POS_UNKNOWN;
   last_direction = DIR_REV;
   mailbox = REQ_NONE;
-  station1_lock = false;
+  startup_lock = false;
   error_position_lock = false;
   mailbox_delta = 0;
   mailbox_value = 0u;
@@ -246,7 +247,7 @@ void controller_init(void) {
 #endif
 }
 
-void controller_set_station1_lock(bool locked) { station1_lock = locked; }
+void controller_set_startup_lock(bool locked) { startup_lock = locked; }
 void controller_set_error_position_lock(bool locked) {
   error_position_lock = locked;
 }
@@ -258,15 +259,15 @@ move_result_t controller_request(request_kind_t kind, position_t arg) {
     mailbox = kind;
     return MOVE_OK;
   }
-  if (error_position_lock && (kind != REQ_MOVE || arg != POS_ERROR))
+  if (error_position_lock && (kind != REQ_MOVE || arg != EVENT_POS))
     return MOVE_BUSY;
   if (kind == REQ_HOME) {
     mailbox_arg = arg;
     mailbox = kind;
     return MOVE_OK;
   }
-  if (station1_lock && !error_position_lock &&
-      (kind != REQ_MOVE || arg != POS_MIN))
+  if (startup_lock && !error_position_lock &&
+      !((kind == REQ_MOVE || kind == REQ_HOME) && arg == EVENT_POS))
     return MOVE_BUSY;
   if (arg < POS_MIN || arg > POS_MAX)
     return MOVE_INVALID;
@@ -297,7 +298,7 @@ move_result_t controller_request(request_kind_t kind, position_t arg) {
 jog_result_t controller_request_jog(int16_t delta, uint16_t *from_adc) {
   uint16_t current;
 
-  if (station1_lock || error_position_lock)
+  if (startup_lock || error_position_lock)
     return JOG_BUSY;
   if (delta < -(int16_t)ADC_MAX_VALUE || delta > (int16_t)ADC_MAX_VALUE)
     return JOG_INVALID;
@@ -352,7 +353,7 @@ move_result_t controller_request_reset_positions(void) {
 #ifdef LUFTFUGL_MONITOR
 move_result_t controller_debug_goto_adc(uint16_t adc) {
   uint32_t now = now_ms();
-  if (station1_lock || error_position_lock)
+  if (startup_lock || error_position_lock)
     return MOVE_BUSY;
   if (state == ST_MOVING || state == ST_APPROACH || state == ST_HOMING
 #ifdef LUFTFUGL_DEBUG
@@ -373,7 +374,7 @@ move_result_t controller_debug_goto_adc(uint16_t adc) {
 }
 
 bool controller_debug_request(const dbg_request_t *req) {
-  if (station1_lock && req->op != DBG_OP_EXIT)
+  if (startup_lock && req->op != DBG_OP_EXIT)
     return false;
 #ifdef LUFTFUGL_DEBUG
   if (debug_pending && req->op != DBG_OP_EXIT &&
@@ -535,7 +536,7 @@ void controller_tick(void) {
       if (position == POS_UNKNOWN || position == POS_BETWEEN)
         console_push_event(EV_STOPPED_UNKNOWN, 0);
     } else if (request == REQ_HOME) {
-      begin_home(now);
+      begin_home(now, arg);
     } else if (request == REQ_MOVE) {
       begin_move(arg);
     } else if (request == REQ_JOG) {
@@ -588,7 +589,7 @@ void controller_tick(void) {
       if (was_jog) {
         state = ST_IDLE;
       } else {
-        begin_home(now);
+        begin_home(now, POS_MIN);
       }
     }
     TICK_RETURN();
@@ -708,9 +709,10 @@ void controller_tick(void) {
                            (target_correcting ? CFG_ARRIVAL_WINDOW
                                               : CFG_POS_WINDOW);
       if (state == ST_HOMING && !target_correcting) {
-        /* Homing can cross the narrow ADC band between 1 kHz samples.  Use
-         * the travel direction as the reference and stop on the first
-         * directional crossing instead of driving past station 1. */
+        /* Endpoint homing can cross the narrow ADC band between 1 kHz
+         * samples.  Use the travel direction as the reference and stop on
+         * the first directional crossing instead of driving past the
+         * requested endpoint. */
         target_window = last_direction == DIR_REV
                             ? current <= motion_target_adc + CFG_POS_WINDOW
                             : current + CFG_POS_WINDOW >= motion_target_adc;
@@ -761,7 +763,7 @@ void controller_tick(void) {
          * window so normal ADC drift cannot immediately make the station
          * unknown again.  Homing uses the same check: its directional
          * crossing rule brakes early for harness safety, but is not evidence
-         * that the mechanism actually stopped at station 1. */
+         * that the mechanism actually stopped at the requested endpoint. */
         if (error_magnitude((int16_t)motion_target_adc -
                             (int16_t)encoder_average()) <=
             CFG_ARRIVAL_WINDOW) {

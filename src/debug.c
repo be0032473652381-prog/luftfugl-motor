@@ -1497,7 +1497,7 @@ static const help_entry_t help_entries[] = {
     {"angle", "angle", "read-only",
      "Shows the filtered ADC reading converted to degrees."},
     {"led", "led auto", "on/off/auto, rgbw on/off, or a wire-order hex word",
-     "GP0 follows pixel demand except station 5 stays powered for hazard blinking; GP18 carries data."},
+     "GP0 follows pixel demand; GP18 carries data. All five CO2 station colours are static."},
     {"buzzer", "buzzer play 3", "on, off, play 1..10, or no argument for status",
      "Plays the randomized bird warning on BO1/BO2; BIN1/BIN2 GP6/GP7, PWMB GP16."},
     {"page", "page 2", "no argument lists pages; page 1 to 6 selects",
@@ -1793,7 +1793,7 @@ static void help_led_detail(const char *original) {
       {"Automatic power", ""},
       {"", "Non-zero color  GP0 HIGH; wait 300 us; transmit pixel data"},
       {"", "Dark/off        GP0 LOW, placing the SK6812 in its unpowered sleep state"},
-      {"", "Station 5       GP0 stays HIGH; red/black pixel data produces the hazard blink"},
+      {"", "Station 5       Static red/rose at 3% brightness"},
       {"", "Reset/startup   GP0 LOW with the internal pull-down enabled"},
       {"Auto indication", ""},
       {"", "Moving          LED off, GP0 LOW"},
@@ -1801,7 +1801,7 @@ static void help_led_detail(const char *original) {
       {"", "Station 2       Yellow-green"},
       {"", "Station 3       Yellow"},
       {"", "Station 4       Pink"},
-      {"", "Station 5       Flashing red/rose plus three bird calls on arrival"},
+      {"", "Station 5       Static red/rose plus three bird calls on arrival"},
       {"Examples", ""},
       {"", "led | led auto | led on | led off | led rgbw on | led raw 00ff0000"}};
   for (size_t i = sizeof lines / sizeof lines[0]; i-- > 0;)
@@ -2432,7 +2432,7 @@ static void submit(char *typed) {
     } else if (!strcmp(arg, "auto")) {
       led_set_mode(LED_MODE_AUTO);
       result(original, "complete",
-             "following station 1 green / 2 yellow-green / 3 yellow / 4 pink / 5 hazard");
+             "following station 1 green / 2 yellow-green / 3 yellow / 4 pink / 5 red");
     } else if (!strcmp(arg, "rgbw on")) {
       led_set_rgbw(true);
       result(original, "complete", "RGBW enabled; sending G,R,B,W with W=0");

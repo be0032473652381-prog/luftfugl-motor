@@ -1,4 +1,5 @@
 #include "pico/stdlib.h"
+#include "hardware/sync.h"
 #include "hardware/timer.h"
 #include "hardware/watchdog.h"
 #include "console.h"
@@ -30,16 +31,19 @@ static void coordinate_sdc41_warmup(void)
     bool pending = co2_startup_pending();
     bool warming = co2_warming_up();
 
-    controller_set_station1_lock(pending || warming);
+    controller_set_startup_lock(pending || warming);
     if (!pending && !warming) return;
 
     uint16_t current = encoder_average();
-    uint16_t station1 = encoder_nominal(POS_MIN);
-    bool at_station1 = adc_distance(current, station1) <= CFG_POS_WINDOW;
+    uint16_t station6 = encoder_nominal(EVENT_POS);
+    bool at_station6 = adc_distance(current, station6) <= CFG_POS_WINDOW;
     if (controller_state() != ST_IDLE) return;
 
-    if (!at_station1) {
-        (void)controller_request(REQ_HOME, POS_MIN);
+    if (!at_station6) {
+        /* Startup homing accepts a known or between-station position and
+         * converges on the calibrated high endpoint without extrapolating
+         * beyond it. */
+        (void)controller_request(REQ_HOME, EVENT_POS);
         return;
     }
     if (pending) (void)co2_begin_initial_warmup();
@@ -86,7 +90,7 @@ static void battery_alert_poll(void)
         return;
     }
     if (!battery_error_move_latched) {
-        move_result_t move = controller_request(REQ_MOVE, POS_ERROR);
+        move_result_t move = controller_request(REQ_MOVE, EVENT_POS);
         if (move == MOVE_OK || move == MOVE_ALREADY)
             battery_error_move_latched = true;
     }
@@ -160,6 +164,10 @@ int main(void)
         dbg_poll();
         dbg_out_drain();
 #endif
-        tight_loop_contents();
+        /* All main-context state machines need millisecond resolution at
+         * most.  Wait for the next timer, UART, or GPIO interrupt instead of
+         * burning CPU between polls; the 1 kHz safety tick remains in IRQ
+         * context and continues to service the watchdog. */
+        __wfi();
     }
 }
