@@ -96,6 +96,15 @@ static uint32_t battery_deep_yellow(void) {
                      LED_BATTERY_BRIGHTNESS_PERCENT);
 }
 
+static bool battery_warning_flash_lit(uint32_t now) {
+  uint32_t phase = now % LED_BATTERY_WARNING_PERIOD_MS;
+  uint32_t second_flash =
+      LED_BATTERY_WARNING_FLASH_MS + LED_BATTERY_WARNING_GAP_MS;
+  return phase < LED_BATTERY_WARNING_FLASH_MS ||
+         (phase >= second_flash &&
+          phase < second_flash + LED_BATTERY_WARNING_FLASH_MS);
+}
+
 static uint32_t co2_warm_white_breathe(uint32_t now) {
   /* Eight-second, low-brightness breathing envelope.  The RGBW pixel uses
      its neutral white die with a small amber contribution for a soft,
@@ -147,6 +156,7 @@ static position_t led_station_at_live_adc(void) {
 }
 
 static uint32_t requested_colour(void) {
+  uint32_t now = to_ms_since_boot(get_absolute_time());
   if (mode == LED_MODE_FORCED_OFF)
     return 0u;
   /* No mode may illuminate the pixel while moving or between stations.
@@ -157,21 +167,23 @@ static uint32_t requested_colour(void) {
   position_t station = led_station_at_live_adc();
   if (station < POS_MIN || station > POS_MAX)
     return 0u;
-  /* Battery state outranks every colour-producing mode, including CO2
-     warm-up, initial filter sampling, sensor errors and debug overrides. */
+  /* Critical battery indication has absolute priority.  Warning indication
+     borrows only its brief pulse so the primary CO2 colour remains useful. */
   battery_state_t battery_state = power_monitor_battery_state();
   if (battery_state == BATTERY_STATE_CRITICAL)
     return hazard_lit() ? battery_deep_yellow() : 0u;
-  if (battery_state == BATTERY_STATE_WARNING)
+  /* A low-battery warning must remain noticeable without hiding the CO2
+     level that is the product's primary indication. */
+  if (battery_state == BATTERY_STATE_WARNING &&
+      battery_warning_flash_lit(now))
     return battery_deep_yellow();
-  /* Station 5 outranks normal/debug colour modes when battery state is OK. */
+  /* Station 5 outranks normal/debug colour modes outside a battery pulse. */
   if (mode == LED_MODE_AUTO && station == 5u)
     return hazard_lit() ? station5_rose() : 0u;
   if (mode == LED_MODE_FORCED_RAW)
     return rgbw_enabled ? raw_colour : raw_colour << 8;
   if (mode == LED_MODE_FORCED_ON)
     return station5_rose();
-  uint32_t now = to_ms_since_boot(get_absolute_time());
   if (co2_sensor_error()) {
     if (!co2_error_latched) {
       co2_error_latched = true;

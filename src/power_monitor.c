@@ -108,6 +108,36 @@ static uint8_t event_head, event_used;
 
 static uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
 
+static void i2c_bus_recover(void) {
+  gpio_init(PIN_I2C_SDA);
+  gpio_init(PIN_I2C_SCL);
+  gpio_pull_up(PIN_I2C_SDA);
+  gpio_pull_up(PIN_I2C_SCL);
+  gpio_set_dir(PIN_I2C_SDA, GPIO_IN);
+  gpio_set_dir(PIN_I2C_SCL, GPIO_IN);
+  sleep_us(I2C_RECOVERY_HALF_PERIOD_US);
+  if (gpio_get(PIN_I2C_SDA))
+    return;
+
+  /* A slave interrupted during a read releases SDA after at most nine clocks.
+   * Direction switching emulates open-drain drive and never drives against a
+   * slave holding either bus line low. */
+  gpio_put(PIN_I2C_SCL, false);
+  for (uint8_t pulse = 0u; pulse < I2C_RECOVERY_CLOCK_PULSES; ++pulse) {
+    gpio_set_dir(PIN_I2C_SCL, GPIO_OUT);
+    sleep_us(I2C_RECOVERY_HALF_PERIOD_US);
+    gpio_set_dir(PIN_I2C_SCL, GPIO_IN);
+    sleep_us(I2C_RECOVERY_HALF_PERIOD_US);
+  }
+  gpio_put(PIN_I2C_SDA, false);
+  gpio_set_dir(PIN_I2C_SDA, GPIO_OUT);
+  sleep_us(I2C_RECOVERY_HALF_PERIOD_US);
+  gpio_set_dir(PIN_I2C_SCL, GPIO_IN);
+  sleep_us(I2C_RECOVERY_HALF_PERIOD_US);
+  gpio_set_dir(PIN_I2C_SDA, GPIO_IN);
+  sleep_us(I2C_RECOVERY_HALF_PERIOD_US);
+}
+
 _Static_assert(BATTERY_FILTER_DEPTH >= 3u &&
                    (BATTERY_FILTER_DEPTH & 1u) == 1u,
                "battery median depth must be odd and at least three");
@@ -381,6 +411,7 @@ void power_monitor_init(void) {
   filtered_bus_mv = 0u;
   battery_state = BATTERY_STATE_NORMAL;
   warning_count = critical_count = recovery_count = 0u;
+  i2c_bus_recover();
   i2c_init(i2c0, I2C_BAUD);
   gpio_set_function(PIN_I2C_SDA, GPIO_FUNC_I2C);
   gpio_set_function(PIN_I2C_SCL, GPIO_FUNC_I2C);

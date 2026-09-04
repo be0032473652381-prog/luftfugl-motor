@@ -64,7 +64,7 @@ static uint32_t next_refresh;
 static pending_t pending;
 static uint16_t pending_target_adc;
 static char pending_text[DEBUG_COMMAND_MAX + 1u];
-static char status_shadow[24][81];
+static char status_shadow[30][81];
 static uint8_t frame_phase;
 static uint8_t ui_page;
 static bool frame_measuring;
@@ -73,6 +73,8 @@ static uint16_t field_bytes_last;
 static bool first_result;
 static bool ds3231_timer_stream;
 static uint32_t ds3231_timer_next_ms;
+static bool ds3231_temperature_valid;
+static char ds3231_temperature_text[81];
 static bool sim_travel_active;
 static bool cal_sim_active, cal_sim_waiting;
 static uint8_t cal_sim_count, cal_sim_misses;
@@ -617,6 +619,11 @@ void dbg_fields_refresh(void) {
   if (ui_page == 4u)
     for (uint8_t i = 0u; i < 10u; ++i)
       field((uint8_t)(3u + i), power_lines[i]);
+  if (ds3231_temperature_valid) {
+    uint8_t row = ui_page == 6u ? DEBUG_PAGE6_DS3231_TEMP_ROW
+                                : DEBUG_DS3231_TEMP_ROW;
+    field(row, ds3231_temperature_text);
+  }
 }
 
 #ifndef LUFTFUGL_TRACE_INPUT
@@ -632,7 +639,8 @@ static void command_line_draw(void) {
     /* Input echo must be immediate.  A queued redraw can remain behind the
      * periodic fixed-screen traffic until after Enter, making typed text
      * invisible even though the command buffer is correct. */
-    dbg_out_drain();
+    while (dbg_out_pending())
+      dbg_out_drain();
     char position[20];
     snprintf(position, sizeof position, "\033[%u;1H", command_row());
     uart_puts(uart1, position);
@@ -697,32 +705,26 @@ static void frame_continue(void) {
                                  12, 13, 14, 15, 16, 17, 18, 19,
                                  20, 21, 22, 23, 24, 25, 26, 27,
                                  28, 29, 30};
-  static const char *const command_rows[][3] = {
-      {"adc", "adc0offset", "altitude"},
-      {"angle", "arm", "asc"},
-      {"batt", "batt chirp", "batt chirp time"},
-      {"batt events", "batt log", "batt raw"},
-      {"batt res", "batt reset", "batt sim"},
-      {"batt sim critical", "batt sim range", "batt sim warning"},
-      {"bootsel", "buzzer", "cal"},
-      {"cfg", "clean", "co2"},
-      {"co2cfg", "co2defaults", "co2limit"},
-      {"co2living", "co2save", "co2sim"},
-      {"co2sleeping", "diag", "disarm"},
-      {"drive", "ds3231", "ds3231 stop"},
-      {"ds3231 timer", "exit", "export"},
-      {"findmin", "goto", "help"},
-      {"highendstop", "home", "ina"},
-      {"jog", "led", "limits"},
-      {"load", "lowendstop", "menu"},
-      {"mode", "move", "offset"},
-      {"page", "pins", "plain"},
-      {"pos", "pwm", "ready"},
-      {"reset", "rtctemp", "save"},
-      {"sdc41", "sel", "selftest"},
-      {"serial", "sim", "stations"},
-      {"status", "step", "stop"},
-      {"tick", "trace", ""}};
+  static const char *const command_rows[][4] = {
+      {"adc", "adc0offset", "altitude", "angle"},
+      {"arm", "asc", "batt", "batt chirp"},
+      {"batt chirp time", "batt events", "batt log", "batt raw"},
+      {"batt res", "batt reset", "batt sim", "batt sim critical"},
+      {"batt sim range", "batt sim warning", "bootsel", "buzzer"},
+      {"cal", "cfg", "clean", "co2"},
+      {"co2cfg", "co2defaults", "co2limit", "co2living"},
+      {"co2save", "co2sim", "co2sleeping", "diag"},
+      {"disarm", "drive", "ds3231 start", "ds3231 stop"},
+      {"ds3231 temp", "ds3231 timer", "ds3231 timeset", "exit"},
+      {"export", "findmin", "goto", "help"},
+      {"highendstop", "home", "ina", "jog"},
+      {"led", "limits", "load", "lowendstop"},
+      {"menu", "mode", "move", "offset"},
+      {"page", "pins", "plain", "pos"},
+      {"pwm", "ready", "reset", "save"},
+      {"sdc41", "sel", "selftest", "serial"},
+      {"sim", "stations", "status", "step"},
+      {"stop", "tick", "trace", ""}};
   char piece[288];
   if (!frame_phase || out_free() < sizeof piece)
     return;
@@ -743,15 +745,19 @@ static void frame_continue(void) {
                item <= sizeof command_rows / sizeof command_rows[0]) {
       /* Keep the complete row below 80 columns.  A wrapped command-index row
        * would overwrite the fixed command-entry line. */
-      snprintf(content, sizeof content, "  %-24.24s %-24.24s %-24.24s",
+      snprintf(content, sizeof content,
+               "  %-18.18s %-18.18s %-18.18s %-18.18s",
                command_rows[item - 1u][0], command_rows[item - 1u][1],
-               command_rows[item - 1u][2]);
+               command_rows[item - 1u][2], command_rows[item - 1u][3]);
     } else if (ui_page == 6u &&
                item == sizeof command_rows / sizeof command_rows[0] + 1u) {
-      snprintf(content, sizeof content,
-               "  Help: help <command>   examples: help DS3231 timer | help DS3231 stop");
+      if (ds3231_temperature_valid)
+        snprintf(content, sizeof content, "%s", ds3231_temperature_text);
+      else
+        snprintf(content, sizeof content,
+                 "  Help: help <command>   examples: help DS3231 temp | help DS3231 timer");
     } else if (ui_page == 6u &&
-               item == 28u) {
+               item == 22u) {
       const char *shown = page6_holds_last_input && !input_len
                               ? page6_last_input
                               : input;
@@ -1420,10 +1426,12 @@ static bool ds3231_temperature_format(char *text, size_t size) {
     return false;
   }
 
-  int written = i2c_write_blocking(i2c0, DS3231_ADDRESS, &reg, 1u, true);
+  int written = i2c_write_timeout_us(i2c0, DS3231_ADDRESS, &reg, 1u, true,
+                                     I2C_TRANSACTION_TIMEOUT_US);
   int read = written == 1
-                 ? i2c_read_blocking(i2c0, DS3231_ADDRESS, raw,
-                                     sizeof raw, false)
+                 ? i2c_read_timeout_us(i2c0, DS3231_ADDRESS, raw,
+                                       sizeof raw, false,
+                                       I2C_TRANSACTION_TIMEOUT_US)
                  : PICO_ERROR_GENERIC;
   power_monitor_i2c_release();
   if (written != 1 || read != (int)sizeof raw) {
@@ -1544,14 +1552,18 @@ static const help_entry_t help_entries[] = {
      "Inrush is a sampled lower bound; bench thresholds remain disabled until measured."},
     {"ina", "ina", "read-only",
      "Shows computed calibration, conversion configuration and MODE 000 idle state."},
-    {"rtctemp", "rtctemp", "read-only",
+    {"ds3231", "DS3231 start | temp | timer | timeset 1800 | stop", "start, temp, timer, timeset, or stop",
+     "Controls the one-shot RTC event timer; it remains stopped after boot and after an event."},
+    {"ds3231 start", "DS3231 start", "no additional arguments",
+     "Starts one event using the configured interval restored from flash."},
+    {"ds3231 temp", "DS3231 temp", "read-only",
      "Reads the DS3231 temperature registers over the shared I2C bus."},
-    {"ds3231", "DS3231 timer | DS3231 stop", "timer or stop",
-     "Streams the alarm countdown, or disables the event timer until reset."},
     {"ds3231 stop", "DS3231 stop", "no additional arguments",
-     "Disables the repeating DS3231 event timer until the next reset."},
+     "Disarms the current DS3231 event timer."},
     {"ds3231 timer", "DS3231 timer", "read-only",
-     "Updates the seconds remaining every second until q or Q is received."},
+     "Displays the active one-shot countdown every second until q or Q is received."},
+    {"ds3231 timeset", "DS3231 timeset 1800 /s", "15 to 18000 seconds; optional /s",
+     "Sets the interval; re-arms if running, and /s saves it for DS3231 start."},
     {"adc0offset", "ADC0OFFSET=+45MV /s", "signed offset -200 to +200 mV; optional /s",
      "Adds a calibration correction before battery filtering; /s saves all battery settings to flash."},
     {"co2", "co2", "no arguments",
@@ -1883,7 +1895,7 @@ static void submit(char *typed) {
       ++p;
     if ((upper || (key >= 'a' && key <= 'z')) && (!*p || isspace((unsigned char)*p))) {
       if (upper) {
-        static const char *const aliases[] = {"highendstop", "sel", "save", "export", "arm", "drive", "disarm", "page", "clean", "help", "exit", "led", "batt sim range", "batt sim warning", "batt sim critical", "batt chirp", "batt chirp time", "co2living", "co2sleeping", "co2cfg", "co2sim", "co2limit", "co2save", "co2defaults", "adc0offset", "rtctemp"};
+        static const char *const aliases[] = {"highendstop", "sel", "save", "export", "arm", "drive", "disarm", "page", "clean", "help", "exit", "led", "batt sim range", "batt sim warning", "batt sim critical", "batt chirp", "batt chirp time", "co2living", "co2sleeping", "co2cfg", "co2sim", "co2limit", "co2save", "co2defaults", "adc0offset", "ds3231 temp"};
         alias = aliases[key - 'A'];
       } else {
         static const char *const aliases[] = {"batt", "batt raw", "batt res", "batt log", "batt events", "batt reset", "batt sim", "load", "ina", "adc", "angle", "status", "stations", "limits", "cfg", "lowendstop", "jog", "step", "pos", "move", "goto", "home", "stop", "buzzer", "cal sim", "cal motor"};
@@ -1984,14 +1996,64 @@ static void submit(char *typed) {
   }
   if (!strcmp(command, "ds3231")) {
     char detail[96];
+    if (arg && !strcmp(arg, "start")) {
+      bool ok = event_timer_start(detail, sizeof detail);
+      result(original, ok ? "complete" : "rejected", detail);
+      return;
+    }
+    if (arg && !strcmp(arg, "temp")) {
+      bool ok = ds3231_temperature_format(detail, sizeof detail);
+      if (ok && !plain_mode) {
+        snprintf(ds3231_temperature_text, sizeof ds3231_temperature_text,
+                 " %.79s", detail);
+        ds3231_temperature_valid = true;
+        /* A partially queued full-frame draw may still clear this row.  Let
+         * the normal post-frame refresh own the write and its shadow state. */
+        status_shadow[(ui_page == 6u ? DEBUG_PAGE6_DS3231_TEMP_ROW
+                                    : DEBUG_DS3231_TEMP_ROW) - 1u][0] = '\0';
+        next_refresh = 0u;
+      }
+      /* Fixed-screen mode already presents the successful reading in its
+       * dedicated row.  Duplicating it in the scrolling result area can move
+       * the saved cursor and overwrite the page-6 command prompt. */
+      if (!ok || plain_mode)
+        result(original, ok ? "complete" : "rejected", detail);
+      return;
+    }
     if (arg && !strcmp(arg, "stop")) {
       bool ok = event_timer_stop(detail, sizeof detail);
       ds3231_timer_stream = false;
       result(original, ok ? "complete" : "rejected", detail);
       return;
     }
+    if (arg && !strncmp(arg, "timeset", 7u) &&
+        (!arg[7] || isspace((unsigned char)arg[7]))) {
+      char *value_text = arg + 7u;
+      while (isspace((unsigned char)*value_text))
+        ++value_text;
+      bool persist = take_save_suffix(value_text);
+      char *endptr;
+      long seconds = strtol(value_text, &endptr, 10);
+      while (isspace((unsigned char)*endptr))
+        ++endptr;
+      if (endptr == value_text || *endptr || seconds < 0) {
+        result(original, "rejected",
+               "use DS3231 timeset <15..18000 seconds>");
+        return;
+      }
+      if (persist && controller_state() != ST_IDLE) {
+        result(original, "rejected",
+               "saving DS3231 interval requires an idle, braked motor");
+        return;
+      }
+      bool ok = event_timer_set_interval((uint32_t)seconds, persist, detail,
+                                         sizeof detail);
+      result(original, ok ? "complete" : "rejected", detail);
+      return;
+    }
     if (!arg || strcmp(arg, "timer")) {
-      result(original, "rejected", "use DS3231 timer or DS3231 stop");
+      result(original, "rejected",
+             "use DS3231 start, temp, timer, timeset, or stop");
       return;
     }
     bool ok = event_timer_format_countdown(detail, sizeof detail);
@@ -2016,7 +2078,6 @@ static void submit(char *typed) {
               !strcmp(command, "pins") || !strcmp(command, "pwm") ||
               !strcmp(command, "findmin") || !strcmp(command, "plain") ||
               !strcmp(command, "load") || !strcmp(command, "ina") ||
-              !strcmp(command, "rtctemp") ||
               !strcmp(command, "clean") ||
               !strcmp(command, "bootsel") || !strcmp(command, "exit"))) {
     result(original, "rejected", "unexpected argument; try help <command>");
@@ -2274,10 +2335,6 @@ static void submit(char *typed) {
     char d[512];
     power_monitor_format_ina(d, sizeof d);
     result(original, "complete", d);
-  } else if (!strcmp(command, "rtctemp")) {
-    char d[128];
-    bool ok = ds3231_temperature_format(d, sizeof d);
-    result(original, ok ? "complete" : "rejected", d);
   } else if (!strcmp(command, "adc0offset")) {
     if (!arg) {
       char detail[96];
@@ -3126,6 +3183,8 @@ void dbg_init(void) {
   first_result = true;
   ds3231_timer_stream = false;
   ds3231_timer_next_ms = 0u;
+  ds3231_temperature_valid = false;
+  ds3231_temperature_text[0] = '\0';
   frame_measuring = false;
   frame_bytes_current = frame_bytes_last = frame_draw_count = 0u;
   field_bytes_last = 0u;
@@ -3140,8 +3199,17 @@ static void enter(bool plain) {
   input_overflow = false;
   command_dirty = false;
 #ifndef LUFTFUGL_TRACE_INPUT
-  if (!plain)
+  if (!plain) {
     dbg_render();
+    /* A warm SWD/watchdog reset leaves the host terminal connected.  Finish
+     * the clearing and initial fixed-screen frame before boot events can be
+     * mixed into it; the 1 kHz controller IRQ remains independent. */
+    while (frame_phase || dbg_out_pending()) {
+      if (frame_phase)
+        frame_continue();
+      dbg_out_drain();
+    }
+  }
 #endif
 }
 void dbg_enter(void) { enter(false); }
@@ -3173,12 +3241,13 @@ void dbg_poll(void) {
   if (active && ds3231_timer_stream &&
       (int32_t)(now - ds3231_timer_next_ms) >= 0) {
     char detail[96];
-    if (!event_timer_format_countdown(detail, sizeof detail)) {
-      ds3231_timer_stream = false;
-      result("DS3231 timer", "rejected", detail);
-    } else {
-      ds3231_timer_draw(detail);
-    }
+    /* The INA219 and SCD41 share I2C0.  A transient busy/read failure must
+     * not silently cancel the stream; keep polling so the next update (and
+     * each newly armed alarm) appears without another command. */
+    (void)event_timer_format_countdown(detail, sizeof detail);
+    ds3231_timer_draw(detail);
+    if (!plain_mode && ui_page == 6u)
+      command_line_draw();
     ds3231_timer_next_ms = now + DEBUG_DS3231_TIMER_STREAM_MS;
   }
   if (trace_dump_index < trace_dump_count && !dbg_out_pending()) {
@@ -3229,6 +3298,8 @@ void dbg_poll(void) {
   if (active && !plain_mode && !frame_phase &&
       (int32_t)(now - next_refresh) >= 0) {
     dbg_fields_refresh();
+    if (ui_page == 6u)
+      command_line_draw();
     next_refresh = now + DEBUG_REFRESH_MS;
   }
 #endif

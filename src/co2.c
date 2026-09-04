@@ -188,9 +188,9 @@ static void refresh_active_profile(void) {
 }
 
 static uint8_t crc8(const uint8_t *p,size_t n){uint8_t c=0xff;while(n--){c^=*p++;for(unsigned b=0;b<8;b++)c=(c&0x80)?(uint8_t)((c<<1)^0x31):(uint8_t)(c<<1);}return c;}
-static bool command(uint16_t c){uint8_t b[2]={(uint8_t)(c>>8),(uint8_t)c};return i2c_write_blocking(i2c0,SCD41_ADDRESS,b,2,false)==2;}
-static bool command_word(uint16_t c,uint16_t w){uint8_t b[5]={(uint8_t)(c>>8),(uint8_t)c,(uint8_t)(w>>8),(uint8_t)w,0};b[4]=crc8(b+2,2);return i2c_write_blocking(i2c0,SCD41_ADDRESS,b,5,false)==5;}
-static bool words(uint16_t c,uint16_t *w,size_t n,uint32_t delay){uint8_t b[9];if(!command(c))return false;sleep_ms(delay);if(i2c_read_blocking(i2c0,SCD41_ADDRESS,b,n*3,false)!=(int)(n*3))return false;for(size_t i=0;i<n;i++){if(crc8(b+i*3,2)!=b[i*3+2])return false;w[i]=(uint16_t)(b[i*3]<<8)|b[i*3+1];}return true;}
+static bool command(uint16_t c){uint8_t b[2]={(uint8_t)(c>>8),(uint8_t)c};return i2c_write_timeout_us(i2c0,SCD41_ADDRESS,b,2,false,I2C_TRANSACTION_TIMEOUT_US)==2;}
+static bool command_word(uint16_t c,uint16_t w){uint8_t b[5]={(uint8_t)(c>>8),(uint8_t)c,(uint8_t)(w>>8),(uint8_t)w,0};b[4]=crc8(b+2,2);return i2c_write_timeout_us(i2c0,SCD41_ADDRESS,b,5,false,I2C_TRANSACTION_TIMEOUT_US)==5;}
+static bool words(uint16_t c,uint16_t *w,size_t n,uint32_t delay){uint8_t b[9];if(!command(c))return false;sleep_ms(delay);if(i2c_read_timeout_us(i2c0,SCD41_ADDRESS,b,n*3,false,I2C_TRANSACTION_TIMEOUT_US)!=(int)(n*3))return false;for(size_t i=0;i<n;i++){if(crc8(b+i*3,2)!=b[i*3+2])return false;w[i]=(uint16_t)(b[i*3]<<8)|b[i*3+1];}return true;}
 static bool claim(void){return power_monitor_i2c_claim();} static void release(void){power_monitor_i2c_release();}
 static bool idle_begin(bool *restart){*restart=measuring;if(!claim())return false;if(*restart&&!command(CMD_STOP)){release();return false;}if(*restart){sleep_ms(500);measuring=false;}return true;}
 static void idle_end(bool restart){if(restart){measuring=command(CMD_START);next_poll_ms=to_ms_since_boot(get_absolute_time())+5000;}release();}
