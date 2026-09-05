@@ -1,5 +1,6 @@
 #include "encoder.h"
 #include "hardware/adc.h"
+#include "hardware/gpio.h"
 
 static uint16_t samples[FILTER_DEPTH];
 static uint32_t sample_sum;
@@ -8,6 +9,7 @@ static uint16_t stable_ms;
 static volatile uint16_t raw_value, average_value;
 static volatile position_t instant_position, confirmed_position;
 static volatile bool confirmed_changed;
+static bool power_initialized;
 #ifdef LUFTFUGL_DEBUG
 static volatile bool sim_active;
 static volatile uint16_t sim_value;
@@ -65,14 +67,27 @@ static position_t position_at(uint16_t value) {
   return POS_BETWEEN;
 }
 
+static uint16_t read_position_adc(void) {
+  return adc_read();
+}
+
+void encoder_power_init(void) {
+  gpio_init(PIN_POT_POWER);
+  gpio_put(PIN_POT_POWER, true);
+  gpio_set_dir(PIN_POT_POWER, GPIO_OUT);
+  power_initialized = true;
+}
+
 void encoder_init(void) {
+  if (!power_initialized)
+    encoder_power_init();
   adc_init();
   adc_gpio_init(PIN_SENSE);
   adc_select_input(ADC_CHANNEL);
   sample_sum = 0;
   sample_index = 0;
   for (uint8_t i = 0; i < FILTER_DEPTH; ++i) {
-    samples[i] = adc_read();
+    samples[i] = read_position_adc();
     sample_sum += samples[i];
   }
   raw_value = samples[FILTER_DEPTH - 1u];
@@ -87,13 +102,17 @@ void encoder_init(void) {
 #endif
 }
 
+void encoder_power_hold(bool enabled) {
+  gpio_put(PIN_POT_POWER, enabled);
+}
+
 void encoder_tick(void) {
 #ifdef LUFTFUGL_DEBUG
   if (encoder_sim_active())
     raw_value = encoder_sim_value();
   else
 #endif
-    raw_value = adc_read();
+    raw_value = read_position_adc();
   sample_sum -= samples[sample_index];
   samples[sample_index] = raw_value;
   sample_sum += raw_value;
@@ -127,7 +146,9 @@ int16_t encoder_error_to(position_t target) {
   return (int16_t)encoder_nominal(target) - (int16_t)average_value;
 }
 #ifdef LUFTFUGL_DEBUG
-void encoder_sim_enable(bool on) { sim_active = on; }
+void encoder_sim_enable(bool on) {
+  sim_active = on;
+}
 bool encoder_sim_active(void) { return sim_active; }
 void encoder_sim_set(uint16_t adc) {
   sim_value = adc > ADC_MAX_VALUE ? ADC_MAX_VALUE : adc;

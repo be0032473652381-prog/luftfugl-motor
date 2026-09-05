@@ -99,6 +99,22 @@ static direction_t findmin_direction;
 static uint16_t findmin_min, findmin_max, findmin_start, findmin_noise;
 static uint32_t findmin_deadline;
 static uint8_t trace_dump_index, trace_dump_count;
+typedef struct {
+  uint32_t seconds;
+  char text[65];
+} datalog_entry_t;
+static datalog_entry_t datalog[DEBUG_HISTORY_DEPTH];
+static uint8_t datalog_head, datalog_used;
+static bool datalog_running;
+static bool datalog_observer_initialized;
+static sys_state_t datalog_state;
+static position_t datalog_position, datalog_target;
+static direction_t datalog_direction;
+static uint8_t datalog_duty;
+static uint32_t datalog_ina_mv, datalog_co2_frames, datalog_led_colour;
+static battery_state_t datalog_battery_state;
+static bool datalog_led_power, datalog_co2_warm, datalog_co2_error;
+static bool datalog_ds_running, datalog_ds_alert, datalog_buzzer_sequence;
 
 static uint32_t cal_sim_random(void) {
   cal_sim_rng = cal_sim_rng * 1664525u + 1013904223u;
@@ -107,6 +123,46 @@ static uint32_t cal_sim_random(void) {
 
 static void result(const char *command, const char *outcome,
                    const char *detail);
+static uint32_t ms_now(void);
+
+static void datalog_clear(void) {
+  datalog_head = 0u;
+  datalog_used = 0u;
+  memset(datalog, 0, sizeof datalog);
+}
+
+static void datalog_push(const char *command, const char *message) {
+  if (!datalog_running)
+    return;
+  datalog_entry_t *entry = &datalog[datalog_head];
+  entry->seconds = ms_now() / 1000u;
+  if (command && command[0])
+    snprintf(entry->text, sizeof entry->text, "%-11.11s %.52s", command,
+             message);
+  else
+    snprintf(entry->text, sizeof entry->text, "%.64s", message);
+  datalog_head = (uint8_t)((datalog_head + 1u) % DEBUG_HISTORY_DEPTH);
+  if (datalog_used < DEBUG_HISTORY_DEPTH)
+    ++datalog_used;
+}
+
+static void datalog_format_visible(uint8_t row, char *text, size_t size) {
+  uint8_t visible = datalog_used < DEBUG_DATALOG_VISIBLE_ROWS
+                        ? datalog_used
+                        : DEBUG_DATALOG_VISIBLE_ROWS;
+  if (row >= visible) {
+    text[0] = '\0';
+    return;
+  }
+  uint8_t first = (uint8_t)((datalog_head + DEBUG_HISTORY_DEPTH - visible) %
+                            DEBUG_HISTORY_DEPTH);
+  const datalog_entry_t *entry =
+      &datalog[(first + row) % DEBUG_HISTORY_DEPTH];
+  snprintf(text, size, "  %02lu:%02lu:%02lu  %s",
+           (unsigned long)(entry->seconds / 3600u),
+           (unsigned long)((entry->seconds / 60u) % 60u),
+           (unsigned long)(entry->seconds % 60u), entry->text);
+}
 
 static uint8_t command_row(void) {
   return ui_page == 6u ? DEBUG_PAGE6_COMMAND_ROW : DEBUG_COMMAND_ROW;
@@ -381,6 +437,115 @@ static const char *dir_text(direction_t direction) {
   return direction == DIR_FWD ? "FWD" : direction == DIR_REV ? "REV" : "STP";
 }
 
+static const char *battery_state_text(battery_state_t state) {
+  return state == BATTERY_STATE_WARNING  ? "warning"
+         : state == BATTERY_STATE_CRITICAL ? "critical"
+                                           : "normal";
+}
+
+static void datalog_observe_activity(void) {
+  if (!datalog_running)
+    return;
+  char detail[128];
+  sys_state_t state = controller_state();
+  position_t position = controller_position();
+  position_t target = controller_target();
+  direction_t direction = motor_direction();
+  uint8_t duty = motor_duty();
+  if (!datalog_observer_initialized || state != datalog_state ||
+      position != datalog_position || target != datalog_target ||
+      direction != datalog_direction || duty != datalog_duty) {
+    snprintf(detail, sizeof detail, "state %s pos %u target %u dir %s duty %u",
+             state_text(state), position, target, dir_text(direction), duty);
+    datalog_push("motor", detail);
+    datalog_state = state;
+    datalog_position = position;
+    datalog_target = target;
+    datalog_direction = direction;
+    datalog_duty = duty;
+  }
+
+  power_sample_t sample;
+  power_monitor_snapshot(&sample);
+  battery_state_t battery = power_monitor_battery_state();
+  uint32_t ina_delta_mv = sample.filtered_bus_mv > datalog_ina_mv
+                              ? sample.filtered_bus_mv - datalog_ina_mv
+                              : datalog_ina_mv - sample.filtered_bus_mv;
+  if (sample.valid &&
+      (!datalog_observer_initialized ||
+       ina_delta_mv >= BATTERY_HYSTERESIS_MV ||
+       battery != datalog_battery_state)) {
+    snprintf(detail, sizeof detail, "%lumV %ldmA %lumW battery %s",
+             (unsigned long)sample.filtered_bus_mv,
+             (long)(sample.current_ua / 1000),
+             (unsigned long)(sample.power_uw / 1000),
+             battery_state_text(battery));
+    datalog_push("INA219", detail);
+    datalog_ina_mv = sample.filtered_bus_mv;
+  }
+  if (!datalog_observer_initialized || battery != datalog_battery_state) {
+    snprintf(detail, sizeof detail, "battery state %s",
+             battery_state_text(battery));
+    datalog_push("battery", detail);
+    datalog_battery_state = battery;
+  }
+
+  bool led_power = led_powered();
+  uint32_t led_colour_now = led_colour();
+  if (!datalog_observer_initialized || led_power != datalog_led_power ||
+      led_colour_now != datalog_led_colour) {
+    snprintf(detail, sizeof detail, "power %s GRBW %08lX mode %u",
+             led_power ? "on" : "off", (unsigned long)led_colour_now,
+             (unsigned)led_mode());
+    datalog_push("LED", detail);
+    datalog_led_power = led_power;
+    datalog_led_colour = led_colour_now;
+  }
+
+  uint32_t frames = co2_frames_read();
+  bool co2_warm = co2_warming_up();
+  bool co2_error = co2_sensor_error();
+  if (!datalog_observer_initialized || frames != datalog_co2_frames) {
+    snprintf(detail, sizeof detail, "frame %lu ppm %u accepted %u/7 level %u",
+             (unsigned long)frames, co2_ppm(), co2_filter_samples(),
+             co2_level());
+    datalog_push("SCD41", detail);
+    datalog_co2_frames = frames;
+  }
+  if (!datalog_observer_initialized || co2_warm != datalog_co2_warm ||
+      co2_error != datalog_co2_error) {
+    snprintf(detail, sizeof detail, "detected %s warmup %s error %s",
+             co2_detected() ? "yes" : "no", co2_warm ? "yes" : "no",
+             co2_error ? "yes" : "no");
+    datalog_push("SCD41", detail);
+    datalog_co2_warm = co2_warm;
+    datalog_co2_error = co2_error;
+  }
+
+  bool ds_running = event_timer_running();
+  bool ds_alert = event_timer_alert_active();
+  if (!datalog_observer_initialized || ds_running != datalog_ds_running ||
+      ds_alert != datalog_ds_alert) {
+    snprintf(detail, sizeof detail, "timer %s alert %s",
+             ds_running ? "running" : "stopped",
+             ds_alert ? "active" : "off");
+    datalog_push("DS3231", detail);
+    datalog_ds_running = ds_running;
+    datalog_ds_alert = ds_alert;
+  }
+
+  bool buzzer_sequence = buzzer_tone_sequence_active();
+  if (!datalog_observer_initialized ||
+      buzzer_sequence != datalog_buzzer_sequence) {
+    snprintf(detail, sizeof detail, "sequence %s output %s",
+             buzzer_sequence ? "active" : "idle",
+             buzzer_enabled() ? "enabled" : "silent");
+    datalog_push("buzzer", detail);
+    datalog_buzzer_sequence = buzzer_sequence;
+  }
+  datalog_observer_initialized = true;
+}
+
 static uint16_t out_free(void) {
   uint16_t used = out_head >= out_tail
                       ? (uint16_t)(out_head - out_tail)
@@ -433,6 +598,7 @@ static void result(const char *command, const char *outcome,
     snprintf(message, sizeof message, "%s: %s", outcome, detail);
   else
     snprintf(message, sizeof message, "%s", detail);
+  datalog_push(command, message);
 #ifdef LUFTFUGL_TRACE_INPUT
   trace_result(message);
 #endif
@@ -526,7 +692,7 @@ void dbg_fields_refresh(void) {
   uint32_t seconds = ms_now() / 1000u;
   uint16_t adc = encoder_average();
   uint16_t target_adc = controller_target_adc();
-  snprintf(line, sizeof line, " luftfugl 2.0  page %u/6%41sup %02lu:%02lu:%02lu", ui_page, "",
+  snprintf(line, sizeof line, " luftfugl 2.0  page %u/7%41sup %02lu:%02lu:%02lu", ui_page, "",
            (unsigned long)(seconds / 3600u),
            (unsigned long)((seconds / 60u) % 60u),
            (unsigned long)(seconds % 60u));
@@ -564,6 +730,7 @@ void dbg_fields_refresh(void) {
     field(15, "  4 - Battery information");
     field(16, "  5 - CO2 sensor");
     field(17, "  6 - Commands");
+    field(18, "  7 - Data log");
   } else if (ui_page == 2u) {
     snprintf(line, sizeof line, "  %-9s%-14s%-9s%-14s%-9s%-14s",
              "STATE", state_text(controller_state()), "TARGET", target,
@@ -581,6 +748,16 @@ void dbg_fields_refresh(void) {
     co2_format_menu(co2_lines);
     for (uint8_t i = 0u; i < 18u; ++i)
       field((uint8_t)(3u + i), co2_lines[i]);
+  } else if (ui_page == 7u) {
+    snprintf(line, sizeof line,
+             "  DATA LOG  %s  %u/%u retained    Q stop  S start  C clear+start",
+             datalog_running ? "RUNNING" : "STOPPED", datalog_used,
+             DEBUG_HISTORY_DEPTH);
+    field(3u, line);
+    for (uint8_t row = 0u; row < DEBUG_DATALOG_VISIBLE_ROWS; ++row) {
+      datalog_format_visible(row, line, sizeof line);
+      field((uint8_t)(4u + row), line);
+    }
   }
   char s1[12], s2[12], s3[12], s4[12], s5[12], s6[12];
   snprintf(s1, sizeof s1, "1:%5u", encoder_nominal(1));
@@ -619,7 +796,7 @@ void dbg_fields_refresh(void) {
   if (ui_page == 4u)
     for (uint8_t i = 0u; i < 10u; ++i)
       field((uint8_t)(3u + i), power_lines[i]);
-  if (ds3231_temperature_valid) {
+  if (ds3231_temperature_valid && ui_page != 7u) {
     uint8_t row = ui_page == 6u ? DEBUG_PAGE6_DS3231_TEMP_ROW
                                 : DEBUG_DS3231_TEMP_ROW;
     field(row, ds3231_temperature_text);
@@ -658,6 +835,8 @@ static void command_line_draw(void) {
 
 static void ds3231_timer_draw(const char *detail) {
   char text[128];
+  if (!plain_mode && ui_page == 7u)
+    return;
   if (plain_mode) {
     snprintf(text, sizeof text, "\r%-79.79s", detail);
   } else {
@@ -692,7 +871,10 @@ static bool status_frame_complete(void) {
   if (ui_page == 6u)
     return true;
   {
-    uint8_t last = ui_page == 4u ? 12u : (ui_page == 5u ? 20u : 5u);
+    uint8_t last = ui_page == 4u   ? 12u
+                   : ui_page == 5u ? 20u
+                   : ui_page == 7u ? 23u
+                                   : 5u;
     for (uint8_t row = 3u; row <= last; ++row)
       if (!status_shadow[row - 1u][0])
         return false;
@@ -711,20 +893,20 @@ static void frame_continue(void) {
       {"batt chirp time", "batt events", "batt log", "batt raw"},
       {"batt res", "batt reset", "batt sim", "batt sim critical"},
       {"batt sim range", "batt sim warning", "bootsel", "buzzer"},
-      {"cal", "cfg", "clean", "co2"},
-      {"co2cfg", "co2defaults", "co2limit", "co2living"},
-      {"co2save", "co2sim", "co2sleeping", "diag"},
-      {"disarm", "drive", "ds3231 start", "ds3231 stop"},
-      {"ds3231 temp", "ds3231 timer", "ds3231 timeset", "exit"},
-      {"export", "findmin", "goto", "help"},
-      {"highendstop", "home", "ina", "jog"},
-      {"led", "limits", "load", "lowendstop"},
-      {"menu", "mode", "move", "offset"},
-      {"page", "pins", "plain", "pos"},
-      {"pwm", "ready", "reset", "save"},
-      {"sdc41", "sel", "selftest", "serial"},
-      {"sim", "stations", "status", "step"},
-      {"stop", "tick", "trace", ""}};
+      {"buzzer play-2", "cal", "cfg", "clean"},
+      {"co2", "co2cfg", "co2defaults", "co2limit"},
+      {"co2living", "co2save", "co2sim", "co2sleeping"},
+      {"diag", "disarm", "drive", "ds3231 start"},
+      {"ds3231 stop", "ds3231 temp", "ds3231 timer", "ds3231 timeset"},
+      {"exit", "export", "findmin", "goto"},
+      {"help", "highendstop", "home", "ina"},
+      {"jog", "led", "limits", "load"},
+      {"lowendstop", "menu", "mode", "move"},
+      {"offset", "page", "pins", "plain"},
+      {"pos", "pwm", "ready", "reset"},
+      {"save", "sdc41", "sel", "selftest"},
+      {"serial", "sim", "stations", "status"},
+      {"step", "stop", "tick", "trace"}};
   char piece[288];
   if (!frame_phase || out_free() < sizeof piece)
     return;
@@ -738,7 +920,8 @@ static void frame_continue(void) {
           " PAGE 3  MOTOR POSITIONS",
           " PAGE 4  BATTERY INFORMATION",
           " PAGE 5  CO2 SENSOR",
-          " PAGE 6  COMMANDS"};
+          " PAGE 6  COMMANDS",
+          " PAGE 7  DATA LOG"};
       snprintf(content, sizeof content, "──────────%s ────────────────────────────────────────────────────────────────",
                titles[ui_page - 1u]);
     } else if (ui_page == 6u && item >= 1u &&
@@ -1497,11 +1680,11 @@ static const help_entry_t help_entries[] = {
     {"angle", "angle", "read-only",
      "Shows the filtered ADC reading converted to degrees."},
     {"led", "led auto", "on/off/auto, rgbw on/off, or a wire-order hex word",
-     "GP0 follows pixel demand; GP18 carries data. All five CO2 station colours are static."},
-    {"buzzer", "buzzer play 3", "on, off, play 1..10, or no argument for status",
+     "GP0 follows pixel demand; GP18 PIO sleeps after each latched frame. All five CO2 station colours are static."},
+    {"buzzer", "buzzer play-2 3", "on, off, play/play-2 1..200, or status",
      "Plays the randomized bird warning on BO1/BO2; BIN1/BIN2 GP6/GP7, PWMB GP16."},
-    {"page", "page 2", "no argument lists pages; page 1 to 6 selects",
-     "Lists or selects general information, motor controller, motor positions, battery, CO2 sensor, or commands."},
+    {"page", "page 2", "no argument lists pages; page 1 to 7 selects",
+     "Lists or selects general, motor, positions, battery, CO2, commands, or data-log pages."},
     {"selftest", "selftest", "no motion",
      "Checks configuration, ADC and the 1 kHz tick."},
     {"tick", "tick", "read-only", "Shows loop timing and watchdog health."},
@@ -1720,13 +1903,13 @@ static void help_description(const help_entry_t *entry, char *text,
              CAL_SIM_TESTS);
   } else if (!strcmp(entry->name, "buzzer")) {
     snprintf(text, size,
-             "on repeats the bird warning; play accepts 1..10 calls with 200 ms gaps; PWM tones are 200..12000 Hz on differential BO1/BO2 drive");
+             "play/play-2: 1..200 calls, 200 ms gaps; play-2 uses DDS sine at 100 kHz PWM; off stops playback; original play uses square waves");
   } else if (!strcmp(entry->name, "pwm")) {
     snprintf(text, size,
              "motor channel A is GP14/PWMA; buzzer channel B is GP6/GP7 with GP16/PWMB enabled while sounding; report is read-only");
   } else if (!strcmp(entry->name, "page")) {
     snprintf(text, size,
-             "page 1 general; page 2 motor controller; page 3 positions; page 4 battery; page 5 CO2 sensor; page 6 command index");
+             "pages 1 general, 2 motor, 3 positions, 4 battery, 5 CO2, 6 commands, 7 data log");
   } else if (!strcmp(entry->name, "drive")) {
     snprintf(text, size,
              "direction fwd or rev; duty 0..255; duration 10..2000 ms; requires the debug motor interlock to be armed");
@@ -1788,7 +1971,7 @@ static void help_led_detail(const char *original) {
       {"", "RGBW enabled    led raw GGRRBBWW - exactly 8 hexadecimal digits"},
       {"", "RGBW disabled   led raw GGRRBB - exactly 6 hexadecimal digits"},
       {"Pins", ""},
-      {"", "GP0             SK6812 power/load-switch enable, active HIGH"},
+      {"", "GP0             Direct SK6812 power supply, active HIGH"},
       {"", "GP18            SK6812 serial data at 800 kHz"},
       {"Automatic power", ""},
       {"", "Non-zero color  GP0 HIGH; wait 300 us; transmit pixel data"},
@@ -1801,7 +1984,7 @@ static void help_led_detail(const char *original) {
       {"", "Station 2       Yellow-green"},
       {"", "Station 3       Yellow"},
       {"", "Station 4       Pink"},
-      {"", "Station 5       Static red/rose plus three bird calls on arrival"},
+      {"", "Station 2/3/4/5 play 1/2/3/4 bird calls on arrival"},
       {"Examples", ""},
       {"", "led | led auto | led on | led off | led rgbw on | led raw 00ff0000"}};
   for (size_t i = sizeof lines / sizeof lines[0]; i-- > 0;)
@@ -2465,7 +2648,9 @@ static void submit(char *typed) {
              "usage: led on/off/auto, led rgbw on/off, led raw <hex>, or led");
   } else if (!strcmp(command, "buzzer")) {
     if (!arg) {
-      result(original, "complete", buzzer_enabled() ? "bird warning on; channel B" :
+      result(original, "complete", buzzer_play_2_active() ? "chirps-2 DDS sine playing; channel B" :
+             buzzer_play_2_underrun() ? "chirps-2 stopped: DMA underrun" :
+             buzzer_enabled() ? "bird warning on; channel B" :
                                                     "bird warning off; channel B");
     } else if (!strcmp(arg, "on")) {
       buzzer_set(true);
@@ -2473,16 +2658,25 @@ static void submit(char *typed) {
     } else if (!strcmp(arg, "off")) {
       buzzer_set(false);
       result(original, "complete", "off");
+    } else if (!strncmp(arg, "play-2 ", 7u)) {
+      long count;
+      if (!parse_long(arg + 7u, &count) || count < 1 || count > (long)BUZZER_PLAY_MAX) {
+        result(original, "rejected", "usage: buzzer play-2 1..200");
+      } else if (!buzzer_play_2((unsigned int)count)) {
+        result(original, "rejected", "DDS unavailable or battery tone active");
+      } else {
+        result(original, "complete", "chirps-2 DDS sine started; 200 ms gaps");
+      }
     } else if (!strncmp(arg, "play ", 5u)) {
       long count;
-      if (!parse_long(arg + 5u, &count) || count < 1 || count > 10) {
-        result(original, "rejected", "usage: buzzer play 1..10");
+      if (!parse_long(arg + 5u, &count) || count < 1 || count > (long)BUZZER_PLAY_MAX) {
+        result(original, "rejected", "usage: buzzer play 1..200");
       } else {
         buzzer_play((unsigned int)count);
         result(original, "complete", "bird playback started; 200 ms gaps");
       }
     } else {
-      result(original, "rejected", "usage: buzzer on/off or buzzer play 1..10");
+      result(original, "rejected", "usage: buzzer on/off or buzzer play/play-2 1..200");
     }
   } else if (!strcmp(command, "page")) {
     long requested;
@@ -2493,8 +2687,9 @@ static void submit(char *typed) {
       result("", "complete", "4 - Battery information");
       result("", "complete", "5 - CO2 sensor");
       result("", "complete", "6 - Commands");
-    } else if (!parse_long(arg, &requested) || requested < 1 || requested > 6) {
-      result(original, "rejected", "usage: page 1..6");
+      result("", "complete", "7 - Data log");
+    } else if (!parse_long(arg, &requested) || requested < 1 || requested > 7) {
+      result(original, "rejected", "usage: page 1..7");
     } else {
       ui_page = (uint8_t)requested;
       result(original, "complete", "debug page selected");
@@ -2687,13 +2882,13 @@ static void submit(char *typed) {
       result(original, "complete", detail);
     }
   } else if (!strcmp(command, "pins")) {
-    char detail[112];
+    char detail[128];
     snprintf(
         detail, sizeof detail,
-        "AIN1 GP%u=%u AIN2 GP%u=%u PWMA GP%u=%u STBY GP%u=%u SENSE GP%u=%u",
+        "AIN1 GP%u=%u AIN2 GP%u=%u PWMA GP%u=%u STBY GP%u=%u POT GP%u=%u SENSE GP%u=%u",
         PIN_AIN1, gpio_get(PIN_AIN1), PIN_AIN2, gpio_get(PIN_AIN2), PIN_PWMA,
-        gpio_get(PIN_PWMA), PIN_STBY, gpio_get(PIN_STBY), PIN_SENSE,
-        gpio_get(PIN_SENSE));
+        gpio_get(PIN_PWMA), PIN_STBY, gpio_get(PIN_STBY), PIN_POT_POWER,
+        gpio_get(PIN_POT_POWER), PIN_SENSE, gpio_get(PIN_SENSE));
     result(original, "complete", detail);
   } else if (!strcmp(command, "pwm")) {
     uint slice = pwm_gpio_to_slice_num(PIN_PWMA);
@@ -3020,6 +3215,31 @@ void dbg_event(event_kind_t kind, uint8_t arg) {
 }
 
 void dbg_handle_key(char c) {
+  if (ui_page == 7u && input_len == 0u && !input_overflow) {
+    if (c == 'q' || c == 'Q') {
+      datalog_running = false;
+      next_refresh = 0u;
+      dbg_fields_refresh();
+      return;
+    }
+    if (c == 's' || c == 'S') {
+      datalog_running = true;
+      datalog_observer_initialized = false;
+      datalog_push("log", "logging restarted");
+      next_refresh = 0u;
+      dbg_fields_refresh();
+      return;
+    }
+    if (c == 'c' || c == 'C') {
+      datalog_clear();
+      datalog_running = true;
+      datalog_observer_initialized = false;
+      datalog_push("log", "cleared; logging restarted");
+      next_refresh = 0u;
+      dbg_fields_refresh();
+      return;
+    }
+  }
   if (ds3231_timer_stream && (c == 'q' || c == 'Q')) {
     ds3231_timer_stream = false;
     input_len = 0u;
@@ -3039,7 +3259,7 @@ void dbg_handle_key(char c) {
 #endif
     return;
   }
-  if (c >= '1' && c <= '6' && input_len == 0u && !input_overflow) {
+  if (c >= '1' && c <= '7' && input_len == 0u && !input_overflow) {
     ui_page = (uint8_t)(c - '0');
     dbg_render();
     return;
@@ -3180,6 +3400,10 @@ void dbg_init(void) {
   trace_dump_index = trace_dump_count = 0u;
   frame_phase = 0u;
   ui_page = 1u;
+  datalog_clear();
+  datalog_running = true;
+  datalog_observer_initialized = false;
+  datalog_push("system", "debug data logging started");
   first_result = true;
   ds3231_timer_stream = false;
   ds3231_timer_next_ms = 0u;
@@ -3238,6 +3462,7 @@ bool dbg_plain_mode(void) { return plain_mode; }
 bool dbg_motor_armed(void) { return armed; }
 void dbg_poll(void) {
   uint32_t now = ms_now();
+  datalog_observe_activity();
   if (active && ds3231_timer_stream &&
       (int32_t)(now - ds3231_timer_next_ms) >= 0) {
     char detail[96];

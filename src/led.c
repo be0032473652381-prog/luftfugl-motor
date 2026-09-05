@@ -34,20 +34,24 @@ static void led_data_disable(void) {
 }
 
 static void led_data_enable(void) {
-  ws2812_program_init(led_pio, led_sm, led_offset, PIN_LED_DATA, 800000.0f,
+  ws2812_program_init(led_pio, led_sm, led_offset, PIN_LED_DATA,
+                      (float)LED_DATA_RATE_HZ,
                       rgbw_enabled);
   data_enabled = true;
-  last_colour = UINT32_MAX;
 }
 
-static void led_transmit_dark(void) {
+static void led_transmit_frame(uint32_t colour) {
   if (!data_enabled)
     led_data_enable();
-  pio_sm_put_blocking(led_pio, led_sm, 0u);
-  /* SK6812 reset/latch time is at least 80 us.  Keep the data engine alive
-     until the all-zero RGBW frame has definitely latched. */
-  sleep_us(100u);
-  last_colour = 0u;
+  pio_sm_put_blocking(led_pio, led_sm, colour);
+  uint32_t frame_bits = rgbw_enabled ? 32u : 24u;
+  uint32_t frame_us =
+      (frame_bits * 1000000u + LED_DATA_RATE_HZ - 1u) / LED_DATA_RATE_HZ;
+  /* FIFO acceptance precedes the final wire bit.  Wait for both the complete
+     frame and the SK6812 latch interval before stopping the PIO engine. */
+  sleep_us(frame_us + LED_LATCH_US);
+  last_colour = colour;
+  led_data_disable();
 }
 
 static uint32_t colour_word(uint8_t r, uint8_t g, uint8_t b,
@@ -233,11 +237,9 @@ void led_init(void) {
   led_data_disable();
   mode = LED_MODE_AUTO;
   raw_colour = 0u;
-  last_colour = UINT32_MAX;
-  /* GP0 is not fitted as a load-switch control on the current hardware.
-     Clear any colour retained by the externally powered pixel after reset. */
-  led_transmit_dark();
-  led_data_disable();
+  /* GP0 now supplies the pixel directly.  Its low startup state guarantees
+     darkness without transmitting to an unpowered device. */
+  last_colour = 0u;
   led_update();
 }
 
@@ -245,17 +247,8 @@ void led_update(void) {
   uint32_t colour = requested_colour();
   bool power_required = colour != 0u;
   if (!power_required) {
-    if (power_enabled) {
-      if (last_colour != 0u)
-        led_transmit_dark();
-      led_data_disable();
-      gpio_put(PIN_LED_POWER, false);
-    } else if (last_colour != 0u) {
-      /* Also cover boards where GP0 is not connected and therefore cannot
-         represent the pixel's real power state. */
-      led_transmit_dark();
-      led_data_disable();
-    }
+    led_data_disable();
+    gpio_put(PIN_LED_POWER, false);
     power_enabled = false;
     power_ready_us = 0u;
     last_colour = 0u;
@@ -270,12 +263,9 @@ void led_update(void) {
   }
   if (time_us_64() < power_ready_us)
     return;
-  if (!data_enabled)
-    led_data_enable();
   if (colour == last_colour)
     return;
-  pio_sm_put_blocking(led_pio, led_sm, colour);
-  last_colour = colour;
+  led_transmit_frame(colour);
 }
 
 void led_set_mode(led_mode_t new_mode) {
@@ -304,6 +294,11 @@ void led_set_raw(uint32_t wire_word) {
   led_update();
 }
 bool led_powered(void) { return power_enabled; }
+uint32_t led_colour(void) {
+  /* UINT32_MAX invalidates the software cache while power settles; it is not
+     a frame transmitted to the pixel and must not be reported as one. */
+  return last_colour == UINT32_MAX ? 0u : last_colour;
+}
 uint led_pio_index(void) { return led_pio == pio0 ? 0u : 1u; }
 uint led_state_machine(void) { return led_sm; }
 uint led_program_offset(void) { return led_offset; }

@@ -280,6 +280,9 @@ bool event_timer_set_interval(uint32_t seconds, bool persist, char *detail,
   return true;
 }
 
+bool event_timer_running(void) { return timer_enabled; }
+bool event_timer_alert_active(void) { return alert_active; }
+
 bool event_timer_format_countdown(char *detail, size_t size) {
   if (!timer_enabled) {
     snprintf(detail, size, "DS3231 timer stopped");

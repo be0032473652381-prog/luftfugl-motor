@@ -3,7 +3,9 @@
 #include "config.h"
 #include <stdbool.h>
 #include <stdint.h>
+void encoder_power_init(void);
 void encoder_init(void);
+void encoder_power_hold(bool enabled);
 void encoder_tick(void);
 uint16_t encoder_raw(void);
 uint16_t encoder_average(void);

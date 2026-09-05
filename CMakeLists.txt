@@ -49,6 +49,7 @@ target_compile_options(luftfugl PRIVATE -Wall -Wextra)
 target_link_libraries(luftfugl
     pico_stdlib
     hardware_pwm
+    hardware_dma
     hardware_adc
     hardware_timer
     hardware_watchdog

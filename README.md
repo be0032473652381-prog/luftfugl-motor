@@ -258,3 +258,33 @@ set: 18 findings, all fixed. `agent-md-discrepancy-report.md` records a
 second, later review specifically covering the reed-switch-to-potentiometer
 transition and everything discovered alongside it — read both for the full
 history of what's changed and why.
+
+## Chirps-2 debug sound test
+
+In debug mode, `buzzer play-2 1` plays one DDS sine-shaped bird call;
+`buzzer play-2 3` plays three, with 200 ms silent gaps. Counts are 1–200.
+`buzzer play 3` retains the original square-wave call. `buzzer off` stops
+playback, and `buzzer` reports playback or a DMA underrun. Fixed battery
+warning tones take priority over the test.
+
+Chirps-2 uses the existing randomized bird frequency/timing generator, capped
+at 650 ms per call. Each invocation generates a pattern once and repeats that
+pattern for its requested count. A phase accumulator and Q15 sine table feed
+two chained DMA buffers into the GP6/GP7 PWM compare registers. The carrier
+is configured by `BUZZER_DDS_CARRIER_HZ` in `src/config.h` (100 kHz); channel B
+short-brakes during silent samples. Frequency changes retain oscillator phase.
+The buffer refill IRQ runs below the motor safety timer's priority. This mode
+and its buffers are excluded from production builds.
+
+The external network is one 3.9 ohm resistor in each buzzer lead and
+a 1.5 uF capacitor across the buzzer after the resistors. The capacitor
+should be non-polar because the bridge reverses its voltage. PWM output
+still needs this external filtering; firmware does not make the driver an
+analogue sine amplifier. Audible quality and residual carrier need bench
+assessment. Run `python3 test/test_buzzer_dds.py` for host waveform and
+sequence checks.
+
+The play-2 setting `BUZZER_DDS_GAIN_PERCENT` is 100 for a clean sine.
+The 125% clipping trial distorted the waveform without increasing the
+measured 2.8 V peak-to-peak output, so the clean sine setting was restored.
+Keep the external RC filter fitted.

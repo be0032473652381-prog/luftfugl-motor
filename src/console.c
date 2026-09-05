@@ -445,13 +445,32 @@ void console_push_event(event_kind_t kind, uint8_t arg) {
   event_queue[event_head].arg = arg;
   event_head = next;
 }
+
+static unsigned int station_arrival_bird_plays(uint8_t station) {
+  switch (station) {
+  case 2u:
+    return BUZZER_STATION_2_PLAYS;
+  case 3u:
+    return BUZZER_STATION_3_PLAYS;
+  case 4u:
+    return BUZZER_STATION_4_PLAYS;
+  case 5u:
+    return BUZZER_STATION_5_PLAYS;
+  default:
+    return 0u;
+  }
+}
+
 void console_drain_events(void) {
   while (event_tail != event_head) {
     event_t event = event_queue[event_tail];
     char output[32];
     event_tail = (uint8_t)((event_tail + 1u) % EVENT_QUEUE_DEPTH);
-    if (event.kind == EV_ARRIVE && event.arg == 5u)
-      buzzer_play(BUZZER_STATION_5_PLAYS);
+    unsigned int bird_plays = event.kind == EV_ARRIVE
+                                  ? station_arrival_bird_plays(event.arg)
+                                  : 0u;
+    if (bird_plays)
+      buzzer_play(bird_plays);
 #ifdef LUFTFUGL_MONITOR
     if (dbg_active()) {
       dbg_event(event.kind, event.arg);

@@ -121,6 +121,11 @@ static bool on_tick(struct repeating_timer *timer)
 
 int main(void)
 {
+    /* The motor position is undefined until its switched 4.7 kohm
+     * potentiometer has power.  Make GP22 the first configured peripheral;
+     * it remains high through ADC/filter initialization, before the motor
+     * driver can be enabled or any movement decision can be made. */
+    encoder_power_init();
     bool watchdog_reset = watchdog_caused_reboot();
     struct repeating_timer timer;
     led_power_init();
@@ -145,7 +150,8 @@ int main(void)
     battery_error_move_latched = false;
     battery_next_sequence_ms = 0u;
     power_monitor_chirp_timing_get(&battery_timing_cache);
-    if (!add_repeating_timer_us(-1000, on_tick, NULL, &timer)) {
+    if (!add_repeating_timer_us(-(int64_t)TICK_PERIOD_US, on_tick, NULL,
+                                &timer)) {
         console_timer_alloc_failed();
     } else {
         while (!tick_has_run) tight_loop_contents();

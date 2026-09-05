@@ -286,8 +286,10 @@ void co2_format_menu(char l[18][81]) {
   snprintf(l[9], 81, "- ASC         = %s    offset %.3f C    altitude %u m",
            asc ? "on" : "off",
            offset_raw * 175.0 / 65536.0, altitude);
-  snprintf(l[10],81,"- profile     = %s (GP10 %s)  source %s  station %u  request %s",
-           profile_names[active_profile],active_profile==CO2_PROFILE_LIVING?"HIGH":"LOW",settings_source(),current_level,
+  snprintf(l[10], 81, "- profile = %s  GP10 %s  %s  station %u  request %s",
+           profile_names[active_profile],
+           active_profile == CO2_PROFILE_LIVING ? "HIGH" : "LOW",
+           settings_source(), current_level,
            mapping_result_name(last_mapping_result));
   snprintf(l[11],81,"- living max  = %u | %u | %u | %u | open",
            profile_limits[0][0],profile_limits[0][1],profile_limits[0][2],profile_limits[0][3]);

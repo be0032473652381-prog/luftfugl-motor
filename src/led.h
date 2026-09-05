@@ -21,6 +21,7 @@ bool led_rgbw(void);
 void led_set_rgbw(bool enabled);
 void led_set_raw(uint32_t wire_word);
 bool led_powered(void);
+uint32_t led_colour(void);
 unsigned int led_pio_index(void);
 unsigned int led_state_machine(void);
 unsigned int led_program_offset(void);

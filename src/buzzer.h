@@ -7,6 +7,11 @@
 void buzzer_init(void);
 void buzzer_set(bool enabled);
 void buzzer_play(unsigned int count);
+#ifdef LUFTFUGL_DEBUG
+bool buzzer_play_2(unsigned int count);
+bool buzzer_play_2_active(void);
+bool buzzer_play_2_underrun(void);
+#endif
 void buzzer_tone(uint32_t frequency_hz, uint32_t duration_ms);
 void buzzer_tone_sequence(uint32_t frequency_hz, uint32_t duration_ms,
                           uint8_t repeat, uint32_t pause_ms);

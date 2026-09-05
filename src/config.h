@@ -11,6 +11,7 @@
 #define PIN_PWMA 14
 #define PIN_STBY 15
 #define PIN_SENSE 26
+#define PIN_POT_POWER 22
 #define ADC_CHANNEL 0
 #define PIN_UART_TX 8
 #define PIN_UART_RX 9
@@ -19,7 +20,15 @@
 #define PIN_BUZZER_BIN1 6
 #define PIN_BUZZER_BIN2 7
 #define PIN_BUZZER_PWMB 16
-#define BUZZER_STATION_5_PLAYS 3u
+/* Chirps-2 carrier: TB6612FNG's specified maximum switching frequency. */
+#define BUZZER_DDS_CARRIER_HZ 100000u
+/* Clean sine amplitude; values above 100 clip the peaks. */
+#define BUZZER_DDS_GAIN_PERCENT 100u
+#define BUZZER_PLAY_MAX 200u
+#define BUZZER_STATION_2_PLAYS 1u
+#define BUZZER_STATION_3_PLAYS 2u
+#define BUZZER_STATION_4_PLAYS 3u
+#define BUZZER_STATION_5_PLAYS 4u
 #define PIN_I2C_SDA 4
 #define PIN_I2C_SCL 5
 #define PIN_CO2_LIMIT_AB 10
@@ -51,6 +60,8 @@
 #define INA219_ADDRESS 0x40u
 #define LED_COUNT 1
 #define LED_RGBW 1
+#define LED_DATA_RATE_HZ 800000u
+#define LED_LATCH_US 100u
 #define LED_POWER_STARTUP_US 300u
 #define LED_STATION_BRIGHTNESS_PERCENT 3u
 #define LED_HAZARD_BRIGHTNESS_PERCENT 30u
@@ -196,6 +207,7 @@
 #define DEBUG_OVERSHOOT_TEST_COUNT 6u
 #define DEBUG_NOMINAL_P3 POS_3_ADC
 #define DEBUG_HISTORY_DEPTH 64u
+#define DEBUG_DATALOG_VISIBLE_ROWS 20u
 #define DEBUG_MOTION_TRACE_PERIOD_MS 50u
 #define DEBUG_OUT_BUFFER 4096u
 #define DEBUG_SELFTEST_ADC_SAMPLES 10u
