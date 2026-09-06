@@ -604,7 +604,10 @@ static void result(const char *command, const char *outcome,
   trace_result(message);
 #endif
   if (plain_mode) {
-    snprintf(line, sizeof line, " %-12s %s", command, message);
+    if (command && command[0])
+      snprintf(line, sizeof line, " %-12s %s", command, message);
+    else
+      snprintf(line, sizeof line, " %s", message);
     dbg_out_push(line);
     dbg_out_push("\r\n");
   } else {
@@ -614,12 +617,45 @@ static void result(const char *command, const char *outcome,
       dbg_out_push(esc);
       first_result = false;
     }
-    snprintf(line, sizeof line, "  %-11.11s %s", command, message);
+    if (command && command[0])
+      snprintf(line, sizeof line, "  %-11.11s %s", command, message);
+    else
+      snprintf(line, sizeof line, "  %s", message);
     /* Insert at the top; the terminal shifts older results down one row. */
     snprintf(esc, sizeof esc, "\033[s\033[%u;1H\033[L", event_top_row());
     dbg_out_push(esc);
-    dbg_out_push(line);
-    dbg_out_push("\033[K\033[u");
+    if (help_display_active) {
+      /* Help is displayed in an 80-column terminal.  Keep every physical
+       * row within that width and break only at spaces; otherwise a wrapped
+       * row collides with the next top-inserted result. */
+      char *cursor = line;
+      bool first_chunk = true;
+      while (*cursor) {
+        size_t remaining = strlen(cursor);
+        size_t take = remaining > 78u ? 78u : remaining;
+        if (take < remaining) {
+          size_t split = take;
+          while (split > 0u && cursor[split] != ' ')
+            --split;
+          if (split > 0u)
+            take = split;
+        }
+        if (!first_chunk)
+          dbg_out_push("\r\n");
+        char saved = cursor[take];
+        cursor[take] = '\0';
+        dbg_out_push(cursor);
+        dbg_out_push("\033[K");
+        cursor[take] = saved;
+        while (*cursor == ' ')
+          ++cursor;
+        first_chunk = false;
+      }
+      dbg_out_push("\033[u");
+    } else {
+      dbg_out_push(line);
+      dbg_out_push("\033[K\033[u");
+    }
   }
 #ifdef LUFTFUGL_TRACE_OUTPUT
   if (!strcmp(command, "adc") || !strcmp(command, "sel 1"))
