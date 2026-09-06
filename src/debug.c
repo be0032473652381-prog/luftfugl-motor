@@ -971,6 +971,11 @@ static void help_display_begin(void) {
            event_top_row(), event_top_row(), DEBUG_SCREEN_BOTTOM_ROW,
            event_top_row());
   dbg_out_push(clear_results);
+  /* Replace the stale command-entry contents with the command just submitted
+   * before the help text starts scrolling. */
+#ifndef LUFTFUGL_TRACE_INPUT
+  command_line_draw();
+#endif
   help_display_active = true;
 }
 
@@ -2446,6 +2451,13 @@ static void submit(char *typed) {
   arg = strtok_r(NULL, "", &save);
   while (arg && isspace((unsigned char)*arg))
     ++arg;
+  if (arg && !strcmp(command, "help")) {
+    /* Accept the compact forms commonly typed from the Page-6 command list. */
+    if (!strcmp(arg, "ledzone") || !strcmp(arg, "ledbrightness")) {
+      memmove(arg + 4, arg + 3, strlen(arg + 3) + 1u);
+      arg[3] = ' ';
+    }
+  }
   if (!command) {
     char detail[160];
     if (candidates[0])
