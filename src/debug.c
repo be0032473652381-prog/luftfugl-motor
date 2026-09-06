@@ -641,7 +641,9 @@ static void result(const char *command, const char *outcome,
             take = split;
         }
         if (!first_chunk)
-          dbg_out_push("\r\n");
+          /* Each continuation needs its own inserted row; otherwise it
+           * overwrites the previous result shifted down by the first row. */
+          dbg_out_push("\r\n\033[L");
         char saved = cursor[take];
         cursor[take] = '\0';
         dbg_out_push(cursor);
@@ -971,11 +973,8 @@ static void help_display_begin(void) {
            event_top_row(), event_top_row(), DEBUG_SCREEN_BOTTOM_ROW,
            event_top_row());
   dbg_out_push(clear_results);
-  /* Replace the stale command-entry contents with the command just submitted
-   * before the help text starts scrolling. */
-#ifndef LUFTFUGL_TRACE_INPUT
-  command_line_draw();
-#endif
+  /* submit() tokenizes input in place. The key handler owns prompt redraws
+   * after submission, once that parser buffer has been cleared. */
   help_display_active = true;
 }
 
@@ -2451,7 +2450,7 @@ static void submit(char *typed) {
   arg = strtok_r(NULL, "", &save);
   while (arg && isspace((unsigned char)*arg))
     ++arg;
-  if (arg && !strcmp(command, "help")) {
+  if (command && arg && !strcmp(command, "help")) {
     /* Accept the compact forms commonly typed from the Page-6 command list. */
     if (!strcmp(arg, "ledzone") || !strcmp(arg, "ledbrightness")) {
       memmove(arg + 4, arg + 3, strlen(arg + 3) + 1u);
@@ -3650,6 +3649,7 @@ void dbg_handle_key(char c) {
     input_len = 0;
     input[0] = '\0';
     input_overflow = false;
+    page6_holds_last_input = false;
     command_dirty = true;
 #ifdef LUFTFUGL_TRACE_INPUT
     dbg_trace_input_out(c, "ESCAPE", NULL);
@@ -3701,12 +3701,16 @@ void dbg_handle_key(char c) {
     input_len = 0;
     input[0] = '\0';
     input_overflow = false;
+    if (help_display_active) {
+      page6_holds_last_input = false;
+      page6_last_input[0] = '\0';
+    }
     command_dirty = true;
 #ifndef LUFTFUGL_TRACE_INPUT
-    if (!plain_mode && ui_page == 6u && !help_display_active && !frame_phase) {
+    if (!plain_mode && ui_page == 6u && !frame_phase) {
       command_line_draw();
       command_dirty = false;
-    } else if (!plain_mode && !help_display_active && !frame_phase &&
+    } else if (!plain_mode && !frame_phase &&
                out_free() > DEBUG_COMMAND_MAX + 32u) {
       command_line_draw();
       command_dirty = false;
@@ -3725,7 +3729,7 @@ void dbg_handle_key(char c) {
     }
     command_dirty = true;
 #ifndef LUFTFUGL_TRACE_INPUT
-    if (!plain_mode && ui_page == 6u && !help_display_active) {
+    if (!plain_mode && ui_page == 6u && !frame_phase) {
       command_line_draw();
       command_dirty = false;
     }
@@ -3751,7 +3755,7 @@ void dbg_handle_key(char c) {
     } else
       command_dirty = true;
 #ifndef LUFTFUGL_TRACE_INPUT
-    if (!plain_mode && ui_page == 6u && !help_display_active) {
+    if (!plain_mode && ui_page == 6u && !frame_phase) {
       command_line_draw();
       command_dirty = false;
     }
@@ -3915,7 +3919,8 @@ void dbg_poll(void) {
 #ifndef LUFTFUGL_TRACE_INPUT
   if (active && !plain_mode && !help_display_active && frame_phase)
     frame_continue();
-  if (active && !plain_mode && !help_display_active && !frame_phase && command_dirty &&
+  /* Help freezes page fields, never the editable command prompt. */
+  if (active && !plain_mode && !frame_phase && command_dirty &&
       out_free() > DEBUG_COMMAND_MAX + 32u) {
     command_line_draw();
     command_dirty = false;
