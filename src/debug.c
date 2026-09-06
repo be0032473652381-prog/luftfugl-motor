@@ -647,6 +647,7 @@ static void result(const char *command, const char *outcome,
         dbg_out_push(cursor);
         dbg_out_push("\033[K");
         cursor[take] = saved;
+        cursor += take;
         while (*cursor == ' ')
           ++cursor;
         first_chunk = false;
