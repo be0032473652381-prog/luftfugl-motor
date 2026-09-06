@@ -143,6 +143,23 @@ int main(void) {
         unsigned before = transmissions;
         assert(render() == led_colour());
         assert(transmissions == before); /* unchanged frame does not wake PIO */
+        /* Sensor noise must never turn the frequent LED path into a new
+         * measurement or a stream of changed pixel frames. Exercise the
+         * real ALS/LED modules together, including idle main-loop polls. */
+        uint32_t stable_colour = led_colour();
+        for (unsigned sample_index = 0; sample_index < 8; ++sample_index) {
+          measure(raw[zone] + (sample_index & 1u));
+          unsigned bus_before = transactions;
+          for (unsigned tick = 0; tick < 1000; ++tick) {
+            now += 1000;
+            ambient_light_poll();
+            led_update();
+            assert(led_colour() == stable_colour && gpio_power);
+            assert(led_brightness_multiplier_percent() == scales[zone]);
+          }
+          assert(transactions == bus_before);
+          assert(transmissions == before);
+        }
       }
       position_adc = POS_6_ADC;
       battery = BATTERY_STATE_WARNING; phase_ms(0);
@@ -166,6 +183,7 @@ int main(void) {
       co2_valid = true;
     }
   }
+  puts("PASS: 320000 LED/main-loop polls with one-count ALS noise: no extra I2C transactions, no retransmissions, stable power/colour/scale across five stations and four zones in RGB/RGBW");
   /* Gates still override raw/forced-on tests and scaled alert indications. */
   led_set_rgbw(true); position_adc = POS_2_ADC;
   led_set_raw(0x11223344); assert(render() == 0x11223344);
