@@ -1,4 +1,5 @@
 #include "buzzer.h"
+#include "buzzer_compact.h"
 
 #include "config.h"
 #include "hardware/clocks.h"
@@ -8,6 +9,8 @@
 #include <limits.h>
 
 #ifdef LUFTFUGL_DEBUG
+#include "buzzer_alarm.h"
+#include "buzzer_threat.h"
 #include "buzzer_dds_wave.h"
 #include "hardware/dma.h"
 #include "hardware/irq.h"
@@ -160,6 +163,11 @@ static void dds_stop(void) {}
 #endif
 
 static void buzzer_gpio_off(void) {
+  buzzer_play_5_stop();
+#ifdef LUFTFUGL_DEBUG
+  buzzer_play_4_stop();
+  buzzer_play_3_stop();
+#endif
   dds_stop();
   pwm_set_enabled(buzzer_slice, false);
   pwm_set_output_polarity(buzzer_slice, false, false);
@@ -415,6 +423,93 @@ bool buzzer_play_2(unsigned int count) {
   return true;
 }
 
+/* Temporary diagnostic sibling: keep the normal play-2 entry unchanged. */
+bool buzzer_tone_2(uint32_t frequency_hz, uint32_t duration_ms) {
+  if (frequency_hz < BATTERY_ALERT_FREQUENCY_MIN_HZ ||
+      frequency_hz > BATTERY_ALERT_FREQUENCY_MAX_HZ ||
+      duration_ms < BATTERY_CHIRP_DURATION_MIN_S * 1000u ||
+      duration_ms > BATTERY_CHIRP_DURATION_MAX_S * 1000u ||
+      buzzer_tone_sequence_active())
+    return false;
+  if (dds_channels[0] < 0) {
+    int first = dma_claim_unused_channel(false);
+    if (first < 0)
+      return false;
+    int second = dma_claim_unused_channel(false);
+    if (second < 0) {
+      dma_channel_unclaim((uint)first);
+      return false;
+    }
+    dds_channels[0] = first;
+    dds_channels[1] = second;
+    irq_add_shared_handler(DMA_IRQ_1, dds_dma_irq,
+                           PICO_SHARED_IRQ_HANDLER_DEFAULT_ORDER_PRIORITY);
+    /* Below the default timer IRQ priority: motor safety always preempts. */
+    irq_set_priority(DMA_IRQ_1, PICO_LOWEST_IRQ_PRIORITY);
+    irq_set_enabled(DMA_IRQ_1, true);
+  }
+  buzzer_gpio_off();
+  enabled = false;
+  /* Single continuous event: same renderer, DMA, polarity and carrier as
+   * play-2, with no chirp frequency changes or gaps. */
+  event_count = 1u;
+  events[0] = (bird_event_t){(uint16_t)frequency_hz, (uint16_t)duration_ms, true};
+  uint32_t sys_hz = clock_get_hz(clk_sys);
+  uint32_t period = (sys_hz + BUZZER_DDS_CARRIER_HZ - 1u) /
+                    BUZZER_DDS_CARRIER_HZ;
+  if (period < 2u || period > UINT16_MAX)
+    return false;
+  dds_period = (uint16_t)period;
+  dds_count = event_count;
+  for (uint16_t i = 0u; i < event_count; ++i) {
+    dds_steps[i] = (uint32_t)(((uint64_t)events[i].frequency << 32) *
+                              period / sys_hz);
+    dds_lengths[i] = (uint32_t)((uint64_t)events[i].duration_ms * sys_hz /
+                                ((uint64_t)period * 1000u));
+    dds_on[i] = events[i].on;
+  }
+  dds_gap = (uint32_t)((uint64_t)BIRD_GAP_MS * sys_hz /
+                       ((uint64_t)period * 1000u));
+  dds_index = 0u;
+  dds_phase = 0u;
+  dds_remaining = dds_lengths[0];
+  dds_gap_remaining = 0u;
+  dds_plays = 1u;
+  dds_finished = false;
+  dds_underrun = false;
+  dds_fill(0u);
+  dds_fill(1u);
+  pwm_set_clkdiv(buzzer_slice, 1.0f);
+  pwm_set_wrap(buzzer_slice, (uint16_t)(period - 1u));
+  pwm_set_counter(buzzer_slice, 0u);
+  pwm_set_output_polarity(buzzer_slice, false, false);
+  pwm_set_both_levels(buzzer_slice, (uint16_t)period, (uint16_t)period);
+  for (unsigned int i = 0u; i < 2u; ++i) {
+    uint channel = (uint)dds_channels[i];
+    dma_channel_config config = dma_channel_get_default_config(channel);
+    channel_config_set_transfer_data_size(&config, DMA_SIZE_32);
+    channel_config_set_read_increment(&config, true);
+    channel_config_set_write_increment(&config, false);
+    /* If interrupts are delayed beyond a whole buffer, repeat only this
+     * buffer until the underrun handler mutes; never read unrelated RAM. */
+    channel_config_set_ring(&config, false, 10u);
+    channel_config_set_dreq(&config, pwm_get_dreq(buzzer_slice));
+    channel_config_set_chain_to(&config, (uint)dds_channels[i ^ 1u]);
+    dma_channel_configure(channel, &config, &pwm_hw->slice[buzzer_slice].cc,
+                          (const void *)dds_buffers[i], DDS_BUFFER_SAMPLES,
+                          false);
+    dma_channel_acknowledge_irq1(channel);
+    dma_channel_set_irq1_enabled(channel, true);
+  }
+  gpio_set_function(PIN_BUZZER_BIN1, GPIO_FUNC_PWM);
+  gpio_set_function(PIN_BUZZER_BIN2, GPIO_FUNC_PWM);
+  dds_active = true;
+  dma_start_channel_mask(1u << dds_channels[0]);
+  gpio_put(PIN_BUZZER_PWMB, true);
+  pwm_set_enabled(buzzer_slice, true);
+  return true;
+}
+
 bool buzzer_play_2_active(void) { return dds_active; }
 bool buzzer_play_2_underrun(void) { return dds_underrun; }
 #endif
@@ -487,7 +582,19 @@ void buzzer_tone_sequence_status(uint8_t *current, uint8_t *total,
 }
 
 void buzzer_tick(void) {
+  if (buzzer_play_5_active()) {
+    buzzer_play_5_tick();
+    return;
+  }
 #ifdef LUFTFUGL_DEBUG
+  if (buzzer_play_4_active()) {
+    buzzer_play_4_tick();
+    return;
+  }
+  if (buzzer_play_3_active()) {
+    buzzer_play_3_tick();
+    return;
+  }
   if (dds_active) {
     if (dds_finished)
       buzzer_gpio_off();
@@ -574,7 +681,13 @@ void buzzer_tick(void) {
 }
 
 bool buzzer_enabled(void) {
+  if (buzzer_play_5_active())
+    return true;
 #ifdef LUFTFUGL_DEBUG
+  if (buzzer_play_4_active())
+    return true;
+  if (buzzer_play_3_active())
+    return true;
   if (dds_active)
     return true;
 #endif

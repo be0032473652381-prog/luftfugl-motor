@@ -7,6 +7,7 @@
 #include "encoder.h"
 #include "motor.h"
 #include "led.h"
+#include "ambient_light.h"
 #include "buzzer.h"
 #include "co2.h"
 #include "power_monitor.h"
@@ -139,6 +140,7 @@ int main(void)
     encoder_init();
     led_init();
     power_monitor_init();
+    ambient_light_init();
     event_timer_init();
     co2_init();
     controller_init();
@@ -161,6 +163,9 @@ int main(void)
         console_poll();
         console_drain_events();
         coordinate_sdc41_warmup();
+        if (power_monitor_take_sensor_cycle())
+            ambient_light_request_sample();
+        ambient_light_poll();
         led_update();
         battery_alert_poll();
         event_timer_poll();

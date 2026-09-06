@@ -1,6 +1,7 @@
 #include "led.h"
 
 #include "config.h"
+#include "ambient_light.h"
 #include "co2.h"
 #include "controller.h"
 #include "encoder.h"
@@ -20,9 +21,13 @@ static led_mode_t mode;
 static bool rgbw_enabled;
 static bool power_enabled;
 static bool data_enabled;
+static bool pixel_lit;
 static uint64_t power_ready_us;
 static bool co2_error_latched;
 static uint32_t co2_error_started_ms;
+#ifdef LUFTFUGL_MONITOR
+static uint8_t brightness_override[LED_BRIGHTNESS_KIND_COUNT];
+#endif
 
 static void led_data_disable(void) {
   if (data_enabled)
@@ -51,23 +56,97 @@ static void led_transmit_frame(uint32_t colour) {
      frame and the SK6812 latch interval before stopping the PIO engine. */
   sleep_us(frame_us + LED_LATCH_US);
   last_colour = colour;
+  pixel_lit = colour != 0u;
   led_data_disable();
 }
 
-static uint32_t colour_word(uint8_t r, uint8_t g, uint8_t b,
-                            uint8_t brightness_percent) {
-  r = (uint8_t)(((uint16_t)r * brightness_percent + 50u) / 100u);
-  g = (uint8_t)(((uint16_t)g * brightness_percent + 50u) / 100u);
-  b = (uint8_t)(((uint16_t)b * brightness_percent + 50u) / 100u);
+_Static_assert(LED_STATION_BRIGHTNESS_PERCENT > 0u &&
+                   LED_AMBIENT_STATION_CEILING_PERCENT <
+                       LED_HAZARD_BRIGHTNESS_PERCENT &&
+                   LED_MAX_BRIGHTNESS_PERCENT <= 100u,
+               "station brightness must remain below the alert base");
+
+unsigned int led_brightness_multiplier_percent(void) {
+  unsigned int multiplier = ambient_light_multiplier_percent();
+  unsigned int ceiling = LED_AMBIENT_STATION_CEILING_PERCENT * 100u /
+                         LED_STATION_BRIGHTNESS_PERCENT;
+  return multiplier < ceiling ? multiplier : ceiling;
+}
+
+#ifdef LUFTFUGL_MONITOR
+void led_brightness_reset(void) {
+  brightness_override[LED_BRIGHTNESS_STATION] = LED_STATION_BRIGHTNESS_PERCENT;
+  brightness_override[LED_BRIGHTNESS_WARNING] = LED_BATTERY_WARNING_BRIGHTNESS_PERCENT;
+  brightness_override[LED_BRIGHTNESS_CRITICAL] = LED_BATTERY_CRITICAL_BRIGHTNESS_PERCENT;
+  brightness_override[LED_BRIGHTNESS_ERROR] = LED_HAZARD_BRIGHTNESS_PERCENT;
+  brightness_override[LED_BRIGHTNESS_SAMPLE] = LED_SAMPLE_BRIGHTNESS_PERCENT;
+  brightness_override[LED_BRIGHTNESS_BREATHE] = 10u;
+}
+bool led_brightness_set(led_brightness_kind_t kind, uint8_t percent) {
+  if (kind >= LED_BRIGHTNESS_KIND_COUNT || percent > 100u)
+    return false;
+  brightness_override[kind] = percent;
+  last_colour = UINT32_MAX;
+  led_update();
+  return true;
+}
+uint8_t led_brightness_get(led_brightness_kind_t kind) {
+  return kind < LED_BRIGHTNESS_KIND_COUNT ? brightness_override[kind] : 0u;
+}
+#endif
+
+static uint8_t scaled_channel(uint8_t channel, uint32_t brightness) {
+  /* brightness is percent * multiplier-percent: round only once, after
+   * scaling, so low-level RGBW breathing retains its night-time values. */
+  return (uint8_t)(((uint32_t)channel * brightness + 5000u) / 10000u);
+}
+
+static uint32_t colour_word_rgbw(uint8_t r, uint8_t g, uint8_t b, uint8_t w,
+                                 uint8_t base_percent) {
+  /* One shared scale for every base percentage: stations, both battery
+   * alerts, CO2 errors, accepted samples, and every step of warm-up breathing.
+   * Saturate the percentage before scaling channels to preserve hue. */
+  uint32_t brightness = base_percent * led_brightness_multiplier_percent();
+  if (brightness > LED_MAX_BRIGHTNESS_PERCENT * 100u)
+    brightness = LED_MAX_BRIGHTNESS_PERCENT * 100u;
+  r = scaled_channel(r, brightness);
+  g = scaled_channel(g, brightness);
+  b = scaled_channel(b, brightness);
+  w = scaled_channel(w, brightness);
   if (rgbw_enabled) {
-    /* SK6812 wire order is GRBW. White stays zero to preserve each RGB hue. */
-    uint8_t w = 0u;
+    /* SK6812 wire order is GRBW. Station and alert callers supply W=0. */
     return ((uint32_t)g << 24) | ((uint32_t)r << 16) |
            ((uint32_t)b << 8) | w;
   }
   /* WS2812B wire order is GRB; the PIO shifts the upper 24 bits first. */
   uint32_t grb = ((uint32_t)g << 16) | ((uint32_t)r << 8) | b;
   return grb << 8;
+}
+
+static uint8_t brightness_base(led_brightness_kind_t kind, uint8_t fallback) {
+#ifdef LUFTFUGL_MONITOR
+  if (kind < LED_BRIGHTNESS_KIND_COUNT)
+    return brightness_override[kind];
+#else
+  (void)kind;
+#endif
+  return fallback;
+}
+
+static uint32_t colour_word_kind(uint8_t r, uint8_t g, uint8_t b, uint8_t w,
+                                 uint8_t base, led_brightness_kind_t kind) {
+  uint8_t effective = brightness_base(kind, base);
+#ifdef LUFTFUGL_MONITOR
+  if (kind == LED_BRIGHTNESS_BREATHE)
+    effective = (uint8_t)(((uint16_t)base * effective + 5u) / 10u);
+#endif
+  return colour_word_rgbw(r, g, b, w, effective);
+}
+
+static uint32_t colour_word(uint8_t r, uint8_t g, uint8_t b,
+                            uint8_t brightness_percent) {
+  return colour_word_kind(r, g, b, 0u, brightness_percent,
+                          LED_BRIGHTNESS_STATION);
 }
 
 static uint32_t station5_rose(void) {
@@ -96,13 +175,15 @@ static uint32_t station1_mint(void) {
 }
 
 static uint32_t battery_warning_orange(void) {
-  return colour_word(LED_BATTERY_R, LED_BATTERY_G, LED_BATTERY_B,
-                     LED_BATTERY_WARNING_BRIGHTNESS_PERCENT);
+  return colour_word_kind(LED_BATTERY_R, LED_BATTERY_G, LED_BATTERY_B, 0u,
+                          LED_BATTERY_WARNING_BRIGHTNESS_PERCENT,
+                          LED_BRIGHTNESS_WARNING);
 }
 
 static uint32_t battery_critical_orange(void) {
-  return colour_word(LED_BATTERY_R, LED_BATTERY_G, LED_BATTERY_B,
-                     LED_BATTERY_CRITICAL_BRIGHTNESS_PERCENT);
+  return colour_word_kind(LED_BATTERY_R, LED_BATTERY_G, LED_BATTERY_B, 0u,
+                          LED_BATTERY_CRITICAL_BRIGHTNESS_PERCENT,
+                          LED_BRIGHTNESS_CRITICAL);
 }
 
 static bool battery_warning_flash_lit(uint32_t now) {
@@ -118,29 +199,29 @@ static uint32_t co2_warm_white_breathe(uint32_t now) {
   /* Eight-second, low-brightness breathing envelope.  The RGBW pixel uses
      its neutral white die with a small amber contribution for a soft,
      warm-white result; it never snaps fully dark between steps. */
-  static const uint8_t level[32] = {
-      1u, 1u, 1u, 1u, 2u, 2u, 3u, 4u,
-      5u, 6u, 7u, 8u, 9u, 10u, 10u, 10u,
-      10u, 10u, 10u, 9u, 8u, 7u, 6u, 5u,
-      4u, 3u, 2u, 2u, 1u, 1u, 1u, 1u};
-  uint8_t brightness = level[(now / 250u) % 32u];
+  static const uint8_t level[] = LED_BREATHE_LEVELS;
+  uint8_t brightness =
+      level[(now / LED_BREATHE_STEP_MS) % (sizeof level / sizeof level[0])];
   if (!rgbw_enabled)
-    return colour_word(255u, 178u, 96u, brightness);
-  uint8_t r = (uint8_t)((32u * brightness + 50u) / 100u);
-  uint8_t g = (uint8_t)((14u * brightness + 50u) / 100u);
-  uint8_t w = (uint8_t)((255u * brightness + 50u) / 100u);
-  return ((uint32_t)g << 24) | ((uint32_t)r << 16) | w;
+    return colour_word_kind(LED_WARM_RGB_R, LED_WARM_RGB_G, LED_WARM_RGB_B, 0u,
+                            brightness, LED_BRIGHTNESS_BREATHE);
+  return colour_word_kind(LED_WARM_RGBW_R, LED_WARM_RGBW_G, LED_WARM_RGBW_B,
+                          LED_WARM_RGBW_W, brightness, LED_BRIGHTNESS_BREATHE);
 }
 
 static uint32_t co2_sample_warm_white(void) {
   /* Match the warm-up breath at its gentle 10% peak. */
   if (!rgbw_enabled)
-    return colour_word(255u, 178u, 96u, 10u);
-  return ((uint32_t)1u << 24) | ((uint32_t)3u << 16) | 26u;
+    return colour_word_kind(LED_WARM_RGB_R, LED_WARM_RGB_G, LED_WARM_RGB_B, 0u,
+                            LED_SAMPLE_BRIGHTNESS_PERCENT, LED_BRIGHTNESS_SAMPLE);
+  return colour_word_kind(LED_WARM_RGBW_R, LED_WARM_RGBW_G, LED_WARM_RGBW_B,
+                          LED_WARM_RGBW_W, LED_SAMPLE_BRIGHTNESS_PERCENT,
+                          LED_BRIGHTNESS_SAMPLE);
 }
 
 static uint32_t co2_error_red(void) {
-  return colour_word(255u, 0u, 0u, LED_HAZARD_BRIGHTNESS_PERCENT);
+  return colour_word_kind(255u, 0u, 0u, 0u, LED_HAZARD_BRIGHTNESS_PERCENT,
+                          LED_BRIGHTNESS_ERROR);
 }
 
 static bool hazard_lit(void) {
@@ -223,6 +304,7 @@ void led_power_init(void) {
   gpio_put(PIN_LED_POWER, false);
   gpio_set_dir(PIN_LED_POWER, GPIO_OUT);
   power_enabled = false;
+  pixel_lit = false;
   power_ready_us = 0u;
   co2_error_latched = false;
   co2_error_started_ms = 0u;
@@ -240,6 +322,9 @@ void led_init(void) {
   /* GP0 now supplies the pixel directly.  Its low startup state guarantees
      darkness without transmitting to an unpowered device. */
   last_colour = 0u;
+#ifdef LUFTFUGL_MONITOR
+  led_brightness_reset();
+#endif
   led_update();
 }
 
@@ -247,6 +332,9 @@ void led_update(void) {
   uint32_t colour = requested_colour();
   bool power_required = colour != 0u;
   if (!power_required) {
+    /* GP0 is the supply: latch off before removing power from a lit pixel. */
+    if (power_enabled && pixel_lit)
+      led_transmit_frame(0u);
     led_data_disable();
     gpio_put(PIN_LED_POWER, false);
     power_enabled = false;

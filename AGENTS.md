@@ -117,13 +117,15 @@ orange double-hazard indication at 30%, requests position 6, and runs the
 configured critical-battery buzzer sequence. Current default thresholds are
 3.600 V warning and 3.300 V critical; saved settings may override defaults.
 
-On a genuine arrival event, the bird-call indication plays once at Station 2,
+On a genuine arrival event, crips-5 plays once at Station 2,
 twice at Station 3, three times at Station 4, and four times at Station 5.
 Station 1 and position 6 do not produce an arrival bird call.
 
 ## Debug monitor
 
-Debug builds contain seven pages. Page 6 lists commands. Page 7 is a 64-entry
+Debug builds contain eight pages. Page 8 displays the VEML7700 zone ranges and
+live ALS lux at a fixed cursor position, refreshed once per second through the
+existing screen-refresh loop. Page 6 lists commands. Page 7 is a 64-entry
 data log displaying the newest 20 rows and records meaningful changes in motor
 and controller state, INA219 voltage (initial reading, battery-state changes,
 or at least the configured 50 mV hysteresis), battery state, LED power/color,
@@ -218,3 +220,25 @@ printf 'reset\r' > /dev/ttyACM0
 State what was built, tested, flashed, and reset. Report all motion performed.
 Support acceptance claims with command output or file-and-line references.
 Identify any remaining divergence between implementation and specification.
+
+## Canonical chirp names
+
+Use the user's spelling `crips-1` through `crips-5` in firmware discussions,
+console commands and future task instructions. `crips5` means `crips-5` (likewise
+for 1–4); it identifies a composition, not a request to change its sound.
+
+| Canonical command | Former command | Composition |
+|---|---|---|
+| `buzzer crips-1 <count>` | `buzzer play <count>` | Original square-wave station chirp |
+| `buzzer crips-2 <count>` | `buzzer play-2 <count>` | Original composition with clean DDS sine |
+| `buzzer crips-3 <count>` | `buzzer play-3 <count>` | 444 ms, 8/8/12 bursts at 4.3/2.0/4.3 kHz |
+| `buzzer crips-4 <count>` | `buzzer play-4 <count>` | About 5 s, introductions plus 6/7/8 bursts |
+| `buzzer crips-5 <count>` | `buzzer play-5 <count>` | Same notes as crips-4, compact pauses, about 2.75 s |
+
+Count remains 1–200 complete sequences; `buzzer off` stops any mode. The old
+play command names are replaced in the debug console. Canonical C entry points
+`buzzer_crips_1` through `buzzer_crips_5` forward to the existing synthesis
+functions, preserving sound and production behavior. Crips-5 is the normal station arrival sound in both debug and release builds.
+Crips-2 through crips-4 remain debug-only listening modes; crips-1 remains
+available for manual comparison. Station repeat counts remain 1/2/3/4 at 2/3/4/5.
+Historical reports may use the former names; their composition numbers map 1:1.

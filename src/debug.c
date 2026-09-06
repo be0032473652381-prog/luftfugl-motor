@@ -14,7 +14,11 @@
 #include "hardware/sync.h"
 #include "motor.h"
 #include "led.h"
+#include "ambient_light.h"
 #include "buzzer.h"
+#include "buzzer_alarm.h"
+#include "buzzer_threat.h"
+#include "buzzer_compact.h"
 #include "co2.h"
 #include "event_timer.h"
 #include "power_monitor.h"
@@ -26,7 +30,7 @@
 #include <string.h>
 
 #define DEBUG_COMMAND_MAX 48u
-#define DEBUG_REFRESH_MS 1000u
+#define DEBUG_REFRESH_MS DEBUG_SCREEN_UPTIME_MS
 #define ENDSTOP_SCRATCH_MAGIC 0x45535450u /* "ESTP" */
 #define ENDSTOP_FLASH_MAGIC 0x45535431u /* "EST1" */
 #define ENDSTOP_FLASH_OFFSET (PICO_FLASH_SIZE_BYTES - FLASH_SECTOR_SIZE)
@@ -49,6 +53,7 @@ typedef enum {
 } pending_t;
 
 static bool active, plain_mode, echo_enabled, input_overflow, swallow_lf;
+static bool help_display_active;
 static bool command_dirty;
 static bool armed;
 static position_t selected_station;
@@ -683,6 +688,66 @@ static const char *guidance(uint16_t adc) {
   return text;
 }
 
+static void ambient_page_fields(void) {
+  char line[81];
+  ambient_light_sample_t light;
+  ambient_light_snapshot(&light);
+  snprintf(line, sizeof line, "  VEML7700  ambient light sensor    I2C0 address 0x%02X",
+           VEML7700_ADDRESS);
+  field(3u, line);
+  /* Use the same shadowed, cursor-addressed field on every existing 1 s
+   * screen refresh. Never send live lux through result()/the scrolling log. */
+  if (light.valid)
+    snprintf(line, sizeof line, "  ALS actual       %lu.%03lu lux",
+             (unsigned long)(light.millilux / 1000u),
+             (unsigned long)(light.millilux % 1000u));
+  else
+    snprintf(line, sizeof line, "  ALS actual       unavailable (no valid sample)");
+  field(4u, line);
+  snprintf(line, sizeof line, "  ALS raw          %u counts%s", light.raw,
+           light.valid ? "" : " (last reading; invalid)");
+  field(5u, line);
+  unsigned int scale = led_brightness_multiplier_percent();
+  snprintf(line, sizeof line, "  Confirmed zone   %-8s  brightness multiplier %u.%02ux",
+           ambient_light_zone_name(light.confirmed_zone), scale / 100u,
+           scale % 100u);
+  field(6u, line);
+  field(7u, " ");
+  field(8u, "  Zone                  Lux range              Multiplier");
+  static const struct {
+    const char *name;
+    uint32_t lower_lux;
+    unsigned int multiplier;
+  } zones[] = {
+      {"Night", AMBIENT_NIGHT_MIN_LUX, AMBIENT_NIGHT_MULTIPLIER_PERCENT},
+      {"Dim", AMBIENT_DIM_MIN_LUX, AMBIENT_DIM_MULTIPLIER_PERCENT},
+      {"Normal indoor day", AMBIENT_INDOOR_MIN_LUX,
+       AMBIENT_INDOOR_MULTIPLIER_PERCENT},
+      {"Bright", AMBIENT_BRIGHT_MIN_LUX, AMBIENT_BRIGHT_MULTIPLIER_PERCENT}};
+  for (unsigned int i = 0u; i < AMBIENT_ZONE_COUNT; ++i) {
+    char range[24];
+    if (i + 1u < AMBIENT_ZONE_COUNT)
+      snprintf(range, sizeof range, "%lu to <%lu lux",
+               (unsigned long)zones[i].lower_lux,
+               (unsigned long)zones[i + 1u].lower_lux);
+    else
+      snprintf(range, sizeof range, ">= %lu lux",
+               (unsigned long)zones[i].lower_lux);
+    snprintf(line, sizeof line, "  %-21s %-22s %u.%02ux", zones[i].name,
+             range, zones[i].multiplier / 100u, zones[i].multiplier % 100u);
+    field((uint8_t)(9u + i), line);
+  }
+  snprintf(line, sizeof line, "  Hysteresis +/- %u%%; %u consecutive samples confirm a zone change",
+           AMBIENT_HYSTERESIS_PERCENT, AMBIENT_CONFIRM_SAMPLES);
+  field(13u, line);
+  snprintf(line, sizeof line, "  Samples %lu   Errors %lu   Sensor %s",
+           (unsigned long)light.samples, (unsigned long)light.errors,
+           light.measuring ? "measuring" :
+               (light.shutdown_verified ? "shutdown verified" : "shutdown unverified"));
+  field(14u, line);
+  field(16u, "  ALS display refresh: once per second, in place");
+}
+
 void dbg_fields_refresh(void) {
   char line[81];
   char target[12] = "--", error[12] = "--";
@@ -692,7 +757,7 @@ void dbg_fields_refresh(void) {
   uint32_t seconds = ms_now() / 1000u;
   uint16_t adc = encoder_average();
   uint16_t target_adc = controller_target_adc();
-  snprintf(line, sizeof line, " luftfugl 2.0  page %u/7%41sup %02lu:%02lu:%02lu", ui_page, "",
+  snprintf(line, sizeof line, " luftfugl 2.0  page %u/%u%41sup %02lu:%02lu:%02lu", ui_page, DEBUG_PAGE_COUNT, "",
            (unsigned long)(seconds / 3600u),
            (unsigned long)((seconds / 60u) % 60u),
            (unsigned long)(seconds % 60u));
@@ -731,6 +796,7 @@ void dbg_fields_refresh(void) {
     field(16, "  5 - CO2 sensor");
     field(17, "  6 - Commands");
     field(18, "  7 - Data log");
+    field(19, "  8 - Ambient light (VEML7700)");
   } else if (ui_page == 2u) {
     snprintf(line, sizeof line, "  %-9s%-14s%-9s%-14s%-9s%-14s",
              "STATE", state_text(controller_state()), "TARGET", target,
@@ -748,6 +814,8 @@ void dbg_fields_refresh(void) {
     co2_format_menu(co2_lines);
     for (uint8_t i = 0u; i < 18u; ++i)
       field((uint8_t)(3u + i), co2_lines[i]);
+  } else if (ui_page == 8u) {
+    ambient_page_fields();
   } else if (ui_page == 7u) {
     snprintf(line, sizeof line,
              "  DATA LOG  %s  %u/%u retained    Q stop  S start  C clear+start",
@@ -851,6 +919,7 @@ static void ds3231_timer_draw(const char *detail) {
 void dbg_render(void) {
   if (plain_mode)
     return;
+  help_display_active = false;
   out_head = out_tail = 0u;
   command_dirty = true;
   frame_bytes_current = 0u;
@@ -859,6 +928,26 @@ void dbg_render(void) {
   dbg_out_push("\033[2J\033[H\033[?25l");
   memset(status_shadow, 0, sizeof status_shadow);
   frame_phase = 1u;
+}
+
+static void help_display_begin(void) {
+  if (plain_mode)
+    return;
+  /* Preserve the fixed Page-6 header, command index, and prompt (rows 1-24).
+   * Only the scrolling result window is cleared before detailed help starts. */
+  out_head = out_tail = 0u;
+  frame_phase = 0u;
+  frame_measuring = false;
+  command_dirty = false;
+  first_result = true;
+  memset(status_shadow, 0, sizeof status_shadow);
+  char clear_results[48];
+  snprintf(clear_results, sizeof clear_results,
+           "\033[r\033[%u;1H\033[J\033[%u;%ur\033[%u;1H\033[?25l",
+           event_top_row(), event_top_row(), DEBUG_SCREEN_BOTTOM_ROW,
+           event_top_row());
+  dbg_out_push(clear_results);
+  help_display_active = true;
 }
 
 #ifndef LUFTFUGL_TRACE_INPUT
@@ -874,6 +963,7 @@ static bool status_frame_complete(void) {
     uint8_t last = ui_page == 4u   ? 12u
                    : ui_page == 5u ? 20u
                    : ui_page == 7u ? 23u
+                   : ui_page == 8u ? 14u
                                    : 5u;
     for (uint8_t row = 3u; row <= last; ++row)
       if (!status_shadow[row - 1u][0])
@@ -892,15 +982,16 @@ static void frame_continue(void) {
       {"arm", "asc", "batt", "batt chirp"},
       {"batt chirp time", "batt events", "batt log", "batt raw"},
       {"batt res", "batt reset", "batt sim", "batt sim critical"},
-      {"batt sim range", "batt sim warning", "bootsel", "buzzer"},
-      {"buzzer play-2", "cal", "cfg", "clean"},
+      {"batt sim range", "batt sim warning", "bootsel", "buzzer crips-1"},
+      {"buzzer crips-2", "buzzer crips-3", "buzzer crips-4", "buzzer crips-5"},
+      {"buzzer tone-2/3", "cal", "cfg", "clean"},
       {"co2", "co2cfg", "co2defaults", "co2limit"},
       {"co2living", "co2save", "co2sim", "co2sleeping"},
       {"diag", "disarm", "drive", "ds3231 start"},
       {"ds3231 stop", "ds3231 temp", "ds3231 timer", "ds3231 timeset"},
       {"exit", "export", "findmin", "goto"},
       {"help", "highendstop", "home", "ina"},
-      {"jog", "led", "limits", "load"},
+      {"jog", "led", "led brightness", "led zone"},
       {"lowendstop", "menu", "mode", "move"},
       {"offset", "page", "pins", "plain"},
       {"pos", "pwm", "ready", "reset"},
@@ -921,7 +1012,8 @@ static void frame_continue(void) {
           " PAGE 4  BATTERY INFORMATION",
           " PAGE 5  CO2 SENSOR",
           " PAGE 6  COMMANDS",
-          " PAGE 7  DATA LOG"};
+          " PAGE 7  DATA LOG",
+          " PAGE 8  AMBIENT LIGHT - VEML7700"};
       snprintf(content, sizeof content, "──────────%s ────────────────────────────────────────────────────────────────",
                titles[ui_page - 1u]);
     } else if (ui_page == 6u && item >= 1u &&
@@ -1679,12 +1771,30 @@ static const help_entry_t help_entries[] = {
     {"adc", "adc", "read-only", "Shows raw, filtered and classified sensing."},
     {"angle", "angle", "read-only",
      "Shows the filtered ADC reading converted to degrees."},
-    {"led", "led auto", "on/off/auto, rgbw on/off, or a wire-order hex word",
-     "GP0 follows pixel demand; GP18 PIO sleeps after each latched frame. All five CO2 station colours are static."},
-    {"buzzer", "buzzer play-2 3", "on, off, play/play-2 1..200, or status",
+    {"led", "led brightness", "on/off/auto, rgbw on/off, raw hex, brightness, or zone",
+     "GP0 follows pixel demand; brightness commands are RAM-only and affect the named indication or ambient-zone multiplier."},
+    {"led brightness", "led brightness station 5", "station, warning, critical, error, sample or breathe; 0..100%",
+     "Changes one LED indication base percentage in RAM. Use without a category to list all six values; reset restores compiled defaults."},
+    {"led zone", "led zone bright 800", "night, dim, indoor or bright; 0..2000%",
+     "Changes one VEML7700 ambient-zone multiplier in RAM. Use without a zone to list all four values; reset restores compiled defaults."},
+    {"buzzer", "buzzer crips-2 3", "on, off, crips-1..crips-5 1..200, or status",
      "Plays the randomized bird warning on BO1/BO2; BIN1/BIN2 GP6/GP7, PWMB GP16."},
-    {"page", "page 2", "no argument lists pages; page 1 to 7 selects",
-     "Lists or selects general, motor, positions, battery, CO2, commands, or data-log pages."},
+    {"buzzer crips-1", "buzzer crips-1 3", "1..200 complete calls; off stops",
+     "Original square-wave station chirp; fresh random composition each repeat; 200 ms gaps."},
+    {"buzzer crips-2", "buzzer crips-2 3", "1..200 complete calls; off stops",
+     "Original composition with clean DDS sine; fixed composition repeated; 200 ms gaps."},
+    {"buzzer crips-3", "buzzer crips-3 10", "1..200 complete calls; off stops",
+     "Listening test only: three-part clean-sine sequence; 8/8/12 bursts, 50 ms breaks; 444 ms total, 100 ms repeat gap."},
+    {"buzzer crips-4", "buzzer crips-4 3", "1..200 complete bouts; off stops",
+     "Listening test: ~5 s, three phrases at 2 s onsets; two 100 ms intro notes then 6/7/8 bursts; 2/4.3 kHz sine."},
+    {"buzzer crips-5", "buzzer crips-5 3", "1..200 complete bouts; off stops",
+     "Compact crips-4: same 27 notes, frequencies and sound durations; short gaps retained, phrase/repeat pauses halved again; ~2.7 s bout."},
+    {"buzzer tone-2", "buzzer tone-2 6000 3", "100..10000 Hz; 1..5 seconds",
+     "Continuous full-scale sine through crips-2's renderer and DMA; compare with tone-3 at identical settings. off stops."},
+    {"buzzer tone-3", "buzzer tone-3 6000 3", "100..10000 Hz; 1..5 seconds",
+     "Continuous full-scale sine through crips-3's renderer and DMA; no burst gaps or pitch changes. off stops."},
+    {"page", "page 2", "no argument lists pages; page 1 to 8 selects",
+     "Lists or selects general, motor, positions, battery, CO2, commands, data-log, or ambient-light pages."},
     {"selftest", "selftest", "no motion",
      "Checks configuration, ADC and the 1 kHz tick."},
     {"tick", "tick", "read-only", "Shows loop timing and watchdog health."},
@@ -1909,7 +2019,7 @@ static void help_description(const help_entry_t *entry, char *text,
              "motor channel A is GP14/PWMA; buzzer channel B is GP6/GP7 with GP16/PWMB enabled while sounding; report is read-only");
   } else if (!strcmp(entry->name, "page")) {
     snprintf(text, size,
-             "pages 1 general, 2 motor, 3 positions, 4 battery, 5 CO2, 6 commands, 7 data log");
+             "pages 1 general, 2 motor, 3 positions, 4 battery, 5 CO2, 6 commands, 7 data log, 8 ambient light");
   } else if (!strcmp(entry->name, "drive")) {
     snprintf(text, size,
              "direction fwd or rev; duty 0..255; duration 10..2000 ms; requires the debug motor interlock to be armed");
@@ -1958,15 +2068,17 @@ static void help_led_detail(const char *original) {
     const char *text;
   } lines[] = {
       {"Syntax", ""},
-      {"", "led [on|off|auto|rgbw on|rgbw off|raw <hex>]"},
+      {"", "led [on|off|auto|rgbw on|rgbw off|raw <hex>|brightness ...|zone ...]"},
       {"Commands", ""},
-      {"", "led             Show power, pixel mode, RGB format, PIO and state-machine status"},
+      {"", "led             Show pixel state, ambient lux, zone, scale and sensor shutdown"},
       {"", "led auto        Enable automatic station indication and power management"},
       {"", "led on          Force the station-5 red test color; GP0 goes HIGH"},
       {"", "led off         Force the LED dark; GP0 goes LOW"},
       {"", "led rgbw on     Use SK6812 G-R-B-W transmission"},
       {"", "led rgbw off    Use WS2812 G-R-B transmission"},
       {"", "led raw <hex>   Display a raw wire-order color"},
+      {"", "led brightness  Set/list station, warning, critical, error, sample or breathe %"},
+      {"", "led zone        Set/list Night, Dim, Indoor or Bright ambient multiplier %"},
       {"Raw formats", ""},
       {"", "RGBW enabled    led raw GGRRBBWW - exactly 8 hexadecimal digits"},
       {"", "RGBW disabled   led raw GGRRBB - exactly 6 hexadecimal digits"},
@@ -1976,7 +2088,10 @@ static void help_led_detail(const char *original) {
       {"Automatic power", ""},
       {"", "Non-zero color  GP0 HIGH; wait 300 us; transmit pixel data"},
       {"", "Dark/off        GP0 LOW, placing the SK6812 in its unpowered sleep state"},
-      {"", "Station 5       Static red/rose at 3% brightness"},
+      {"", "Stations        3% base; all indication percentages share ambient scaling"},
+      {"", "Ambient         VEML7700 0x10; battery-cycle sampling; software shutdown"},
+      {"", "Zones           Hysteresis and consecutive samples confirm brightness changes"},
+      {"", "Raw test        Explicit wire bytes bypass ambient scaling"},
       {"", "Reset/startup   GP0 LOW with the internal pull-down enabled"},
       {"Auto indication", ""},
       {"", "Moving          LED off, GP0 LOW"},
@@ -1986,10 +2101,70 @@ static void help_led_detail(const char *original) {
       {"", "Station 4       Pink"},
       {"", "Station 2/3/4/5 play 1/2/3/4 bird calls on arrival"},
       {"Examples", ""},
-      {"", "led | led auto | led on | led off | led rgbw on | led raw 00ff0000"}};
+      {"", "led | led auto | led on | led off | led rgbw on | led raw 00ff0000"},
+      {"", "help led brightness   Full base-percentage reference and examples"},
+      {"", "help led zone         Full ambient-zone multiplier reference and examples"}};
   for (size_t i = sizeof lines / sizeof lines[0]; i-- > 0;)
     result(lines[i].label, "complete", lines[i].text);
   result(original, "complete", "");
+}
+
+static void help_led_brightness_detail(const char *original) {
+  static const char *const lines[] = {
+      "LED BRIGHTNESS COMMAND — complete reference",
+      "Purpose: set the base percentage for one automatic LED indication.",
+      "Syntax: led brightness [station|warning|critical|error|sample|breathe] [0..100]",
+      "With no argument, lists all six current RAM values.",
+      "station: base for all five CO2 station colours (default 3%).",
+      "warning: battery-warning orange double flash (default 30%).",
+      "critical: battery-critical orange hazard flash (default 30%).",
+      "error: CO2 sensor-error red flash (default 30%).",
+      "sample: startup accepted-sample warm-white flash (default 10%).",
+      "breathe: maximum SCD41 warm-up breathing level (default 10%).",
+      "Example: led brightness station 5",
+      "Example: led brightness warning 40",
+      "Example: led brightness critical 40",
+      "Example: led brightness error 25",
+      "Example: led brightness sample 15",
+      "Example: led brightness breathe 7",
+      "Example: led brightness",
+      "Reset: led brightness reset restores all compiled defaults.",
+      "Values are RAM-only and return to defaults after reset; no flash is written.",
+      "The selected base is multiplied by the confirmed VEML7700 zone multiplier.",
+      "The final channel value is rounded and saturated at 100%; alert pulses may saturate.",
+      "Station brightness remains below the alert base through the station ceiling.",
+      "LED is still forced off while moving, between stations, or in forced-off mode.",
+      "led raw <hex> is a diagnostic wire word and bypasses this percentage control."};
+  for (size_t i = sizeof lines / sizeof lines[0]; i-- > 0u;)
+    result(i == 0u ? original : "", "complete", lines[i]);
+}
+
+static void help_led_zone_detail(const char *original) {
+  static const char *const lines[] = {
+      "LED ZONE COMMAND — complete reference",
+      "Purpose: set the VEML7700 ambient multiplier used by every LED indication.",
+      "Syntax: led zone [night|dim|indoor|bright] [0..2000]",
+      "With no argument, lists all four current RAM multipliers.",
+      "night: 0 to <10 lux; default multiplier 100% (1.00x).",
+      "dim: 10 to <100 lux; default multiplier 200% (2.00x).",
+      "indoor: 100 to <500 lux; default multiplier 400% (4.00x).",
+      "bright: 500 lux and above; default multiplier 800% (8.00x).",
+      "Example: led zone night 100",
+      "Example: led zone dim 200",
+      "Example: led zone indoor 400",
+      "Example: led zone bright 800",
+      "Example: led zone bright 900",
+      "Example: led zone",
+      "Reset: led zone reset restores all four compiled multipliers.",
+      "Values are RAM-only and return to defaults after reset; no flash is written.",
+      "20% hysteresis prevents boundary flicker: upward thresholds are 12/120/600 lux.",
+      "Downward thresholds are 8/80/400 lux; three consecutive samples confirm a change.",
+      "A failed or anomalous sample retains the last confirmed zone and brightness.",
+      "The multiplier applies to stations, battery warning/critical, CO2 error, sample flash and breathing.",
+      "Final output is saturated at 100%; station output is capped below the 30% alert base.",
+      "The sensor is sampled on the existing battery cycle and shut down between readings."};
+  for (size_t i = sizeof lines / sizeof lines[0]; i-- > 0u;)
+    result(i == 0u ? original : "", "complete", lines[i]);
 }
 
 static void help_batt_chirp_detail(const char *original) {
@@ -2056,6 +2231,86 @@ static void help_batt_chirp_time_detail(const char *original) {
   for (size_t i = sizeof lines / sizeof lines[0]; i-- > 0;)
     result(lines[i].label, "complete", lines[i].text);
   result(original, "complete", "");
+}
+
+static bool led_brightness_command(const char *original, char *arg) {
+  char *kind_text = strtok_r(arg, " \t", &arg);
+  char *value_text = strtok_r(NULL, " \t", &arg);
+  const char *names[] = {"station", "warning", "critical", "error",
+                         "sample", "breathe"};
+  if (!kind_text) {
+    for (unsigned int i = 0u; i < LED_BRIGHTNESS_KIND_COUNT; ++i) {
+      char line[80];
+      snprintf(line, sizeof line, "%s %u%%", names[i],
+               led_brightness_get((led_brightness_kind_t)i));
+      result(i == 0u ? original : "", "complete", line);
+    }
+    result("", "complete", "Use: led brightness <station|warning|critical|error|sample|breathe> <0..100>");
+    return true;
+  }
+  if (!strcmp(kind_text, "reset")) {
+    if (value_text) {
+      result(original, "rejected", "use led brightness reset without a value");
+      return true;
+    }
+    led_brightness_reset();
+    result(original, "complete", "LED indication brightness restored to compiled defaults");
+    return true;
+  }
+  led_brightness_kind_t kind = LED_BRIGHTNESS_KIND_COUNT;
+  for (unsigned int i = 0u; i < LED_BRIGHTNESS_KIND_COUNT; ++i)
+    if (!strcmp(kind_text, names[i]))
+      kind = (led_brightness_kind_t)i;
+  char *end;
+  long percent = value_text ? strtol(value_text, &end, 10) : -1;
+  if (kind >= LED_BRIGHTNESS_KIND_COUNT || !value_text || end == value_text ||
+      *end || percent < 0 || percent > 100 ||
+      !led_brightness_set(kind, (uint8_t)percent)) {
+    result(original, "rejected", "use led brightness <station|warning|critical|error|sample|breathe> <0..100>");
+    return true;
+  }
+  char detail[96];
+  snprintf(detail, sizeof detail, "%s base brightness set to %ld%% (RAM only)",
+           kind_text, percent);
+  result(original, "complete", detail);
+  return true;
+}
+
+static bool led_zone_command(const char *original, char *arg) {
+  char *zone_text = strtok_r(arg, " \t", &arg);
+  char *value_text = strtok_r(NULL, " \t", &arg);
+  const char *names[] = {"night", "dim", "indoor", "bright"};
+  if (!zone_text) {
+    for (unsigned int i = 0u; i < AMBIENT_ZONE_COUNT; ++i) {
+      char line[64];
+      snprintf(line, sizeof line, "%s multiplier %u%%", names[i],
+               ambient_light_multiplier_get((ambient_zone_t)i));
+      result(i == 0u ? original : "", "complete", line);
+    }
+    result("", "complete", "Use: led zone <night|dim|indoor|bright> <0..2000>");
+    return true;
+  }
+  if (!strcmp(zone_text, "reset")) {
+    ambient_light_multiplier_reset();
+    result(original, "complete", "ambient zone multipliers restored to compiled defaults");
+    return true;
+  }
+  ambient_zone_t zone = AMBIENT_ZONE_COUNT;
+  for (unsigned int i = 0u; i < AMBIENT_ZONE_COUNT; ++i)
+    if (!strcmp(zone_text, names[i])) zone = (ambient_zone_t)i;
+  char *end;
+  long percent = value_text ? strtol(value_text, &end, 10) : -1;
+  if (zone >= AMBIENT_ZONE_COUNT || !value_text || end == value_text || *end ||
+      percent < 0 || percent > 2000 ||
+      !ambient_light_multiplier_set(zone, (uint16_t)percent)) {
+    result(original, "rejected", "use led zone <night|dim|indoor|bright> <0..2000>");
+    return true;
+  }
+  char detail[96];
+  snprintf(detail, sizeof detail, "%s ambient multiplier set to %ld%% (RAM only)",
+           zone_text, percent);
+  result(original, "complete", detail);
+  return true;
 }
 
 static void submit(char *typed) {
@@ -2177,6 +2432,10 @@ static void submit(char *typed) {
     result(original, "rejected", detail);
     return;
   }
+  if (help_display_active && strcmp(command, "help")) {
+    help_display_active = false;
+    dbg_render();
+  }
   if (!strcmp(command, "ds3231")) {
     char detail[96];
     if (arg && !strcmp(arg, "start")) {
@@ -2290,6 +2549,7 @@ static void submit(char *typed) {
     else
       dbg_render();
   } else if (!strcmp(command, "help")) {
+    help_display_begin();
     if (arg) {
       const char *sdc_help = ui_page == 5u && strcmp(arg, "co2profile")
                                  ? co2_command_help(arg)
@@ -2304,6 +2564,10 @@ static void submit(char *typed) {
           help_pos_detail(original, entry);
         } else if (!strcmp(entry->name, "led")) {
           help_led_detail(original);
+        } else if (!strcmp(entry->name, "led brightness")) {
+          help_led_brightness_detail(original);
+        } else if (!strcmp(entry->name, "led zone")) {
+          help_led_zone_detail(original);
         } else if (!strcmp(entry->name, "batt chirp")) {
           help_batt_chirp_detail(original);
         } else if (!strcmp(entry->name, "batt chirp time")) {
@@ -2582,6 +2846,20 @@ static void submit(char *typed) {
     snprintf(detail, sizeof detail, "adc %u = %s degrees", adc, angle);
     result(original, "complete", detail);
   } else if (!strcmp(command, "led")) {
+    if (arg && !strncmp(arg, "brightness", 10u) &&
+        (!arg[10] || isspace((unsigned char)arg[10]))) {
+      char *settings = arg + 10u;
+      while (isspace((unsigned char)*settings)) ++settings;
+      led_brightness_command(original, settings);
+      return;
+    }
+    if (arg && !strncmp(arg, "zone", 4u) &&
+        (!arg[4] || isspace((unsigned char)arg[4]))) {
+      char *settings = arg + 4u;
+      while (isspace((unsigned char)*settings)) ++settings;
+      led_zone_command(original, settings);
+      return;
+    }
     if (!arg) {
       char detail[96];
       position_t station = encoder_confirmed();
@@ -2606,6 +2884,26 @@ static void submit(char *typed) {
       snprintf(status, sizeof status, "power %s on GP0; %s",
                led_powered() ? "on" : "off", detail);
       result(original, "complete", status);
+      ambient_light_sample_t light;
+      ambient_light_snapshot(&light);
+      snprintf(status, sizeof status,
+               "VEML7700 0x%02X: %s raw=%u lux=%lu.%03lu zone=%s scale=%u%%",
+               VEML7700_ADDRESS, light.valid ? "valid" : "no valid sample",
+               light.raw, (unsigned long)(light.millilux / 1000u),
+               (unsigned long)(light.millilux % 1000u),
+               ambient_light_zone_name(light.confirmed_zone),
+               led_brightness_multiplier_percent());
+      result("ambient", "complete", status);
+      snprintf(status, sizeof status,
+               "shutdown=%s config=0x%04X samples=%lu errors=%lu instant=%s candidate=%s/%lu",
+               light.measuring ? "measuring" :
+                   (light.shutdown_verified ? "verified" : "unverified"),
+               light.config_raw, (unsigned long)light.samples,
+               (unsigned long)light.errors,
+               ambient_light_zone_name(light.instant_zone),
+               ambient_light_zone_name(light.candidate_zone),
+               (unsigned long)light.candidate_samples);
+      result("ambient", "complete", status);
     } else if (!strcmp(arg, "on")) {
       led_set_mode(LED_MODE_FORCED_ON);
       result(original, "complete", "forced deep red 192,4,8; GP0 follows light demand");
@@ -2647,9 +2945,21 @@ static void submit(char *typed) {
       result(original, "rejected",
              "usage: led on/off/auto, led rgbw on/off, led raw <hex>, or led");
   } else if (!strcmp(command, "buzzer")) {
-    if (!arg) {
-      result(original, "complete", buzzer_play_2_active() ? "chirps-2 DDS sine playing; channel B" :
-             buzzer_play_2_underrun() ? "chirps-2 stopped: DMA underrun" :
+    if (!arg && buzzer_play_5_active()) {
+      result(original, "complete", "crips-5 compact test playing; channel B");
+    } else if (!arg && buzzer_play_5_underrun() && !buzzer_enabled()) {
+      result(original, "complete", "crips-5 stopped: DMA underrun");
+    } else if (!arg && buzzer_play_4_active()) {
+      result(original, "complete", "crips-4 bird-inspired test playing; channel B");
+    } else if (!arg && buzzer_play_4_underrun() && !buzzer_enabled()) {
+      result(original, "complete", "crips-4 stopped: DMA underrun");
+    } else if (!arg && buzzer_play_3_active()) {
+      result(original, "complete", "crips-3 alarm test playing; channel B");
+    } else if (!arg && buzzer_play_3_underrun() && !buzzer_enabled()) {
+      result(original, "complete", "crips-3 stopped: DMA underrun");
+    } else if (!arg) {
+      result(original, "complete", buzzer_play_2_active() ? "crips-2 DDS sine playing; channel B" :
+             buzzer_play_2_underrun() ? "crips-2 stopped: DMA underrun" :
              buzzer_enabled() ? "bird warning on; channel B" :
                                                     "bird warning off; channel B");
     } else if (!strcmp(arg, "on")) {
@@ -2658,25 +2968,74 @@ static void submit(char *typed) {
     } else if (!strcmp(arg, "off")) {
       buzzer_set(false);
       result(original, "complete", "off");
-    } else if (!strncmp(arg, "play-2 ", 7u)) {
-      long count;
-      if (!parse_long(arg + 7u, &count) || count < 1 || count > (long)BUZZER_PLAY_MAX) {
-        result(original, "rejected", "usage: buzzer play-2 1..200");
-      } else if (!buzzer_play_2((unsigned int)count)) {
+    } else if (!strncmp(arg, "tone-2 ", 7u) || !strncmp(arg, "tone-3 ", 7u)) {
+      bool second = arg[5] == '2';
+      char *duration = strchr(arg + 7u, ' ');
+      long frequency, seconds;
+      if (duration)
+        *duration++ = '\0';
+      if (!duration || !parse_long(arg + 7u, &frequency) ||
+          !parse_long(duration, &seconds) ||
+          frequency < (long)BATTERY_ALERT_FREQUENCY_MIN_HZ ||
+          frequency > (long)BATTERY_ALERT_FREQUENCY_MAX_HZ ||
+          seconds < (long)BATTERY_CHIRP_DURATION_MIN_S ||
+          seconds > (long)BATTERY_CHIRP_DURATION_MAX_S) {
+        result(original, "rejected", "usage: buzzer tone-2/tone-3 <100..10000 Hz> <1..5 seconds>");
+      } else if (!(second ? buzzer_tone_2((uint32_t)frequency, (uint32_t)seconds * 1000u)
+                           : buzzer_tone_3((uint32_t)frequency, (uint32_t)seconds * 1000u))) {
         result(original, "rejected", "DDS unavailable or battery tone active");
       } else {
-        result(original, "complete", "chirps-2 DDS sine started; 200 ms gaps");
+        char detail[96];
+        snprintf(detail, sizeof detail, "tone-%u: %ld Hz sine for %ld s; no chirp gaps",
+                 second ? 2u : 3u, frequency, seconds);
+        result(original, "complete", detail);
       }
-    } else if (!strncmp(arg, "play ", 5u)) {
+    } else if (!strncmp(arg, "crips-5 ", 8u)) {
       long count;
-      if (!parse_long(arg + 5u, &count) || count < 1 || count > (long)BUZZER_PLAY_MAX) {
-        result(original, "rejected", "usage: buzzer play 1..200");
+      if (!parse_long(arg + 8u, &count) || count < 1 || count > (long)BUZZER_PLAY_MAX) {
+        result(original, "rejected", "usage: buzzer crips-5 1..200");
+      } else if (!buzzer_crips_5((unsigned int)count)) {
+        result(original, "rejected", "DDS unavailable or battery tone active");
       } else {
-        buzzer_play((unsigned int)count);
-        result(original, "complete", "bird playback started; 200 ms gaps");
+        result(original, "complete", "crips-5 compact test started; same notes, shorter phrase/repeat pauses; ~2.7 s");
+      }
+    } else if (!strncmp(arg, "crips-4 ", 8u)) {
+      long count;
+      if (!parse_long(arg + 8u, &count) || count < 1 || count > (long)BUZZER_PLAY_MAX) {
+        result(original, "rejected", "usage: buzzer crips-4 1..200");
+      } else if (!buzzer_crips_4((unsigned int)count)) {
+        result(original, "rejected", "DDS unavailable or battery tone active");
+      } else {
+        result(original, "complete", "crips-4 test started; ~5 s bout, three phrases, 2 s onsets");
+      }
+    } else if (!strncmp(arg, "crips-3 ", 8u)) {
+      long count;
+      if (!parse_long(arg + 8u, &count) || count < 1 || count > (long)BUZZER_PLAY_MAX) {
+        result(original, "rejected", "usage: buzzer crips-3 1..200");
+      } else if (!buzzer_crips_3((unsigned int)count)) {
+        result(original, "rejected", "DDS unavailable or battery tone active");
+      } else {
+        result(original, "complete", "crips-3 three-part test started; 444 ms sequence, 100 ms gaps");
+      }
+    } else if (!strncmp(arg, "crips-2 ", 8u)) {
+      long count;
+      if (!parse_long(arg + 8u, &count) || count < 1 || count > (long)BUZZER_PLAY_MAX) {
+        result(original, "rejected", "usage: buzzer crips-2 1..200");
+      } else if (!buzzer_crips_2((unsigned int)count)) {
+        result(original, "rejected", "DDS unavailable or battery tone active");
+      } else {
+        result(original, "complete", "crips-2 DDS sine started; 200 ms gaps");
+      }
+    } else if (!strncmp(arg, "crips-1 ", 8u)) {
+      long count;
+      if (!parse_long(arg + 8u, &count) || count < 1 || count > (long)BUZZER_PLAY_MAX) {
+        result(original, "rejected", "usage: buzzer crips-1 1..200");
+      } else {
+        buzzer_crips_1((unsigned int)count);
+        result(original, "complete", "crips-1 started; 200 ms gaps");
       }
     } else {
-      result(original, "rejected", "usage: buzzer on/off or buzzer play/play-2 1..200");
+      result(original, "rejected", "usage: buzzer crips-1..crips-5 <1..200>, tone-2/tone-3 <Hz> <s>, on/off");
     }
   } else if (!strcmp(command, "page")) {
     long requested;
@@ -2688,8 +3047,10 @@ static void submit(char *typed) {
       result("", "complete", "5 - CO2 sensor");
       result("", "complete", "6 - Commands");
       result("", "complete", "7 - Data log");
-    } else if (!parse_long(arg, &requested) || requested < 1 || requested > 7) {
-      result(original, "rejected", "usage: page 1..7");
+      result("", "complete", "8 - Ambient light (VEML7700)");
+    } else if (!parse_long(arg, &requested) || requested < 1 ||
+               requested > (long)DEBUG_PAGE_COUNT) {
+      result(original, "rejected", "usage: page 1..8");
     } else {
       ui_page = (uint8_t)requested;
       result(original, "complete", "debug page selected");
@@ -3259,7 +3620,7 @@ void dbg_handle_key(char c) {
 #endif
     return;
   }
-  if (c >= '1' && c <= '7' && input_len == 0u && !input_overflow) {
+  if (c >= '1' && c <= '0' + DEBUG_PAGE_COUNT && input_len == 0u && !input_overflow) {
     ui_page = (uint8_t)(c - '0');
     dbg_render();
     return;
@@ -3306,10 +3667,10 @@ void dbg_handle_key(char c) {
     input_overflow = false;
     command_dirty = true;
 #ifndef LUFTFUGL_TRACE_INPUT
-    if (!plain_mode && ui_page == 6u) {
+    if (!plain_mode && ui_page == 6u && !help_display_active && !frame_phase) {
       command_line_draw();
       command_dirty = false;
-    } else if (!plain_mode && !frame_phase &&
+    } else if (!plain_mode && !help_display_active && !frame_phase &&
                out_free() > DEBUG_COMMAND_MAX + 32u) {
       command_line_draw();
       command_dirty = false;
@@ -3328,7 +3689,7 @@ void dbg_handle_key(char c) {
     }
     command_dirty = true;
 #ifndef LUFTFUGL_TRACE_INPUT
-    if (!plain_mode && ui_page == 6u) {
+    if (!plain_mode && ui_page == 6u && !help_display_active) {
       command_line_draw();
       command_dirty = false;
     }
@@ -3354,7 +3715,7 @@ void dbg_handle_key(char c) {
     } else
       command_dirty = true;
 #ifndef LUFTFUGL_TRACE_INPUT
-    if (!plain_mode && ui_page == 6u) {
+    if (!plain_mode && ui_page == 6u && !help_display_active) {
       command_line_draw();
       command_dirty = false;
     }
@@ -3375,6 +3736,7 @@ void dbg_init(void) {
   endstop_restore();
   active = plain_mode = echo_enabled = input_overflow = swallow_lf = armed =
       false;
+  help_display_active = false;
   command_dirty = false;
   selected_station = POS_UNKNOWN;
   saved_station_mask = 0u;
@@ -3419,6 +3781,7 @@ void dbg_init(void) {
 static void enter(bool plain) {
   plain_mode = plain;
   active = echo_enabled = true;
+  help_display_active = false;
   input_len = 0;
   input_overflow = false;
   command_dirty = false;
@@ -3444,6 +3807,7 @@ void dbg_exit(void) {
   /* Leaving the UI must still hand motor and simulation changes to the tick. */
   (void)controller_debug_request(&request);
   active = echo_enabled = armed = false;
+  help_display_active = false;
   ds3231_timer_stream = false;
   sim_travel_active = false;
   cal_sim_active = false;
@@ -3471,7 +3835,7 @@ void dbg_poll(void) {
      * each newly armed alarm) appears without another command. */
     (void)event_timer_format_countdown(detail, sizeof detail);
     ds3231_timer_draw(detail);
-    if (!plain_mode && ui_page == 6u)
+    if (!plain_mode && !help_display_active && ui_page == 6u)
       command_line_draw();
     ds3231_timer_next_ms = now + DEBUG_DS3231_TIMER_STREAM_MS;
   }
@@ -3513,14 +3877,14 @@ void dbg_poll(void) {
     }
   }
 #ifndef LUFTFUGL_TRACE_INPUT
-  if (active && !plain_mode && frame_phase)
+  if (active && !plain_mode && !help_display_active && frame_phase)
     frame_continue();
-  if (active && !plain_mode && !frame_phase && command_dirty &&
+  if (active && !plain_mode && !help_display_active && !frame_phase && command_dirty &&
       out_free() > DEBUG_COMMAND_MAX + 32u) {
     command_line_draw();
     command_dirty = false;
   }
-  if (active && !plain_mode && !frame_phase &&
+  if (active && !plain_mode && !help_display_active && !frame_phase &&
       (int32_t)(now - next_refresh) >= 0) {
     dbg_fields_refresh();
     if (ui_page == 6u)

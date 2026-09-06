@@ -37,6 +37,8 @@ typedef struct {
 
 void power_monitor_init(void);
 void power_monitor_tick(void);
+/* Main-context consumer of the existing periodic battery-cycle IRQ flag. */
+bool power_monitor_take_sensor_cycle(void);
 bool power_monitor_i2c_claim(void);
 void power_monitor_i2c_release(void);
 void power_monitor_request_sample(void);

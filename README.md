@@ -261,9 +261,9 @@ history of what's changed and why.
 
 ## Chirps-2 debug sound test
 
-In debug mode, `buzzer play-2 1` plays one DDS sine-shaped bird call;
-`buzzer play-2 3` plays three, with 200 ms silent gaps. Counts are 1–200.
-`buzzer play 3` retains the original square-wave call. `buzzer off` stops
+In debug mode, `buzzer crips-2 1` plays one DDS sine-shaped bird call;
+`buzzer crips-2 3` plays three, with 200 ms silent gaps. Counts are 1–200.
+`buzzer crips-1 3` retains the original square-wave call. `buzzer off` stops
 playback, and `buzzer` reports playback or a DMA underrun. Fixed battery
 warning tones take priority over the test.
 
@@ -288,3 +288,40 @@ The play-2 setting `BUZZER_DDS_GAIN_PERCENT` is 100 for a clean sine.
 The 125% clipping trial distorted the waveform without increasing the
 measured 2.8 V peak-to-peak output, so the clean sine setting was restored.
 Keep the external RC filter fitted.
+
+## Temporary three-part threat-display listening test
+
+Debug command `buzzer crips-3 <1..200>` plays a complete three-part sequence:
+eight bursts at 4250–4350 Hz, a 50 ms break, eight at 1950–2050 Hz, another
+50 ms break, then twelve denser bursts at 4250–4350 Hz. Each sequence takes
+444 ms; repeats have 100 ms gaps. Each half retains its independent ±25 Hz
+draw, clamped to that part's band. The waveform is a clean sine.
+`buzzer off` stops playback. This is listening-only, with no production or
+station trigger. These bands target the two user-measured loudness peaks; acoustic
+loudness of this sine-driven variant still needs listening. See [composition and verification](play-3-listening-test.md).
+
+For a matched voltage/listening comparison of the two sine players, use
+`buzzer tone-2 6000 3` followed separately by `buzzer tone-3 6000 3`.
+Each plays a continuous 6000 Hz sine for three seconds. See
+[fixed-tone comparison](buzzer-tone-comparison.md) for limits and verification.
+
+Debug-only `buzzer crips-4 <1..200>` adds a longer bird-inspired listening bout:
+three phrases over approximately five seconds, using the confirmed 2.0/4.3 kHz
+bands, with longer notes and pauses based on published passerine measurements.
+`buzzer off` stops it. See [play-4 timing and research](play-4-listening-test.md).
+
+`buzzer crips-5 <1..200>` plays the same notes as play-4 with shorter silences
+and further-halved phrase/repeat pauses, giving approximately 2.7 seconds per bout. See
+[play-5 timing](play-5-listening-test.md); `buzzer off` stops either mode.
+
+### Chirp names
+
+The five console commands are now `buzzer crips-1 <count>` through
+`buzzer crips-5 <count>`, replacing `buzzer play` and `buzzer play-2` through
+`buzzer play-5`. Count is 1–200 complete sequences; `buzzer off` stops playback.
+“crips5” refers to crips-5, the compact ~2.75-second sequence. The rename changes
+no sounds. Older reports use the former play names with the same numbering.
+
+Station arrivals now use **crips-5** in both debug and release firmware:
+positions 2/3/4/5 play 1/2/3/4 complete sequences, respectively. Positions 1
+and 6 remain silent. Battery-tone priority is preserved.

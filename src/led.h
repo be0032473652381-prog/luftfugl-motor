@@ -14,6 +14,21 @@ typedef enum {
 void led_power_init(void);
 void led_init(void);
 void led_update(void);
+unsigned int led_brightness_multiplier_percent(void);
+typedef enum {
+  LED_BRIGHTNESS_STATION = 0,
+  LED_BRIGHTNESS_WARNING,
+  LED_BRIGHTNESS_CRITICAL,
+  LED_BRIGHTNESS_ERROR,
+  LED_BRIGHTNESS_SAMPLE,
+  LED_BRIGHTNESS_BREATHE,
+  LED_BRIGHTNESS_KIND_COUNT
+} led_brightness_kind_t;
+#ifdef LUFTFUGL_MONITOR
+bool led_brightness_set(led_brightness_kind_t kind, uint8_t percent);
+uint8_t led_brightness_get(led_brightness_kind_t kind);
+void led_brightness_reset(void);
+#endif
 void led_set_mode(led_mode_t mode);
 led_mode_t led_mode(void);
 bool led_is_on(void);

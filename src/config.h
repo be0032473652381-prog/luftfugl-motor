@@ -25,6 +25,57 @@
 /* Clean sine amplitude; values above 100 clip the peaks. */
 #define BUZZER_DDS_GAIN_PERCENT 100u
 #define BUZZER_PLAY_MAX 200u
+#ifdef LUFTFUGL_DEBUG
+/* Temporary play-3 listening composition. No production caller. */
+#define BUZZER_ALARM_PART1_COUNT 8u
+#define BUZZER_ALARM_PART2_COUNT 8u
+#define BUZZER_ALARM_PART3_COUNT 12u
+#define BUZZER_ALARM_PART1_MIN_HZ 4250u
+#define BUZZER_ALARM_PART1_MAX_HZ 4350u
+#define BUZZER_ALARM_PART2_MIN_HZ 1950u
+#define BUZZER_ALARM_PART2_MAX_HZ 2050u
+#define BUZZER_ALARM_PART3_MIN_HZ 4250u
+#define BUZZER_ALARM_PART3_MAX_HZ 4350u
+#define BUZZER_ALARM_BURST_MS 12u
+#define BUZZER_ALARM_NOTE_GAP_MS 2u
+#define BUZZER_ALARM_CLIMAX_BURST_MS 9u
+#define BUZZER_ALARM_CLIMAX_GAP_MS 1u
+#define BUZZER_ALARM_BREAK_MS 50u
+#define BUZZER_ALARM_CALL_MAX_MS 500u
+#define BUZZER_ALARM_REPEAT_GAP_MS 100u
+#define BUZZER_ALARM_PITCH_JUMP_HZ 25u
+#define BUZZER_ALARM_CARRIER_HZ 100000u
+#endif
+/* Shared crips-4/crips-5 composition: measured passerine timing adapted to the two bench resonance bands.
+ * See play-4-listening-test.md for evidence versus chosen composition. */
+#define BUZZER_THREAT_HIGH_MIN_HZ 4250u
+#define BUZZER_THREAT_HIGH_MAX_HZ 4350u
+#define BUZZER_THREAT_LOW_MIN_HZ 1950u
+#define BUZZER_THREAT_LOW_MAX_HZ 2050u
+#define BUZZER_THREAT_PITCH_JUMP_HZ 25u
+#define BUZZER_THREAT_CARRIER_HZ 100000u
+#define BUZZER_THREAT_PART1_COUNT 6u
+#define BUZZER_THREAT_PART2_COUNT 7u
+#define BUZZER_THREAT_PART3_COUNT 8u
+#define BUZZER_THREAT_INTRO_COUNT 2u
+#define BUZZER_THREAT_INTRO_MS 100u
+#define BUZZER_THREAT_INTRO_GAP_MS 100u
+#define BUZZER_THREAT_TRANSITION_MS 90u
+#define BUZZER_THREAT_NOTE_MIN_MS 45u
+#define BUZZER_THREAT_NOTE_MAX_MS 55u
+#define BUZZER_THREAT_GAP1_MIN_MS 30u
+#define BUZZER_THREAT_GAP1_MAX_MS 40u
+#define BUZZER_THREAT_GAP2_MIN_MS 35u
+#define BUZZER_THREAT_GAP2_MAX_MS 45u
+#define BUZZER_THREAT_PEAK_NOTE_MIN_MS 40u
+#define BUZZER_THREAT_PEAK_NOTE_MAX_MS 50u
+#define BUZZER_THREAT_PEAK_GAP_MIN_MS 25u
+#define BUZZER_THREAT_PEAK_GAP_MAX_MS 35u
+#define BUZZER_THREAT_PHRASE_ONSET_MS 2000u
+/* play-5 preserves play-4 notes and halves all silences (round up to ms). */
+#define BUZZER_COMPACT_SILENCE_PERCENT 50u
+/* Additional reduction of only the two phrase pauses and repeat pause. */
+#define BUZZER_COMPACT_LONG_PAUSE_PERCENT 50u
 #define BUZZER_STATION_2_PLAYS 1u
 #define BUZZER_STATION_3_PLAYS 2u
 #define BUZZER_STATION_4_PLAYS 3u
@@ -58,6 +109,24 @@
 #define CO2_SIM_MAX_PPM 6000u
 #define CO2_SIM_MAPPING_PERIOD_MS 5000u
 #define INA219_ADDRESS 0x40u
+/* VEML7700: Vishay 84323, rev. 06-Mar-2025, pp. 3-5 and 15.
+ * Gain 1/8, IT 100 ms: 0.5376 lux/count. Include oscillator startup and
+ * the documented +30% integration tolerance before reading fresh data. */
+#define VEML7700_ADDRESS 0x10u
+#define VEML7700_ACTIVE_CONFIG 0x1000u
+#define VEML7700_INTEGRATION_US 100000u
+#define VEML7700_STARTUP_US 2500u
+#define VEML7700_INTEGRATION_TOLERANCE_PERCENT 30u
+#define VEML7700_READY_US \
+  (VEML7700_STARTUP_US + VEML7700_INTEGRATION_US * \
+   (100u + VEML7700_INTEGRATION_TOLERANCE_PERCENT) / 100u)
+#define VEML7700_LUX_PER_COUNT 0.5376f
+/* Vishay's high-illumination correction, applied above 1000 lux. */
+#define VEML7700_CORRECTION_THRESHOLD_LUX 1000u
+#define VEML7700_CORRECTION_A 6.0135e-13f
+#define VEML7700_CORRECTION_B (-9.3924e-9f)
+#define VEML7700_CORRECTION_C 8.1488e-5f
+#define VEML7700_CORRECTION_D 1.0023f
 #define LED_COUNT 1
 #define LED_RGBW 1
 #define LED_DATA_RATE_HZ 800000u
@@ -65,6 +134,38 @@
 #define LED_POWER_STARTUP_US 300u
 #define LED_STATION_BRIGHTNESS_PERCENT 3u
 #define LED_HAZARD_BRIGHTNESS_PERCENT 30u
+/* Ambient zone lower edges, in lux; Night starts at the physical zero floor.
+ * Four independent bench multipliers, expressed as percent of the base. */
+#define AMBIENT_NIGHT_MIN_LUX 0u
+#define AMBIENT_DIM_MIN_LUX 10u
+#define AMBIENT_INDOOR_MIN_LUX 100u
+#define AMBIENT_BRIGHT_MIN_LUX 500u
+#define AMBIENT_NIGHT_MULTIPLIER_PERCENT 100u
+#define AMBIENT_DIM_MULTIPLIER_PERCENT 200u
+#define AMBIENT_INDOOR_MULTIPLIER_PERCENT 400u
+#define AMBIENT_BRIGHT_MULTIPLIER_PERCENT 800u
+#define AMBIENT_HYSTERESIS_PERCENT 20u
+/* Reuse the established three-sample battery confirmation as the starting
+ * point; this alias can be tuned independently for ambient light later. */
+#define AMBIENT_CONFIRM_SAMPLES BATTERY_ASSERT_SAMPLES
+#define LED_MAX_BRIGHTNESS_PERCENT 100u
+/* Strictly below the existing alert base even after future zone tuning.
+ * Limit the shared multiplier, not just the station path. */
+#define LED_AMBIENT_STATION_CEILING_PERCENT (LED_HAZARD_BRIGHTNESS_PERCENT - 1u)
+#define LED_SAMPLE_BRIGHTNESS_PERCENT 10u
+#define LED_BREATHE_STEP_MS 250u
+#define LED_BREATHE_LEVELS \
+  {1u, 1u, 1u, 1u, 2u, 2u, 3u, 4u, \
+   5u, 6u, 7u, 8u, 9u, 10u, 10u, 10u, \
+   10u, 10u, 10u, 9u, 8u, 7u, 6u, 5u, \
+   4u, 3u, 2u, 2u, 1u, 1u, 1u, 1u}
+#define LED_WARM_RGB_R 255u
+#define LED_WARM_RGB_G 178u
+#define LED_WARM_RGB_B 96u
+#define LED_WARM_RGBW_R 32u
+#define LED_WARM_RGBW_G 14u
+#define LED_WARM_RGBW_B 0u
+#define LED_WARM_RGBW_W 255u
 
 #define LED_STATION5_R 192
 #define LED_STATION5_G 4
@@ -239,6 +340,7 @@
 #define DEBUG_GPIO_OP_STBY 3u
 #define DEBUG_SCREEN_REFRESH_MS 200u
 #define DEBUG_SCREEN_UPTIME_MS 1000u
+#define DEBUG_PAGE_COUNT 8u
 #define DEBUG_DS3231_TIMER_STREAM_MS 1000u
 #define DEBUG_SCREEN_BOTTOM_ROW 53u
 #define DEBUG_COMMAND_ROW 24u

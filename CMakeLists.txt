@@ -21,7 +21,10 @@ add_executable(luftfugl
     src/controller.c
     src/console.c
     src/led.c
+    src/ambient_light.c
     src/buzzer.c
+    src/buzzer_compact.c
+    src/buzzer_compact_pattern.c
     src/co2.c
     src/power_monitor.c
     src/event_timer.c
@@ -31,9 +34,13 @@ pico_generate_pio_header(luftfugl ${CMAKE_CURRENT_LIST_DIR}/src/ws2812.pio)
 
 if(LUFTFUGL_DEBUG)
     target_sources(luftfugl PRIVATE src/debug.c src/config.c)
+    target_sources(luftfugl PRIVATE src/buzzer_alarm.c src/buzzer_alarm_pattern.c
+        src/buzzer_threat.c src/buzzer_threat_pattern.c)
     target_compile_definitions(luftfugl PRIVATE
         LUFTFUGL_DEBUG=1
         LUFTFUGL_MONITOR=1
+        # Four independently selectable DDS players plus the DS3231 GPIO handler.
+        PICO_MAX_SHARED_IRQ_HANDLERS=5
     )
 endif()
 if(LUFTFUGL_TRACE_INPUT)

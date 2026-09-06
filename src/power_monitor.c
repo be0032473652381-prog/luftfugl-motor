@@ -61,6 +61,7 @@ typedef struct {
 
 static volatile power_sample_t published;
 static volatile bool i2c_claimed;
+static volatile bool sensor_cycle_pending;
 static power_sample_t working;
 static pm_state_t state;
 static io_kind_t io_kind;
@@ -426,6 +427,15 @@ void power_monitor_init(void) {
   sample_requested = true;
   session_start_ms = now_ms();
   next_sample_ms = session_start_ms;
+  sensor_cycle_pending = false;
+}
+
+bool power_monitor_take_sensor_cycle(void) {
+  uint32_t irq_state = save_and_disable_interrupts();
+  bool pending = sensor_cycle_pending;
+  sensor_cycle_pending = false;
+  restore_interrupts(irq_state);
+  return pending;
 }
 
 void power_monitor_request_sample(void) { sample_requested = true; }
@@ -476,6 +486,11 @@ void power_monitor_tick(void) {
     break;
   case PM_IDLE:
     if (sample_requested || (int32_t)(ms - next_sample_ms) >= 0) {
+      /* Only the existing scheduled cycle triggers companion sensors.
+       * Manual battery reads and motor-inrush sampling do not add lux reads.
+       * Main consumes this flag; no main-context service runs in the IRQ. */
+      if ((int32_t)(ms - next_sample_ms) >= 0)
+        sensor_cycle_pending = true;
       sample_requested = false;
       state = PM_TRIGGER;
     }

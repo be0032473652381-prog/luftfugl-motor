@@ -1,5 +1,6 @@
 #include "console.h"
 #include "buzzer.h"
+#include "buzzer_compact.h"
 #include "controller.h"
 #include "encoder.h"
 #include "hardware/gpio.h"
@@ -470,7 +471,7 @@ void console_drain_events(void) {
                                   ? station_arrival_bird_plays(event.arg)
                                   : 0u;
     if (bird_plays)
-      buzzer_play(bird_plays);
+      (void)buzzer_crips_5(bird_plays);
 #ifdef LUFTFUGL_MONITOR
     if (dbg_active()) {
       dbg_event(event.kind, event.arg);

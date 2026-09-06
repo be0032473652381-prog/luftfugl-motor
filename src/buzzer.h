@@ -7,8 +7,17 @@
 void buzzer_init(void);
 void buzzer_set(bool enabled);
 void buzzer_play(unsigned int count);
+/* Canonical chirp name; preserves the existing generator and callers. */
+static inline void buzzer_crips_1(unsigned int count) {
+  buzzer_play(count);
+}
 #ifdef LUFTFUGL_DEBUG
 bool buzzer_play_2(unsigned int count);
+/* Canonical chirp name; preserves the existing generator and callers. */
+static inline bool buzzer_crips_2(unsigned int count) {
+  return buzzer_play_2(count);
+}
+bool buzzer_tone_2(uint32_t frequency_hz, uint32_t duration_ms);
 bool buzzer_play_2_active(void);
 bool buzzer_play_2_underrun(void);
 #endif
