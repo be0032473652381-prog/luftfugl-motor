@@ -129,6 +129,9 @@ static uint32_t cal_sim_random(void) {
 static void result(const char *command, const char *outcome,
                    const char *detail);
 static uint32_t ms_now(void);
+#ifndef LUFTFUGL_TRACE_INPUT
+static void frame_continue(void);
+#endif
 
 static void datalog_clear(void) {
   datalog_head = 0u;
@@ -956,6 +959,28 @@ void dbg_render(void) {
   frame_phase = 1u;
 }
 
+static void clear_result_window(void) {
+#ifndef LUFTFUGL_TRACE_INPUT
+  /* Finish a pending page draw before clearing its result region. Discarding
+   * that draw would leave a partly rendered menu above the prompt. */
+  while (frame_phase || dbg_out_pending()) {
+    if (frame_phase)
+      frame_continue();
+    dbg_out_drain();
+  }
+#endif
+  char sequence[48];
+  snprintf(sequence, sizeof sequence,
+           "\033[s\033[%u;1H\033[J\033[%u;%ur\033[u",
+           event_top_row(), event_top_row(), DEBUG_SCREEN_BOTTOM_ROW);
+  dbg_out_push(sequence);
+  first_result = false;
+  help_display_active = false;
+  page6_holds_last_input = false;
+  page6_last_input[0] = '\0';
+  command_dirty = true;
+}
+
 static void help_display_begin(void) {
   if (plain_mode)
     return;
@@ -1012,7 +1037,7 @@ static void frame_continue(void) {
       {"batt res", "batt reset", "batt sim", "batt sim critical"},
       {"batt sim range", "batt sim warning", "bootsel", "buzzer crips-1"},
       {"buzzer crips-2", "buzzer crips-3", "buzzer crips-4", "buzzer crips-5"},
-      {"buzzer tone-2/3", "cal", "cfg", "clean"},
+      {"buzzer tone-2/3", "cal", "cfg", "clean / clear"},
       {"co2", "co2cfg", "co2defaults", "co2limit"},
       {"co2living", "co2save", "co2sim", "co2sleeping"},
       {"diag", "disarm", "drive", "ds3231 start"},
@@ -1921,6 +1946,8 @@ static const help_entry_t help_entries[] = {
      "Redraws the complete live SCD41 Page-5 menu."},
     {"clean", "clean", "no arguments",
      "Clears command results and redraws the fixed-screen debug interface."},
+    {"clear", "clear", "no arguments; fixed-screen mode",
+     "Erases only output below Command >; preserves the current menu and Page-7 log. New events can appear afterward."},
     {"plain", "plain", "no arguments",
      "Switches to line-oriented output without escape codes."},
     {"exit", "exit", "no arguments", "Leaves the debug console safely."}};
@@ -2467,7 +2494,8 @@ static void submit(char *typed) {
     result(original, "rejected", detail);
     return;
   }
-  if (help_display_active && strcmp(command, "help")) {
+  if (help_display_active && strcmp(command, "help") &&
+      strcmp(command, "clear")) {
     help_display_active = false;
     dbg_render();
   }
@@ -2556,6 +2584,7 @@ static void submit(char *typed) {
               !strcmp(command, "findmin") || !strcmp(command, "plain") ||
               !strcmp(command, "load") || !strcmp(command, "ina") ||
               !strcmp(command, "clean") ||
+              !strcmp(command, "clear") ||
               !strcmp(command, "bootsel") || !strcmp(command, "exit"))) {
     result(original, "rejected", "unexpected argument; try help <command>");
     return;
@@ -2578,6 +2607,14 @@ static void submit(char *typed) {
     result(original, ok ? "complete" : "rejected", detail);
     if (!strcmp(command, "menu") && !plain_mode)
       dbg_render();
+  } else if (!strcmp(command, "clear")) {
+    if (plain_mode)
+      result(original, "rejected", "clear requires the fixed-screen debug menu");
+    else {
+      clear_result_window();
+      /* Retain the command in Page 7 without filling the just-cleared area. */
+      datalog_push(original, "output cleared");
+    }
   } else if (!strcmp(command, "clean")) {
     if (plain_mode)
       result(original, "complete", "command history boundary");
