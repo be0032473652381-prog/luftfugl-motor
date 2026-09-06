@@ -163,10 +163,7 @@ static void datalog_format_visible(uint8_t row, char *text, size_t size) {
                             DEBUG_HISTORY_DEPTH);
   const datalog_entry_t *entry =
       &datalog[(first + row) % DEBUG_HISTORY_DEPTH];
-  snprintf(text, size, "  %02lu:%02lu:%02lu  %s",
-           (unsigned long)(entry->seconds / 3600u),
-           (unsigned long)((entry->seconds / 60u) % 60u),
-           (unsigned long)(entry->seconds % 60u), entry->text);
+  snprintf(text, size, "  %s", entry->text);
 }
 
 static uint8_t command_row(void) {
@@ -598,7 +595,6 @@ static void result(const char *command, const char *outcome,
   char line[256];
   char esc[32];
   char message[160];
-  uint32_t seconds = ms_now() / 1000u;
   if (!strcmp(outcome, "rejected") || !strcmp(outcome, "failed"))
     snprintf(message, sizeof message, "%s: %s", outcome, detail);
   else
@@ -608,10 +604,7 @@ static void result(const char *command, const char *outcome,
   trace_result(message);
 #endif
   if (plain_mode) {
-    snprintf(line, sizeof line, " %02lu:%02lu:%02lu  %-12s %s",
-             (unsigned long)(seconds / 3600u),
-             (unsigned long)((seconds / 60u) % 60u),
-             (unsigned long)(seconds % 60u), command, message);
+    snprintf(line, sizeof line, " %-12s %s", command, message);
     dbg_out_push(line);
     dbg_out_push("\r\n");
   } else {
@@ -621,10 +614,7 @@ static void result(const char *command, const char *outcome,
       dbg_out_push(esc);
       first_result = false;
     }
-    snprintf(line, sizeof line, "  %02lu:%02lu:%02lu  %-11.11s %s",
-             (unsigned long)(seconds / 3600u),
-             (unsigned long)((seconds / 60u) % 60u),
-             (unsigned long)(seconds % 60u), command, message);
+    snprintf(line, sizeof line, "  %-11.11s %s", command, message);
     /* Insert at the top; the terminal shifts older results down one row. */
     snprintf(esc, sizeof esc, "\033[s\033[%u;1H\033[L", event_top_row());
     dbg_out_push(esc);
@@ -754,13 +744,10 @@ void dbg_fields_refresh(void) {
   char adc_text[8], angle_text[12], angle_value[8], duty[8], step[8];
   char selected[16];
   char direction[12];
-  uint32_t seconds = ms_now() / 1000u;
   uint16_t adc = encoder_average();
   uint16_t target_adc = controller_target_adc();
-  snprintf(line, sizeof line, " luftfugl 2.0  page %u/%u%41sup %02lu:%02lu:%02lu", ui_page, DEBUG_PAGE_COUNT, "",
-           (unsigned long)(seconds / 3600u),
-           (unsigned long)((seconds / 60u) % 60u),
-           (unsigned long)(seconds % 60u));
+  snprintf(line, sizeof line, " luftfugl 2.0  page %u/%u", ui_page,
+           DEBUG_PAGE_COUNT);
   field(1, line);
   print_angle(angle_value, sizeof angle_value, adc);
   snprintf(angle_text, sizeof angle_text, "%s deg", angle_value);

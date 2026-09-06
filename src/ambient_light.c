@@ -14,6 +14,7 @@ static als_state_t state;
 static bool requested;
 static uint64_t ready_us;
 static ambient_light_sample_t sample;
+static uint16_t confirmed_multiplier_percent;
 
 static const uint32_t zone_min_lux[AMBIENT_ZONE_COUNT] = {
     AMBIENT_NIGHT_MIN_LUX, AMBIENT_DIM_MIN_LUX,
@@ -37,6 +38,13 @@ _Static_assert(AMBIENT_HYSTERESIS_PERCENT < 100u &&
 static void cancel_candidate(void) {
   sample.candidate_zone = sample.confirmed_zone;
   sample.candidate_samples = 0u;
+}
+
+static void update_multiplier_cache(void) {
+  confirmed_multiplier_percent = zone_multiplier[sample.confirmed_zone];
+#ifdef LUFTFUGL_MONITOR
+  confirmed_multiplier_percent = zone_multiplier_override[sample.confirmed_zone];
+#endif
 }
 
 static void confirm_zone(void) {
@@ -72,6 +80,7 @@ static void confirm_zone(void) {
   ++sample.candidate_samples;
   if (sample.candidate_samples >= AMBIENT_CONFIRM_SAMPLES) {
     sample.confirmed_zone = candidate;
+    update_multiplier_cache();
     cancel_candidate();
   }
 }
@@ -130,6 +139,7 @@ void ambient_light_init(void) {
 #ifdef LUFTFUGL_MONITOR
   ambient_light_multiplier_reset();
 #endif
+  update_multiplier_cache();
   if (power_monitor_i2c_claim()) {
     if (!shutdown_sensor())
       ++sample.errors;
@@ -197,11 +207,7 @@ void ambient_light_poll(void) {
 void ambient_light_snapshot(ambient_light_sample_t *out) { *out = sample; }
 
 uint16_t ambient_light_multiplier_percent(void) {
-  uint16_t multiplier = zone_multiplier[sample.confirmed_zone];
-#ifdef LUFTFUGL_MONITOR
-  multiplier = zone_multiplier_override[sample.confirmed_zone];
-#endif
-  return multiplier;
+  return confirmed_multiplier_percent;
 }
 
 const char *ambient_light_zone_name(ambient_zone_t zone) {
@@ -215,6 +221,8 @@ bool ambient_light_multiplier_set(ambient_zone_t zone, uint16_t percent) {
   if (zone >= AMBIENT_ZONE_COUNT || percent > 2000u)
     return false;
   zone_multiplier_override[zone] = percent;
+  if (zone == sample.confirmed_zone)
+    update_multiplier_cache();
   return true;
 }
 uint16_t ambient_light_multiplier_get(ambient_zone_t zone) {
@@ -223,5 +231,6 @@ uint16_t ambient_light_multiplier_get(ambient_zone_t zone) {
 void ambient_light_multiplier_reset(void) {
   for (unsigned int i = 0u; i < AMBIENT_ZONE_COUNT; ++i)
     zone_multiplier_override[i] = zone_multiplier[i];
+  update_multiplier_cache();
 }
 #endif
