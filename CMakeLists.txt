@@ -33,7 +33,7 @@ add_executable(luftfugl
 pico_generate_pio_header(luftfugl ${CMAKE_CURRENT_LIST_DIR}/src/ws2812.pio)
 
 if(LUFTFUGL_DEBUG)
-    target_sources(luftfugl PRIVATE src/debug.c src/config.c)
+    target_sources(luftfugl PRIVATE src/debug.c src/debug_help.c src/config.c)
     target_sources(luftfugl PRIVATE src/buzzer_alarm.c src/buzzer_alarm_pattern.c
         src/buzzer_threat.c src/buzzer_threat_pattern.c)
     target_compile_definitions(luftfugl PRIVATE

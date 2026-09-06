@@ -45,6 +45,5 @@ uint16_t co2_profile_limit(co2_profile_t profile, uint8_t level);
 bool co2_settings_from_flash(void);
 void co2_format_menu(char lines[18][81]);
 bool co2_command(const char *command, const char *args, char *out, size_t size);
-const char *co2_command_help(const char *command);
 
 #endif

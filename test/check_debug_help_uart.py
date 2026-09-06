@@ -45,10 +45,10 @@ def run(port):
 
         exchange(b"6", "")
         for command, title in (
-                ("help led brightness", "LED BRIGHTNESS COMMAND"),
-                ("help led zone", "LED ZONE COMMAND"),
-                ("help ledzone", "LED ZONE COMMAND"),
-                ("help ledbrightness", "LED BRIGHTNESS COMMAND")):
+                ("help led brightness", "LED BRIGHTNESS —"),
+                ("help led zone", "LED ZONE —"),
+                ("help ledzone", "LED ZONE —"),
+                ("help ledbrightness", "LED BRIGHTNESS —")):
             type_line(command)
             exchange(b"\r", "", title)
             print(f"PASS: {command}: every key echoed; Enter clears prompt")
@@ -56,18 +56,18 @@ def run(port):
         type_line("help led zonx")
         exchange(b"\x7f", "help led zon")
         exchange(b"e", "help led zone")
-        exchange(b"\r", "", "LED ZONE COMMAND")
+        exchange(b"\r", "", "LED ZONE —")
         type_line("help led")
         for remaining in range(len("help led") - 1, -1, -1):
             exchange(b"\x7f", "help led"[:remaining])
         type_line("help led brightness")
-        exchange(b"\r", "", "LED BRIGHTNESS COMMAND")
+        exchange(b"\r", "", "LED BRIGHTNESS —")
         print("PASS: Backspace edits and clears the prompt after help")
 
         type_line("unknowncommand argument")
         exchange(b"\r", "", "rejected")
         type_line("help led zone")
-        exchange(b"\r", "", "LED ZONE COMMAND")
+        exchange(b"\r", "", "LED ZONE —")
         print("PASS: invalid command with argument is rejected; console stays responsive")
     return transcript
 

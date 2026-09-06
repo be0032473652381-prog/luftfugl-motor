@@ -1,4 +1,5 @@
 #include "debug.h"
+#include "debug_help.h"
 
 #include "console.h"
 #include "controller.h"
@@ -635,7 +636,8 @@ static void result(const char *command, const char *outcome,
       bool first_chunk = true;
       while (*cursor) {
         size_t remaining = strlen(cursor);
-        size_t take = remaining > 78u ? 78u : remaining;
+        size_t take = remaining > DEBUG_HELP_WRAP_COLUMNS
+                          ? DEBUG_HELP_WRAP_COLUMNS : remaining;
         if (take < remaining) {
           size_t split = take;
           while (split > 0u && cursor[split] != ' ')
@@ -1001,6 +1003,44 @@ static void help_display_begin(void) {
   /* submit() tokenizes input in place. The key handler owns prompt redraws
    * after submission, once that parser buffer has been cleared. */
   help_display_active = true;
+}
+
+static void help_document_emit(const char *line, void *context) {
+  (void)context;
+  /* Structured help has no command-label column. Emit the complete line,
+   * avoiding result()'s legacy message truncation and automatic indentation. */
+  size_t length = strlen(line);
+  while (out_free() < length + 64u)
+    dbg_out_drain();
+  if (plain_mode) {
+    dbg_out_push(line);
+    dbg_out_push("\r\n");
+    return;
+  }
+  dbg_out_push("\033[s");
+  uint8_t row = event_top_row();
+  bool continuation = false;
+  do {
+    size_t width = DEBUG_HELP_WRAP_COLUMNS - (continuation ? 2u : 0u);
+    size_t take = length > width ? width : length;
+    if (take < length) {
+      size_t split = take;
+      while (split && line[split] != ' ') --split;
+      if (split) take = split;
+      /* Do not bisect a UTF-8 character in a long unbroken token. */
+      while (take && ((unsigned char)line[take] & 0xc0u) == 0x80u) --take;
+    }
+    char piece[DEBUG_HEADER_BUFFER_SIZE];
+    snprintf(piece, sizeof piece, "\033[%u;1H\033[L%s%.*s\033[K", row++,
+             continuation ? "  " : "", (int)take, line);
+    while (out_free() < strlen(piece)) dbg_out_drain();
+    dbg_out_push(piece);
+    line += take;
+    while (*line == ' ') ++line;
+    length = strlen(line);
+    continuation = true;
+  } while (length);
+  dbg_out_push("\033[u");
 }
 
 #ifndef LUFTFUGL_TRACE_INPUT
@@ -1632,45 +1672,6 @@ static void print_cfg(const char *command) {
          "cfg DUTY_NORMAL 40 changes one; cfg reset restores defaults");
 }
 
-static bool help_setting(const char *argument, const char *command) {
-  char key[24];
-  size_t length = strlen(argument);
-  if (length >= sizeof key)
-    return false;
-  for (size_t i = 0; i <= length; ++i)
-    key[i] = (char)toupper((unsigned char)argument[i]);
-  if (!cfg_setting_known(key))
-    return false;
-  if (!strcmp(key, "POS_WINDOW")) {
-    cfg_t live;
-    char detail[128];
-    memcpy(&live, (const void *)&cfg, sizeof live);
-    uint16_t gap = cfg_smallest_gap(&live);
-    uint16_t tenths = angle_tenths(live.pos_window);
-    result(command, "complete", "POS_WINDOW - how close counts as arrived");
-    snprintf(detail, sizeof detail,
-             "now %u counts, about %u.%u degrees either side of a station",
-             live.pos_window, tenths / 10u, tenths % 10u);
-    result("", "complete", detail);
-    result("Examples", "complete", "cfg POS_WINDOW 40 - tighter stopping");
-    result("", "complete", "cfg POS_WINDOW 80 - looser, earlier arrival");
-    snprintf(detail, sizeof detail,
-             "10 to %u counts; below quarter of current %u-count gap",
-             gap ? (gap - 1u) / 4u : 0u, gap);
-    result("Limits", "complete", detail);
-    result("Notes", "complete",
-           "For oscillation, reducing DUTY_APPROACH is usually better.");
-    return true;
-  }
-  char detail[96];
-  snprintf(detail, sizeof detail,
-           "%s is runtime-settable; type cfg for live value and limits", key);
-  result(command, "complete", detail);
-  result("Notes", "complete",
-         "RAM-only; lost on reset. export prints config.h station lines.");
-  return true;
-}
-
 static void findmin_sample(void) {
   uint16_t adc = encoder_average();
   if (adc < findmin_min)
@@ -1781,176 +1782,99 @@ static bool ds3231_temperature_format(char *text, size_t size) {
 }
 
 typedef struct {
-  const char *name, *example, *limits, *notes;
+  const char *name;
 } help_entry_t;
 
+/* Keep recognition order stable: prefixes are resolved against these names.
+ * All display data lives in debug_help.c and its structured catalog. */
 static const help_entry_t help_entries[] = {
-    {"help", "help jog", "one command name, or none",
-     "Shows examples, limits and plain-language notes."},
-    {"diag", "diag", "read-only",
-     "Shows temporary UART receive and main-loop timing counters."},
-    {"sel", "sel 3", "station 1 to 6",
-     "Chooses which station save will update."},
-    {"jog", "jog +2000", "-4095 to +4095 counts",
-     "Creep speed only; 100 counts is roughly 7 degrees."},
-    {"step", "step 250", "10, 25, 100, 250 or 500",
-     "Changes the suggested calibration step."},
-    {"save", "save 3", "station 1 to 6",
-     "Without a number, saves the selected station."},
-    {"stations", "stations", "read-only",
-     "Shows stored readings and difference from now."},
-    {"limits", "limits", "read-only",
-     "One count is about 0.09 degrees; values come from the live configuration."},
-    {"lowendstop", "lowendstop=100", "ADC 0 to 4095; must be below high end-stop and station 1",
-     "Sets the lower potentiometer travel limit in RAM; it takes effect immediately."},
-    {"highendstop", "highendstop=3000", "ADC 0 to 4095; must be above low end-stop and at or above station 6",
-     "Sets the upper potentiometer travel limit in RAM; it takes effect immediately."},
-    {"export", "export", "read-only",
-     "Prints values ready to paste into config.h."},
-    {"reset", "reset", "no arguments; reset stations restores calibration",
-     "Restarts from flash; prints resetting before rebooting."},
-    {"bootsel", "bootsel", "no arguments",
-     "Restarts into the USB bootloader for recovery."},
-    {"move", "move 2", "station 1 to 6", "Uses closed-loop position control."},
-    {"pos", "pos 6", "station 1 to 6",
-     "Alias for move; uses closed-loop position control."},
-    {"goto", "goto 4000", "ADC range 0 to 4095",
-     "Moves directly to one raw ADC target; movement is not wrap-aware."},
-    {"home", "home", "no arguments",
-     "Returns to station 1 through the guarded home path."},
-    {"stop", "stop", "no arguments",
-     "Brakes immediately; a period works without Enter."},
-    {"status", "status", "read-only", "Shows the full controller state."},
-    {"adc", "adc", "read-only", "Shows raw, filtered and classified sensing."},
-    {"angle", "angle", "read-only",
-     "Shows the filtered ADC reading converted to degrees."},
-    {"led", "led brightness", "on/off/auto, rgbw on/off, raw hex, brightness, or zone",
-     "GP0 follows pixel demand; brightness commands are RAM-only and affect the named indication or ambient-zone multiplier."},
-    {"led brightness", "led brightness station 5", "station, warning, critical, error, sample or breathe; 0..100%",
-     "Changes one LED indication base percentage in RAM. Use without a category to list all six values; reset restores compiled defaults."},
-    {"led zone", "led zone bright 800", "night, dim, indoor or bright; 0..2000%",
-     "Changes one VEML7700 ambient-zone multiplier in RAM. Use without a zone to list all four values; reset restores compiled defaults."},
-    {"buzzer", "buzzer crips-2 3", "on, off, crips-1..crips-5 1..200, or status",
-     "Plays the randomized bird warning on BO1/BO2; BIN1/BIN2 GP6/GP7, PWMB GP16."},
-    {"buzzer crips-1", "buzzer crips-1 3", "1..200 complete calls; off stops",
-     "Original square-wave station chirp; fresh random composition each repeat; 200 ms gaps."},
-    {"buzzer crips-2", "buzzer crips-2 3", "1..200 complete calls; off stops",
-     "Original composition with clean DDS sine; fixed composition repeated; 200 ms gaps."},
-    {"buzzer crips-3", "buzzer crips-3 10", "1..200 complete calls; off stops",
-     "Listening test only: three-part clean-sine sequence; 8/8/12 bursts, 50 ms breaks; 444 ms total, 100 ms repeat gap."},
-    {"buzzer crips-4", "buzzer crips-4 3", "1..200 complete bouts; off stops",
-     "Listening test: ~5 s, three phrases at 2 s onsets; two 100 ms intro notes then 6/7/8 bursts; 2/4.3 kHz sine."},
-    {"buzzer crips-5", "buzzer crips-5 3", "1..200 complete bouts; off stops",
-     "Compact crips-4: same 27 notes, frequencies and sound durations; short gaps retained, phrase/repeat pauses halved again; ~2.7 s bout."},
-    {"buzzer tone-2", "buzzer tone-2 6000 3", "100..10000 Hz; 1..5 seconds",
-     "Continuous full-scale sine through crips-2's renderer and DMA; compare with tone-3 at identical settings. off stops."},
-    {"buzzer tone-3", "buzzer tone-3 6000 3", "100..10000 Hz; 1..5 seconds",
-     "Continuous full-scale sine through crips-3's renderer and DMA; no burst gaps or pitch changes. off stops."},
-    {"page", "page 2", "no argument lists pages; page 1 to 8 selects",
-     "Lists or selects general, motor, positions, battery, CO2, commands, data-log, or ambient-light pages."},
-    {"selftest", "selftest", "no motion",
-     "Checks configuration, ADC and the 1 kHz tick."},
-    {"tick", "tick", "read-only", "Shows loop timing and watchdog health."},
-    {"trace", "trace", "read-only",
-     "Dumps the latest move at 50 ms intervals: time, ADC, direction and duty."},
-    {"pins", "pins", "read-only", "Shows live motor and sensor pin levels."},
-    {"pwm", "pwm", "read-only",
-     "Shows PWM configuration and calculated frequency."},
-    {"cfg", "cfg DUTY_CREEP 30", "validated RAM values",
-     "Changes are RAM-only and lost on reset; export prints config.h station lines."},
-    {"sim", "sim adc 2047", "ADC 0 to 4095",
-     "Simulation inhibits physical motor output."},
-    {"cal", "cal sim | cal motor 500", "sim is motor-inhibited; motor count is 5, 50 or 500",
-     "cal sim tests injected ADC values; cal motor commands randomized real station moves and reports encoder centers and errors."},
-    {"arm", "arm", "idle controller",
-     "Unlocks manual pulses until disarm or exit."},
-    {"disarm", "disarm", "no arguments",
-     "Brakes and closes the manual interlock."},
-    {"drive", "drive fwd 60 200", "duty 0-255, 10-2000 ms",
-     "Requires arm; direction is fwd or rev."},
-    {"findmin", "findmin", "requires arm",
-     "Tests for the lowest duty that produces motion."},
-    {"batt", "batt sim 4.3 | batt sim range 1.5-5.5 V", "raw, res, log, events, reset, sim, sim range, or off",
-     "Set/query the simulation range, simulate a voltage, or restore physical INA219 voltage."},
-    {"batt raw", "batt raw", "no additional arguments; read-only",
-     "Reports physical INA219 bus, shunt, current and power registers plus overflow."},
-    {"batt res", "batt res", "no additional arguments; read-only",
-     "Reports pack-resistance sample count, estimate and fresh-pack trend when available."},
-    {"batt log", "batt log", "no additional arguments; read-only",
-     "Reports session duration, charge, energy, sample count and model status."},
-    {"batt events", "batt events", "no additional arguments; read-only",
-     "Lists the retained battery peak, minimum-voltage and diagnostic events."},
-    {"batt reset", "batt reset", "no additional arguments",
-     "Clears battery session counters and events without changing calibration."},
-    {"batt sim", "batt sim range 1.5-5.5 V /s | batt sim 4.3 | batt sim off", "selectable range within 1.0 to 6.0 V, or off",
-     "Overrides voltage for SOC and alarms; /s persists range and thresholds as defaults."},
-    {"batt sim range", "batt sim range 1.50-5.5 V /s", "minimum-maximum within 1.000 to 6.000 V; optional /s",
-     "Sets the accepted simulation range; /s saves all battery settings to flash."},
-    {"batt sim warning", "batt sim warning <2.400 V /s", "threshold from 1.400 to 5.400 V; optional /s",
-     "Sets the low-battery warning threshold; /s saves all battery settings to flash."},
-    {"batt sim critical", "batt sim critical <3.300 V /s", "threshold from 2.200 to 5.900 V; optional /s",
-     "Sets the critical threshold; /s saves all battery settings to flash."},
-    {"batt chirp", "batt chirp 3.50 kHz /s", "0.10 to 10.00 kHz; optional /s",
-     "Sets the tone used by the repeating critical-battery audible alert."},
-    {"batt chirp time", "batt chirp i=30 r=2 p=5 d=2 /s", "i=1..3600, r=1..10, p=1..10, d=1..5 seconds; optional /s",
-     "Configures the timing and repetition of the critical-battery chirp sequence."},
-    {"load", "load", "read-only",
-     "Inrush is a sampled lower bound; bench thresholds remain disabled until measured."},
-    {"ina", "ina", "read-only",
-     "Shows computed calibration, conversion configuration and MODE 000 idle state."},
-    {"ds3231", "DS3231 start | temp | timer | timeset 1800 | stop", "start, temp, timer, timeset, or stop",
-     "Controls the one-shot RTC event timer; it remains stopped after boot and after an event."},
-    {"ds3231 start", "DS3231 start", "no additional arguments",
-     "Starts one event using the configured interval restored from flash."},
-    {"ds3231 temp", "DS3231 temp", "read-only",
-     "Reads the DS3231 temperature registers over the shared I2C bus."},
-    {"ds3231 stop", "DS3231 stop", "no additional arguments",
-     "Disarms the current DS3231 event timer."},
-    {"ds3231 timer", "DS3231 timer", "read-only",
-     "Displays the active one-shot countdown every second until q or Q is received."},
-    {"ds3231 timeset", "DS3231 timeset 1800 /s", "15 to 18000 seconds; optional /s",
-     "Sets the interval; re-arms if running, and /s saves it for DS3231 start."},
-    {"adc0offset", "ADC0OFFSET=+45MV /s", "signed offset -200 to +200 mV; optional /s",
-     "Adds a calibration correction before battery filtering; /s saves all battery settings to flash."},
-    {"co2", "co2", "no arguments",
-     "Shows the filtered and raw SCD41 measurement; single mode starts a 5-second shot."},
-    {"co2living", "co2living", "read-only",
-     "Lists all five living-room CO2 ranges with stations and air-quality functions."},
-    {"co2sleeping", "co2sleeping", "read-only",
-     "Lists all five sleeping-room CO2 ranges with stations and air-quality functions."},
-    {"co2cfg", "co2cfg", "read-only",
-     "Shows both five-level CO2 profiles, the active selection, and flash source."},
-    {"co2sim", "co2sim=440", "200 to 6000 ppm, or off",
-     "Replaces SCD41 readings and exercises normal CO2-to-station control until off."},
-    {"co2limit", "co2limit living 2 999", "profile, level 1-4, maximum ppm",
-     "Changes one range boundary in RAM; level 5 remains open-ended."},
-    {"co2save", "co2save", "idle controller",
-     "Saves both profiles and the active profile to dedicated flash storage."},
-    {"co2defaults", "co2defaults", "no arguments",
-     "Restores schematic CO2 defaults in RAM; use co2save to persist them."},
-    {"ready", "ready", "no arguments",
-     "Shows and clears the SCD41 latched data-ready indication."},
-    {"serial", "serial", "no arguments",
-     "Stops periodic measurement briefly and reads the SCD41 48-bit serial number."},
-    {"asc", "asc off", "on, off, or no argument",
-     "Reads or sets SCD41 automatic self-calibration."},
-    {"offset", "offset 4.5", "0 to 20 degrees C, or no argument",
-     "Reads or sets the SCD41 temperature offset."},
-    {"altitude", "altitude 12", "0 to 3000 metres, or no argument",
-     "Reads or sets SCD41 altitude compensation."},
-    {"mode", "mode single", "periodic, single, or no argument",
-     "Reads or selects the SCD41 measurement mode."},
-    {"sdc41", "sdc41 off", "on or off",
-     "Uses the SCD41 protocol power-down or wake command."},
-    {"menu", "menu", "no arguments",
-     "Redraws the complete live SCD41 Page-5 menu."},
-    {"clean", "clean", "no arguments",
-     "Clears command results and redraws the fixed-screen debug interface."},
-    {"clear", "clear", "no arguments; fixed-screen mode",
-     "Erases only output below Command >; preserves the current menu and Page-7 log. New events can appear afterward."},
-    {"plain", "plain", "no arguments",
-     "Switches to line-oriented output without escape codes."},
-    {"exit", "exit", "no arguments", "Leaves the debug console safely."}};
+    {"help"},
+    {"diag"},
+    {"sel"},
+    {"jog"},
+    {"step"},
+    {"save"},
+    {"stations"},
+    {"limits"},
+    {"lowendstop"},
+    {"highendstop"},
+    {"export"},
+    {"reset"},
+    {"bootsel"},
+    {"move"},
+    {"pos"},
+    {"goto"},
+    {"home"},
+    {"stop"},
+    {"status"},
+    {"adc"},
+    {"angle"},
+    {"led"},
+    {"led brightness"},
+    {"led zone"},
+    {"buzzer"},
+    {"buzzer crips-1"},
+    {"buzzer crips-2"},
+    {"buzzer crips-3"},
+    {"buzzer crips-4"},
+    {"buzzer crips-5"},
+    {"buzzer tone-2"},
+    {"buzzer tone-3"},
+    {"page"},
+    {"selftest"},
+    {"tick"},
+    {"trace"},
+    {"pins"},
+    {"pwm"},
+    {"cfg"},
+    {"sim"},
+    {"cal"},
+    {"arm"},
+    {"disarm"},
+    {"drive"},
+    {"findmin"},
+    {"batt"},
+    {"batt raw"},
+    {"batt res"},
+    {"batt log"},
+    {"batt events"},
+    {"batt reset"},
+    {"batt sim"},
+    {"batt sim range"},
+    {"batt sim warning"},
+    {"batt sim critical"},
+    {"batt chirp"},
+    {"batt chirp time"},
+    {"load"},
+    {"ina"},
+    {"ds3231"},
+    {"ds3231 start"},
+    {"ds3231 temp"},
+    {"ds3231 stop"},
+    {"ds3231 timer"},
+    {"ds3231 timeset"},
+    {"adc0offset"},
+    {"co2"},
+    {"co2living"},
+    {"co2sleeping"},
+    {"co2cfg"},
+    {"co2sim"},
+    {"co2limit"},
+    {"co2save"},
+    {"co2defaults"},
+    {"ready"},
+    {"serial"},
+    {"asc"},
+    {"offset"},
+    {"altitude"},
+    {"mode"},
+    {"sdc41"},
+    {"menu"},
+    {"clean"},
+    {"clear"},
+    {"plain"},
+    {"exit"},
+};
 
 static const char *resolve(const char *word, char *candidates,
                            size_t candidates_size) {
@@ -2012,12 +1936,12 @@ static const help_entry_t *help_detail(const char *word) {
   return match;
 }
 
-static void help_description(const help_entry_t *entry, char *text,
-                             size_t size) {
-  if (!strcmp(entry->name, "batt") || !strcmp(entry->name, "batt sim") ||
-      !strcmp(entry->name, "batt sim range") ||
-      !strcmp(entry->name, "batt sim warning") ||
-      !strcmp(entry->name, "batt sim critical")) {
+static bool help_live_description(const char *name, char *text,
+                                  size_t size) {
+  if (!strcmp(name, "batt") || !strcmp(name, "batt sim") ||
+      !strcmp(name, "batt sim range") ||
+      !strcmp(name, "batt sim warning") ||
+      !strcmp(name, "batt sim critical")) {
     uint16_t minimum_mv, maximum_mv;
     power_monitor_sim_range_get(&minimum_mv, &maximum_mv);
     snprintf(text, size,
@@ -2028,264 +1952,119 @@ static void help_description(const help_entry_t *entry, char *text,
              power_monitor_warning_mv() % 1000u,
              power_monitor_critical_mv() / 1000u,
              power_monitor_critical_mv() % 1000u);
-  } else if (!strcmp(entry->name, "batt res")) {
+  } else if (!strcmp(name, "batt res")) {
     snprintf(text, size, "minimum %u wake samples; fresh-pack reference %s",
              RPACK_MIN_SAMPLES,
              RPACK_FRESH_MOHM ? "configured" : "not measured");
-  } else if (!strcmp(entry->name, "batt events")) {
+  } else if (!strcmp(name, "batt events")) {
     snprintf(text, size, "read-only; retains the latest %u notable events",
              EVENT_LOG_DEPTH);
-  } else if (!strcmp(entry->name, "load")) {
+  } else if (!strcmp(name, "load")) {
     snprintf(text, size,
              "inrush window %u ms; no-load, stall and short thresholds %s",
              INRUSH_SAMPLE_MS,
              (NO_LOAD_CURRENT_MA && STALL_CURRENT_MA && SHORT_CIRCUIT_MA)
                  ? "configured"
                  : "not measured");
-  } else if (!strcmp(entry->name, "ina")) {
+  } else if (!strcmp(name, "ina")) {
     snprintf(text, size,
              "100 kHz I2C; 16 V bus; +/-160 mV shunt; %u uA and %u mV per LSB",
              INA219_CURRENT_LSB_UA, INA219_BUS_LSB_MV);
-  } else if (!strcmp(entry->name, "led")) {
+  } else if (!strcmp(name, "led")) {
     snprintf(text, size,
              "GP0 switches LED power; GP18 carries data; battery warning below %u.%03u V, critical below %u.%03u V",
              power_monitor_warning_mv() / 1000u,
              power_monitor_warning_mv() % 1000u,
              power_monitor_critical_mv() / 1000u,
              power_monitor_critical_mv() % 1000u);
-  } else if (!strcmp(entry->name, "lowendstop")) {
+  } else if (!strcmp(name, "lowendstop")) {
     snprintf(text, size,
              "active low end-stop %u; accepted range 0..%u, must remain below station 1 (%u) and the high end-stop",
              CFG_LOW_ENDSTOP_ADC, ADC_MAX_VALUE, encoder_nominal(POS_MIN));
-  } else if (!strcmp(entry->name, "highendstop")) {
+  } else if (!strcmp(name, "highendstop")) {
     snprintf(text, size,
              "active high end-stop %u; accepted range 0..%u, must remain at or above station 6 (%u) and the low end-stop",
              CFG_HIGH_ENDSTOP_ADC, ADC_MAX_VALUE, encoder_nominal(POS_MAX));
-  } else if (!strcmp(entry->name, "cal")) {
+  } else if (!strcmp(name, "cal")) {
     snprintf(text, size,
              "cal sim: %u randomized ADC points from %u to %u, motor inhibited; cal motor: %u live station moves",
              CAL_SIM_TESTS, CFG_LOW_ENDSTOP_ADC, CFG_HIGH_ENDSTOP_ADC,
              CAL_SIM_TESTS);
-  } else if (!strcmp(entry->name, "buzzer")) {
+  } else if (!strcmp(name, "buzzer")) {
     snprintf(text, size,
              "play/play-2: 1..200 calls, 200 ms gaps; play-2 uses DDS sine at 100 kHz PWM; off stops playback; original play uses square waves");
-  } else if (!strcmp(entry->name, "pwm")) {
+  } else if (!strcmp(name, "pwm")) {
     snprintf(text, size,
              "motor channel A is GP14/PWMA; buzzer channel B is GP6/GP7 with GP16/PWMB enabled while sounding; report is read-only");
-  } else if (!strcmp(entry->name, "page")) {
+  } else if (!strcmp(name, "page")) {
     snprintf(text, size,
              "pages 1 general, 2 motor, 3 positions, 4 battery, 5 CO2, 6 commands, 7 data log, 8 ambient light");
-  } else if (!strcmp(entry->name, "drive")) {
+  } else if (!strcmp(name, "drive")) {
     snprintf(text, size,
              "direction fwd or rev; duty 0..255; duration 10..2000 ms; requires the debug motor interlock to be armed");
   } else {
-    snprintf(text, size, "%s", entry->limits);
+    return false;
   }
+  return true;
 }
 
-static void help_pos_detail(const char *original, const help_entry_t *entry) {
-  char detail[160];
-  snprintf(detail, sizeof detail, "Command > %s", entry->example);
-  result("Example", "complete", detail);
-  snprintf(detail, sizeof detail,
-           "targets: 1=%u, 2=%u, 3=%u, 4=%u, 5=%u, 6=%u ADC counts",
-           encoder_nominal(1), encoder_nominal(2), encoder_nominal(3),
-           encoder_nominal(4), encoder_nominal(5), encoder_nominal(6));
-  result("Positions", "complete", detail);
-  snprintf(detail, sizeof detail,
-           "target band is nominal +/-%u counts; sensing uses a %u-sample rolling average",
-           CFG_POS_WINDOW, FILTER_DEPTH);
-  result("Window", "complete", detail);
-  snprintf(detail, sizeof detail,
-           "the same station band must persist for %u ms before arrival is confirmed",
-           CFG_DEBOUNCE_MS);
-  result("Confirm", "complete", detail);
-  snprintf(detail, sizeof detail,
-           "within %u counts, duty changes from %u to %u; limits use creep duty %u",
-           CFG_APPROACH_COUNTS, CFG_DUTY_NORMAL, CFG_DUTY_APPROACH,
-           CFG_DUTY_CREEP);
-  result("Approach", "complete", detail);
-  result("Braking", "complete",
-         "every station uses target-window braking and settled arrival confirmation; station 1 homing also uses directional crossing protection");
-  result("Limits", "complete",
-         "no wrap-around; configured motion range is station 1 through station 6, with station 6 reserved for CO2 errors");
-  result("Rejects", "complete",
-         "rejects an invalid station, unknown starting position, or a controller that is already moving");
-  result("Syntax", "complete", "pos <1-6>");
-  result("Function", "complete",
-         "moves to one configured station through the normal closed-loop, filtered and limit-enforced controller path");
-  result(original, "complete", entry->name);
+/* Snapshot only while preparing help. Rendering never reads hardware or
+ * submits a controller request; static syntax and live facts share one layout. */
+static bool help_show(const char *name, const char *original) {
+  const debug_help_document_t *found = debug_help_find(name, ui_page);
+  if (!found) return false;
+  debug_help_document_t document = *found;
+  char targets[160], window[160], confirmation[160], approach[160];
+  const char *live[] = {targets, window, confirmation, approach};
+  if (!strcmp(name, "pos")) {
+    snprintf(targets, sizeof targets,
+             "targets: 1=%u, 2=%u, 3=%u, 4=%u, 5=%u, 6=%u ADC counts",
+             encoder_nominal(1), encoder_nominal(2), encoder_nominal(3),
+             encoder_nominal(4), encoder_nominal(5), encoder_nominal(6));
+    snprintf(window, sizeof window,
+             "target band is nominal +/-%u counts; sensing uses a %u-sample rolling average",
+             CFG_POS_WINDOW, FILTER_DEPTH);
+    snprintf(confirmation, sizeof confirmation,
+             "the same station band must persist for %u ms before arrival is confirmed",
+             CFG_DEBOUNCE_MS);
+    snprintf(approach, sizeof approach,
+             "within %u counts, duty changes from %u to %u; limits use creep duty %u",
+             CFG_APPROACH_COUNTS, CFG_DUTY_NORMAL, CFG_DUTY_APPROACH,
+             CFG_DUTY_CREEP);
+    document.live_notes = live;
+    document.live_note_count = sizeof live / sizeof live[0];
+  } else if (!strcmp(name, "POS_WINDOW")) {
+    cfg_t current;
+    memcpy(&current, (const void *)&cfg, sizeof current);
+    uint16_t gap = cfg_smallest_gap(&current);
+    uint16_t tenths = angle_tenths(current.pos_window);
+    snprintf(targets, sizeof targets,
+             "now %u counts, about %u.%u degrees either side of a station",
+             current.pos_window, tenths / 10u, tenths % 10u);
+    snprintf(window, sizeof window,
+             "10 to %u counts; below quarter of current %u-count gap",
+             gap ? (gap - 1u) / 4u : 0u, gap);
+    document.live_notes = live;
+    document.live_note_count = 2u;
+  } else if (!debug_help_page5_topic(name) || ui_page != 5u) {
+    if (help_live_description(name, targets, sizeof targets)) {
+      document.live_notes = live;
+      document.live_note_count = 1u;
+    }
+  }
+  first_result = false;
+  datalog_push(original, "help displayed");
+  debug_help_render(&document, !plain_mode, help_document_emit, NULL);
+  return true;
 }
 
-static void help_led_detail(const char *original) {
-  static const struct {
-    const char *label;
-    const char *text;
-  } lines[] = {
-      {"Syntax", ""},
-      {"", "led [on|off|auto|rgbw on|rgbw off|raw <hex>|brightness ...|zone ...]"},
-      {"Commands", ""},
-      {"", "led             Show pixel state, ambient lux, zone, scale and sensor shutdown"},
-      {"", "led auto        Enable automatic station indication and power management"},
-      {"", "led on          Force the station-5 red test color; GP0 goes HIGH"},
-      {"", "led off         Force the LED dark; GP0 goes LOW"},
-      {"", "led rgbw on     Use SK6812 G-R-B-W transmission"},
-      {"", "led rgbw off    Use WS2812 G-R-B transmission"},
-      {"", "led raw <hex>   Display a raw wire-order color"},
-      {"", "led brightness  Set/list station, warning, critical, error, sample or breathe %"},
-      {"", "led zone        Set/list Night, Dim, Indoor or Bright ambient multiplier %"},
-      {"Raw formats", ""},
-      {"", "RGBW enabled    led raw GGRRBBWW - exactly 8 hexadecimal digits"},
-      {"", "RGBW disabled   led raw GGRRBB - exactly 6 hexadecimal digits"},
-      {"Pins", ""},
-      {"", "GP0             Direct SK6812 power supply, active HIGH"},
-      {"", "GP18            SK6812 serial data at 800 kHz"},
-      {"Automatic power", ""},
-      {"", "Non-zero color  GP0 HIGH; wait 300 us; transmit pixel data"},
-      {"", "Dark/off        GP0 LOW, placing the SK6812 in its unpowered sleep state"},
-      {"", "Stations        3% base; all indication percentages share ambient scaling"},
-      {"", "Ambient         VEML7700 0x10; battery-cycle sampling; software shutdown"},
-      {"", "Zones           Hysteresis and consecutive samples confirm brightness changes"},
-      {"", "Raw test        Explicit wire bytes bypass ambient scaling"},
-      {"", "Reset/startup   GP0 LOW with the internal pull-down enabled"},
-      {"Auto indication", ""},
-      {"", "Moving          LED off, GP0 LOW"},
-      {"", "Station 1       Green/mint"},
-      {"", "Station 2       Yellow-green"},
-      {"", "Station 3       Yellow"},
-      {"", "Station 4       Pink"},
-      {"", "Station 2/3/4/5 play 1/2/3/4 bird calls on arrival"},
-      {"Examples", ""},
-      {"", "led | led auto | led on | led off | led rgbw on | led raw 00ff0000"},
-      {"", "help led brightness   Full base-percentage reference and examples"},
-      {"", "help led zone         Full ambient-zone multiplier reference and examples"}};
-  for (size_t i = sizeof lines / sizeof lines[0]; i-- > 0;)
-    result(lines[i].label, "complete", lines[i].text);
-  result(original, "complete", "");
-}
-
-static void help_led_brightness_detail(const char *original) {
-  static const char *const lines[] = {
-      "LED BRIGHTNESS COMMAND — complete reference",
-      "Purpose: set the base percentage for one automatic LED indication.",
-      "Syntax: led brightness [station|warning|critical|error|sample|breathe] [0..100]",
-      "With no argument, lists all six current RAM values.",
-      "station: base for all five CO2 station colours (default 3%).",
-      "warning: battery-warning orange double flash (default 30%).",
-      "critical: battery-critical orange hazard flash (default 30%).",
-      "error: CO2 sensor-error red flash (default 30%).",
-      "sample: startup accepted-sample warm-white flash (default 10%).",
-      "breathe: maximum SCD41 warm-up breathing level (default 10%).",
-      "Example: led brightness station 5",
-      "Example: led brightness warning 40",
-      "Example: led brightness critical 40",
-      "Example: led brightness error 25",
-      "Example: led brightness sample 15",
-      "Example: led brightness breathe 7",
-      "Example: led brightness",
-      "Reset: led brightness reset restores all compiled defaults.",
-      "Values are RAM-only and return to defaults after reset; no flash is written.",
-      "The selected base is multiplied by the confirmed VEML7700 zone multiplier.",
-      "The final channel value is rounded and saturated at 100%; alert pulses may saturate.",
-      "Station brightness remains below the alert base through the station ceiling.",
-      "LED is still forced off while moving, between stations, or in forced-off mode.",
-      "led raw <hex> is a diagnostic wire word and bypasses this percentage control."};
-  for (size_t i = sizeof lines / sizeof lines[0]; i-- > 0u;)
-    result(i == 0u ? original : "", "complete", lines[i]);
-}
-
-static void help_led_zone_detail(const char *original) {
-  static const char *const lines[] = {
-      "LED ZONE COMMAND — complete reference",
-      "Purpose: set the VEML7700 ambient multiplier used by every LED indication.",
-      "Syntax: led zone [night|dim|indoor|bright] [0..2000]",
-      "With no argument, lists all four current RAM multipliers.",
-      "night: 0 to <10 lux; default multiplier 100% (1.00x).",
-      "dim: 10 to <100 lux; default multiplier 200% (2.00x).",
-      "indoor: 100 to <500 lux; default multiplier 400% (4.00x).",
-      "bright: 500 lux and above; default multiplier 800% (8.00x).",
-      "Example: led zone night 100",
-      "Example: led zone dim 200",
-      "Example: led zone indoor 400",
-      "Example: led zone bright 800",
-      "Example: led zone bright 900",
-      "Example: led zone",
-      "Reset: led zone reset restores all four compiled multipliers.",
-      "Values are RAM-only and return to defaults after reset; no flash is written.",
-      "20% hysteresis prevents boundary flicker: upward thresholds are 12/120/600 lux.",
-      "Downward thresholds are 8/80/400 lux; three consecutive samples confirm a change.",
-      "A failed or anomalous sample retains the last confirmed zone and brightness.",
-      "The multiplier applies to stations, battery warning/critical, CO2 error, sample flash and breathing.",
-      "Final output is saturated at 100%; station output is capped below the 30% alert base.",
-      "The sensor is sampled on the existing battery cycle and shut down between readings."};
-  for (size_t i = sizeof lines / sizeof lines[0]; i-- > 0u;)
-    result(i == 0u ? original : "", "complete", lines[i]);
-}
-
-static void help_batt_chirp_detail(const char *original) {
-  static const struct {
-    const char *label;
-    const char *text;
-  } lines[] = {
-      {"Syntax", "batt chirp [<frequency> kHz] [/s]"},
-      {"Range", "0.10 to 10.00 kHz (100 to 10000 Hz)"},
-      {"Status", "batt chirp - report the active chirp frequency and default source"},
-      {"Set RAM", "batt chirp 3.50 kHz - use 3.5 kHz until reboot"},
-      {"Save flash", "batt chirp 3.50 kHz /s - save it as the power-on default"},
-      {"Trigger", "Sounds only while a valid battery reading is below the critical threshold"},
-      {"Timing", "Use help batt chirp time to configure sequence interval, repeat, pause, and duration"},
-      {"Recovery", "Stops immediately when voltage is no longer critical; no boundary chirp"},
-      {"Independence", "Audible alert remains active regardless of LED auto/on/off/raw mode"},
-      {"Persistence", "/s saves range, warning, critical, and chirp defaults together"},
-      {"Default", "Compiled default is 2.700 kHz when no valid flash record exists"},
-      {"Examples", "batt chirp | batt chirp 0.10 kHz | batt chirp 10.00 kHz /s"}};
-  for (size_t i = sizeof lines / sizeof lines[0]; i-- > 0;)
-    result(lines[i].label, "complete", lines[i].text);
-  result(original, "complete", "");
-}
-
-static void help_batt_chirp_time_detail(const char *original) {
-  static const struct {
-    const char *label;
-    const char *text;
-  } lines[] = {
-      {"", "================================================================================"},
-      {"", "BATTERY CHIRP TIMING CONFIGURATION - DEBUG MENU"},
-      {"", "================================================================================"},
-      {"Command", "batt chirp i=<interval> r=<repeat> p=<pause> d=<duration> [/s]"},
-      {"Description", "Configures the audible sequence triggered below the battery-critical threshold."},
-      {"Units", "All interval, pause, and duration values are in seconds."},
-      {"i=<interval>", "Seconds between the START of sequences; range 1-3600; default 30."},
-      {"", "Example i=30: a new sequence is scheduled every 30 seconds."},
-      {"r=<repeat>", "Number of individual chirps in each sequence; range 1-10; default 2."},
-      {"", "Example r=2: every sequence contains two chirps."},
-      {"p=<pause>", "Seconds of silence between individual chirps; range 1-10; default 5."},
-      {"", "The pause starts when one chirp ends and finishes when the next chirp starts."},
-      {"", "There are r-1 pauses; pause is irrelevant when repeat is one."},
-      {"d=<duration>", "Length of every individual chirp; range 1-5 seconds; default 3."},
-      {"/s", "Saves range, warning, critical, frequency, and timing defaults to flash."},
-      {"Example 1", "batt chirp i=30 r=2 p=5 d=2"},
-      {"", "Every 30 s: two 2 s chirps separated by 5 s of silence."},
-      {"Formula", "Sequence duration = (d * r) + (p * (r - 1))."},
-      {"Remainder", "Silence after a sequence = i - sequence duration, when the result is positive."},
-      {"Timeline", "For i=30 r=2 p=5 d=3: chirp 0-3, pause 3-8, chirp 8-11, silence 11-30."},
-      {"Example 2", "batt chirp i=10 r=3 p=2 d=1"},
-      {"", "Every 10 s: three 1 s chirps with 2 s silence between chirps."},
-      {"Example 3", "batt chirp i=60 r=1 p=10 d=4"},
-      {"", "Every 60 s: one 4 s chirp; pause is unused."},
-      {"Example 4", "batt chirp i=120 r=1 p=1 d=5 /s"},
-      {"", "Every 2 minutes: one 5 s chirp, saved as the power-on default."},
-      {"Validation", "Invalid or missing fields use defaults: i=30 r=2 p=5 d=3."},
-      {"", "Example: i=0 r=0 p=0 d=0 becomes i=30 r=2 p=5 d=3."},
-      {"Immediate", "Changes take effect immediately; an active critical sequence restarts."},
-      {"Recovery", "All chirps stop immediately when the battery is no longer critical."},
-      {"Scheduling", "Sequences never overlap; an overdue sequence starts after the prior one finishes."},
-      {"Reset RAM", "batt chirp i=30 r=2 p=5 d=3"},
-      {"Status", "batt chirp time - report current interval, repeat, pause, duration, and source."},
-      {"", "================================================================================"}};
-  for (size_t i = sizeof lines / sizeof lines[0]; i-- > 0;)
-    result(lines[i].label, "complete", lines[i].text);
-  result(original, "complete", "");
+static bool help_setting(const char *argument, const char *original) {
+  char key[24];
+  size_t length = strlen(argument);
+  if (length >= sizeof key) return false;
+  for (size_t i = 0; i <= length; ++i)
+    key[i] = (char)toupper((unsigned char)argument[i]);
+  return cfg_setting_known(key) && help_show(key, original);
 }
 
 static bool led_brightness_command(const char *original, char *arg) {
@@ -2623,52 +2402,17 @@ static void submit(char *typed) {
   } else if (!strcmp(command, "help")) {
     help_display_begin();
     if (arg) {
-      const char *sdc_help = ui_page == 5u && strcmp(arg, "co2profile")
-                                 ? co2_command_help(arg)
-                                 : NULL;
-      const help_entry_t *entry = sdc_help ? NULL : help_detail(arg);
-      if (sdc_help) {
-        result("Purpose", "complete", sdc_help);
-        result(original, "complete", "SDC41 Page-5 command");
-      } else
-      if (entry) {
-        if (!strcmp(entry->name, "pos")) {
-          help_pos_detail(original, entry);
-        } else if (!strcmp(entry->name, "led")) {
-          help_led_detail(original);
-        } else if (!strcmp(entry->name, "led brightness")) {
-          help_led_brightness_detail(original);
-        } else if (!strcmp(entry->name, "led zone")) {
-          help_led_zone_detail(original);
-        } else if (!strcmp(entry->name, "batt chirp")) {
-          help_batt_chirp_detail(original);
-        } else if (!strcmp(entry->name, "batt chirp time")) {
-          help_batt_chirp_time_detail(original);
-        } else {
-          char example[96], description[160];
-          const char *example_command = entry->example;
-          snprintf(example, sizeof example, "Command > %s", example_command);
-          help_description(entry, description, sizeof description);
-          result("Example", "complete", example);
-          result("Parameters", "complete", description);
-          result("Syntax", "complete", entry->example);
-          result("Purpose", "complete", entry->notes);
-          result("Operational notes", "complete",
-                 (!strncmp(entry->name, "batt sim", 8u) ||
-                  !strcmp(entry->name, "adc0offset"))
-                     ? "Without /s the setting is RAM-only; append /s to save all battery defaults in flash."
-                     : "Debug-only diagnostic interface; command effects are RAM-only unless explicitly stated.");
-          result(original, "complete", entry->name);
-        }
-      } else if (!help_setting(arg, original)) {
+      bool sensor_topic = ui_page == 5u && debug_help_page5_topic(arg);
+      const help_entry_t *entry = sensor_topic ? NULL : help_detail(arg);
+      if (!help_show(entry ? entry->name : arg, original) &&
+          !help_setting(arg, original)) {
         char detail[96];
         snprintf(detail, sizeof detail,
                  "no command called \"%s\", try \"help\"", arg);
         result(original, "rejected", detail);
       }
     } else {
-      for (size_t i = sizeof help_entries / sizeof help_entries[0]; i-- > 0;)
-        result(help_entries[i].name, "complete", help_entries[i].example);
+      (void)help_show("help", original);
     }
   } else if (!strcmp(command, "low") || !strcmp(command, "lowendstop") ||
              !strcmp(command, "highendstop")) {
@@ -2679,12 +2423,8 @@ static void submit(char *typed) {
   } else if (!strcmp(command, "batt")) {
     char d[768];
     if (arg && !strcmp(arg, "help")) {
-      result(original, "complete", "batt | batt raw | batt res | batt log | batt events | batt reset");
-      result("", "complete", "append /s to range, warning, critical, or chirp to save flash defaults");
-      result("", "complete", "batt sim range <1.0-6.0 V> | batt sim warning <1.4-5.4 V>");
-      result("", "complete", "batt sim critical <2.2-5.9 V> | batt sim <volts> | batt sim off");
-      result("", "complete", "batt chirp <0.10-10.00 kHz> [/s]");
-      result("", "complete", "batt chirp time i=<1-3600> r=<1-10> p=<1-10> d=<1-5> [/s]");
+      help_display_begin();
+      (void)help_show("batt", original);
       return;
     } else if (!arg)
       power_monitor_format_batt(d, sizeof d);
