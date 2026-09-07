@@ -27,20 +27,26 @@ When adding any new `debug.c` console command:
 
 1. **Dispatch logic** — the actual `else if (!strcmp(command, "..."))`
    branch in `submit()`.
-2. **`help_entries[]` table entry** — so `help <command>` works. A
-   command with no help entry is incomplete, not a minor omission.
+2. **A `debug_help_document_t` for the command** — confirmed as the
+   current architecture (`src/debug_help.h`): help is now data-driven,
+   not bespoke per-command functions. Define the document (`purpose`,
+   `syntax[]`, `parameters[]` as `debug_help_parameter_t` — name,
+   meaning, default, example — `interactions[]`, `notes[]` as needed),
+   then confirm it's actually reachable through `debug_help_find(name,
+   page)`. **The exact registration mechanism lives in `debug_help.c`,
+   not the header — quote that file before assuming how a new document
+   gets wired in**, rather than guessing at the pattern.
 3. **Page-6 command index** — the `command_rows[][4]` table in
    `frame_continue()`. If it's not here, it doesn't show up in the
    command list a user browsing page 6 actually sees.
 4. **Single-letter alias**, if warranted — the `aliases[]` arrays (both
    upper and lower case) in `submit()`. Not every command needs one, but
    decide deliberately, don't just skip it by default.
-5. **A dedicated help-detail function**, if the command is complex enough
-   to warrant one (see `help_pos_detail`/`help_led_detail` as the
-   existing pattern) — most commands don't need this, but check.
-6. **Report explicitly, every time**: "added to dispatch, help table,
-   page-6 index, alias: yes/no, detail function: yes/no." Don't just say
-   "command added" — confirm each of the above five items by name.
+5. **Report explicitly, every time**: "added to dispatch, help document
+   registered and confirmed reachable via debug_help_find, page-6 index,
+   alias: yes/no." Don't just say "command added" — confirm each item by
+   name, and confirm the help document is actually *found*, not just
+   defined.
 
 If a prompt asks for a new command and doesn't explicitly repeat this
 checklist, apply it anyway. This is a standing requirement, not
@@ -57,6 +63,12 @@ Don't make me repeat these in every prompt — apply them by default:
   `if (deadline_ms && (int32_t)(now - deadline_ms) >= 0) { /* fires */ }`
   — same pattern as `controller.c`'s `reached()`. A deadline of `0` means
   "never expires" — reuse this sentinel, don't invent a different one.
+  **Known existing exception, not a precedent**: `co2.c`'s single-shot
+  CO₂ command currently uses `sleep_ms(5000)`. This is acknowledged
+  technical debt, not a case that weakens the rule — don't point to it
+  to justify a new blocking call elsewhere. If touching this specific
+  code path, converting it to the deadline idiom is a genuine
+  improvement; leaving it alone is fine too, but don't extend the pattern.
 - **Every tunable constant belongs in `config.h`**, never inline. This is
   an explicit house rule, not a style preference.
 - **Reuse existing internal mechanisms before writing a parallel one.**
@@ -88,10 +100,20 @@ Don't make me repeat these in every prompt — apply them by default:
 
 ## GPIO allocation — check before adding, prefer software over hardware
 
-- **Before allocating any new GPIO, check the current full allocation**
-  against `hardware.md`'s pin table. Pins run out faster than expected —
-  this board doesn't even break out `GP24`, discovered only when it was
-  needed.
+- **Check source before documents, and check the most current source
+  first.** `hardware.md` contains acknowledged stale wiring — it is not
+  the first place to check. Priority order: `AGENTS.md`'s amendments
+  first, then `src/config.h` (the actual compiled pin assignments), then
+  the schematic itself, and only then `hardware.md` as a last, lower-
+  confidence resort. This board doesn't even break out `GP24` — a fact
+  only discovered when it was needed — a reminder that any single
+  document here can be wrong, and the real source is the actual pin
+  definitions in code plus current amendments, not an older summary.
+- **`GP8`–`GP13` is not a preservable, fully-reserved SPI1 cluster.**
+  Corrected: `GP8`/`GP9` already serve UART, and `GP10` already selects
+  the CO₂ room profile (`CO2-LIMIT_AB`). Don't treat this range as a
+  block to protect — check `config.h` directly for what's actually free
+  within it, if anything.
 - **Prefer a software-controlled solution over a new GPIO** when the
   power tradeoff allows it. A chip with a genuinely low shutdown current
   (single-digit µA or less) usually doesn't justify spending a GPIO on
@@ -100,20 +122,44 @@ Don't make me repeat these in every prompt — apply them by default:
   new switch is needed. The potentiometer's GPIO-gated supply was
   justified by a real, much larger current cost (hundreds of µA); most
   small I²C sensors won't clear that bar.
-- **Preserve pin groups where possible** — don't take one pin from a
-  complete SPI cluster (`GP8`–`GP13`) or spend an ADC-capable pin
-  (`GP26`–`GP29`) on a purely digital signal if a plain GPIO would do.
+- **Don't spend an ADC-capable pin** (`GP26`–`GP29`) on a purely digital
+  signal if a plain GPIO would do — these are scarce for a different
+  reason (limited ADC-capable pins on this chip), independent of
+  whatever else is or isn't allocated nearby.
 
 ---
 
-## Persistence — RAM-only is the default, not the exception
+## Persistence — a real, repeated pattern now, not a rare exception
 
-Almost everything set via `cfg` or any debug command is RAM-only, lost
-on reset. **Only the two endstops have a dedicated flash-persistence
-mechanism** (`endstop_persist()`/`endstop_restore()`, its own reserved
-flash sector). Don't add flash persistence to a new feature by default —
-it's a deliberate, separate decision each time, not a natural extension
-of "this value should stick."
+**Correction**: this is no longer "only the endstops." Confirmed flash
+persistence now exists for at least four subsystems, all using the
+*identical* structure — magic number, version, payload fields, checksum,
+written via `flash_range_erase()` + `flash_range_program()` with
+interrupts disabled, each to its own dedicated flash offset constant:
+
+- Endstops (`endstop_persist()`/`endstop_restore()`)
+- Battery settings (`power_monitor_settings_save()`, `power_monitor.c`)
+  — includes warning/critical thresholds and the full buzzer chirp
+  timing (interval, repeat count, pause, duration, frequency)
+- CO₂ profile settings (`co2.c`'s `settings_save()`/`settings_restore()`)
+  — includes the active room profile and the actual ppm limit values
+  per level, not just fixed compile-time zone boundaries
+- Event-timer interval (`event_timer.c`'s `settings_save()`/
+  `settings_restore()`) — the wake-cycle interval itself
+
+**If adding new persistence, follow this exact established pattern** —
+magic/version/checksum record, dedicated flash offset, erase-then-program
+with interrupts disabled — rather than inventing a new mechanism.
+
+**Open question, not yet confirmed**: with four independent subsystems
+each computing its own flash offset, is there central coordination
+ensuring none collide on the same physical sector? Confirm the actual
+offset values (not just the symbolic constant names) don't overlap
+before adding a fifth.
+
+Anything *not* using this pattern remains RAM-only by default — that
+part of the original guidance still holds; it's just no longer true that
+only two values are persisted.
 
 ---
 
@@ -206,16 +252,38 @@ understanding this was a deliberate call.
 
 - **Dual-core architecture** (`multicore_fifo`, spinlocks, Core 0/Core 1
   separation). This is a single-core application — one tick dispatcher,
-  one main loop, no evidence anywhere of `multicore_launch_core1()`. A
-  device that spends most of its life in dormant sleep and occasionally
-  wakes to poll a sensor or nudge a motor has no workload that benefits
-  from splitting across cores. This would add real complexity (memory
-  barriers, FIFO messaging, spinlock discipline) for no actual gain. Do
-  not introduce this without an explicit, specific reason tied to a real
-  performance problem — not as a general "best practice" upgrade.
+  one main loop, no evidence anywhere of `multicore_launch_core1()`. This
+  workload (motor control, a handful of I²C sensors, LED/buzzer output)
+  has no need to split across cores. This would add real complexity
+  (memory barriers, FIFO messaging, spinlock discipline) for no actual
+  gain. Do not introduce this without an explicit, specific reason tied
+  to a real performance problem — not as a general "best practice"
+  upgrade.
+
+  **Open architectural question, not resolved here** — confirmed from
+  `main.c`: the main loop currently calls `__wfi()` between iterations,
+  with the 1 kHz safety tick remaining active in IRQ context throughout.
+  This means the CPU wakes roughly 1000 times per second for the
+  device's entire operating life — a fundamentally lighter sleep mode
+  than true RP2040 dormant sleep (all clocks stopped), which an earlier
+  design phase for the DS3231 wake signal assumed would be the actual
+  sleep strategy. Whether this is a deliberate, considered choice (true
+  dormant sleep has real complications — clock-restart sequencing,
+  possible debug-probe/USB interaction issues) or an interim state
+  before dormant sleep is properly implemented is **not yet confirmed**.
+  This matters beyond wording: the earlier battery-life estimates for
+  the DS3231's own contribution assumed the RP2040 itself would also be
+  deeply asleep most of the time. If it's actually running continuously
+  via repeated `__wfi()` cycles, total system power draw is likely
+  higher than those estimates accounted for — worth revisiting the power
+  budget once this is settled, not just this document's wording.
 - **DMA for I²C or ADC sampling.** DMA earns its place for continuous,
-  high-throughput data — which is exactly why it's implicitly already
-  used for the LED's continuous PIO-driven serial stream. This project's
+  high-throughput data. **Correction**: the LED (`led.c`) is not a DMA
+  example — it sends individual frames through the PIO FIFO directly and
+  disables the PIO state machine afterward, confirmed from source. **The
+  buzzer's DDS engine (`play-2`/`play-3`) is the actual existing DMA
+  example in this codebase** — it allocates DMA resources to feed the
+  PIO/PWM hardware continuously while a composition plays. This project's
   I²C traffic is small, infrequent transactions (once per wake cycle);
   ADC sampling is one reading per 1 ms tick. Neither is a firehose. DMA
   setup overhead here would likely exceed any benefit — this would be
