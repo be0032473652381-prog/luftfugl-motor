@@ -27,26 +27,37 @@ When adding any new `debug.c` console command:
 
 1. **Dispatch logic** — the actual `else if (!strcmp(command, "..."))`
    branch in `submit()`.
-2. **A `debug_help_document_t` for the command** — confirmed as the
-   current architecture (`src/debug_help.h`): help is now data-driven,
-   not bespoke per-command functions. Define the document (`purpose`,
+2. **`help_entries[]` table entry — still required, not replaced.**
+   Confirmed: `resolve()` (`src/debug.c`) searches this table to
+   recognize the command exists at all and to perform exact and
+   prefix matching (not typo-correction/fuzzy matching — don't overstate
+   what this does). This is a real, separate registration point from item 3
+   below — a command missing from here isn't *recognized*, regardless of
+   whether its detailed help exists.
+3. **A `debug_help_document_t` for the detailed help content** —
+   confirmed current architecture (`src/debug_help.h`): the actual
+   *displayed* help when `help <command>` runs is now data-driven, not
+   bespoke per-command functions. Define the document (`purpose`,
    `syntax[]`, `parameters[]` as `debug_help_parameter_t` — name,
    meaning, default, example — `interactions[]`, `notes[]` as needed),
    then confirm it's actually reachable through `debug_help_find(name,
    page)`. **The exact registration mechanism lives in `debug_help.c`,
    not the header — quote that file before assuming how a new document
-   gets wired in**, rather than guessing at the pattern.
-3. **Page-6 command index** — the `command_rows[][4]` table in
+   gets wired in.** Also check `src/debug_help_catalog.inc` — a separate
+   index used for the no-argument `help` listing; a command missing from
+   here won't appear when `help` is typed alone even if its detailed
+   document exists.
+4. **Page-6 command index** — the `command_rows[][4]` table in
    `frame_continue()`. If it's not here, it doesn't show up in the
    command list a user browsing page 6 actually sees.
-4. **Single-letter alias**, if warranted — the `aliases[]` arrays (both
+5. **Single-letter alias**, if warranted — the `aliases[]` arrays (both
    upper and lower case) in `submit()`. Not every command needs one, but
    decide deliberately, don't just skip it by default.
-5. **Report explicitly, every time**: "added to dispatch, help document
-   registered and confirmed reachable via debug_help_find, page-6 index,
-   alias: yes/no." Don't just say "command added" — confirm each item by
-   name, and confirm the help document is actually *found*, not just
-   defined.
+6. **Report explicitly, every time**: "added to dispatch, help_entries[]
+   recognition, help document registered and confirmed reachable via
+   debug_help_find, catalog index, page-6 index, alias: yes/no." Don't
+   just say "command added" — confirm each item by name, and confirm the
+   help document is actually *found*, not just defined.
 
 If a prompt asks for a new command and doesn't explicitly repeat this
 checklist, apply it anyway. This is a standing requirement, not
@@ -84,14 +95,19 @@ Don't make me repeat these in every prompt — apply them by default:
 - **Build both configurations** (debug and production, or whatever the
   project's actual target names are) with `-Wall -Wextra`, confirm
   clean, report the result explicitly.
-- **Build AND flash, then report the result.** This was previously
-  "never flash" — that default is now reversed, deliberately, as of this
-  update. After a clean build, flash using the confirmed-working command
-  for this hardware:
-  `openocd -f interface/cmsis-dap.cfg -f target/rp2040.cfg -c "adapter speed 5000" -c "program build/luftfugl.elf verify reset exit"`
-  Report the actual flash output (Programming/Verify result), not just
-  that the build succeeded. If a specific task explicitly says not to
-  flash, that overrides this default for that task only.
+- **Build AND flash, then report the result.** This default is
+  deliberately reversed from "never flash" as of an earlier update.
+  **Do not use any specific flash command hardcoded in this file** — a
+  previous version of this line specified `build/luftfugl.elf` at
+  adapter speed 5000, which is wrong: the correct target is
+  `build-debug/luftfugl.elf`, speed 1000, followed by a UART reset step,
+  per `AGENTS.md`'s own complete flash-and-console-reset procedure.
+  **Follow that procedure directly from `AGENTS.md` — don't copy a
+  second version of it here that can drift out of sync again**, which is
+  exactly what happened to the line this replaces. Report the actual
+  flash and reset output, not just that the build succeeded. If a
+  specific task explicitly says not to flash, that overrides this
+  default for that task only.
 - **Report with evidence, not assertion.** "Confirmed via grep: ..." or
   a quoted code block beats "this is now handled correctly." If a claim
   can be shown, show it.
@@ -129,15 +145,17 @@ Don't make me repeat these in every prompt — apply them by default:
 
 ---
 
-## Persistence — a real, repeated pattern now, not a rare exception
+## Persistence — a real, repeated pattern, but with a known bug — do not copy it uncritically
 
-**Correction**: this is no longer "only the endstops." Confirmed flash
-persistence now exists for at least four subsystems, all using the
-*identical* structure — magic number, version, payload fields, checksum,
-written via `flash_range_erase()` + `flash_range_program()` with
-interrupts disabled, each to its own dedicated flash offset constant:
+Flash persistence now exists for at least four subsystems, all *broadly*
+similar — magic number, payload fields, checksum, written via
+`flash_range_erase()` + `flash_range_program()` with interrupts
+disabled, each to its own dedicated flash offset constant:
 
-- Endstops (`endstop_persist()`/`endstop_restore()`)
+- Endstops (`endstop_persist()`/`endstop_restore()`, `src/debug.c`) —
+  **note: this record has no version field**, unlike the other three.
+  Don't assume uniformity across all four without checking the specific
+  one being extended.
 - Battery settings (`power_monitor_settings_save()`, `power_monitor.c`)
   — includes warning/critical thresholds and the full buzzer chirp
   timing (interval, repeat count, pause, duration, frequency)
@@ -145,21 +163,28 @@ interrupts disabled, each to its own dedicated flash offset constant:
   — includes the active room profile and the actual ppm limit values
   per level, not just fixed compile-time zone boundaries
 - Event-timer interval (`event_timer.c`'s `settings_save()`/
-  `settings_restore()`) — the wake-cycle interval itself
+  `settings_restore()`) — this interval controls the manually armed,
+  one-shot DS3231 event; it does not set the sensor-sampling cadence.
 
-**If adding new persistence, follow this exact established pattern** —
-magic/version/checksum record, dedicated flash offset, erase-then-program
-with interrupts disabled — rather than inventing a new mechanism.
+**Confirmed real bug, not a style concern**: `endstop_persist()` passes
+a 16-byte record directly to `flash_range_program()`. The RP2040 SDK
+requires flash writes in multiples of 256 bytes
+(`hardware/flash.h`). This is an existing defect in the current code —
+**do not treat this implementation as the template to copy.** If adding
+new persistence, pad the record to a full 256-byte-multiple buffer
+before calling `flash_range_program()`, regardless of what the existing
+four implementations currently do. **The sizing defect is confirmed in
+endstop persistence. The other three current records are padded and
+statically checked to fill one flash page** (`power_monitor.c`, `co2.c`,
+`event_timer.c` each enforce this against `FLASH_PAGE_SIZE` at compile
+time) — don't extend the endstop concern to them without evidence.
 
-**Open question, not yet confirmed**: with four independent subsystems
-each computing its own flash offset, is there central coordination
-ensuring none collide on the same physical sector? Confirm the actual
-offset values (not just the symbolic constant names) don't overlap
-before adding a fifth.
+**Flash-offset collision check — confirmed, not merely a concern**: the
+four current allocations sit at `0x3FF000`, `0x3FE000`, `0x3FD000`, and
+`0x3FC000` — distinct 4 KiB sectors, no overlap today. Re-verify actual
+offset values (not just symbolic names) before adding a fifth.
 
-Anything *not* using this pattern remains RAM-only by default — that
-part of the original guidance still holds; it's just no longer true that
-only two values are persisted.
+Anything *not* using this pattern remains RAM-only by default.
 
 ---
 
@@ -231,8 +256,9 @@ understanding this was a deliberate call.
   `encoder_tick()`/`controller_tick()`/`power_monitor_tick()`) is the
   house pattern. Extend it for new periodic work — don't introduce a
   second, separate timing mechanism. The deadline idiom
-  (`(int32_t)(now - deadline_ms) >= 0`, `0` meaning "never expires") is
-  the standard, already used throughout `controller.c`.
+  (`deadline_ms && (int32_t)(now - deadline_ms) >= 0`, `0` meaning
+  "never expires" — the zero-guard is part of the idiom, not optional
+  boilerplate) is the standard, already used throughout `controller.c`.
 - **IRQ + ring buffer for UART RX** — already exactly how `console.c`
   works. Use this as the template for anything with a similar shape.
 - **PIO for strict-timing serial protocols** — already exactly how the
@@ -260,33 +286,32 @@ understanding this was a deliberate call.
   to a real performance problem — not as a general "best practice"
   upgrade.
 
-  **Open architectural question, not resolved here** — confirmed from
-  `main.c`: the main loop currently calls `__wfi()` between iterations,
-  with the 1 kHz safety tick remaining active in IRQ context throughout.
-  This means the CPU wakes roughly 1000 times per second for the
-  device's entire operating life — a fundamentally lighter sleep mode
-  than true RP2040 dormant sleep (all clocks stopped), which an earlier
-  design phase for the DS3231 wake signal assumed would be the actual
-  sleep strategy. Whether this is a deliberate, considered choice (true
-  dormant sleep has real complications — clock-restart sequencing,
-  possible debug-probe/USB interaction issues) or an interim state
-  before dormant sleep is properly implemented is **not yet confirmed**.
-  This matters beyond wording: the earlier battery-life estimates for
-  the DS3231's own contribution assumed the RP2040 itself would also be
-  deeply asleep most of the time. If it's actually running continuously
-  via repeated `__wfi()` cycles, total system power draw is likely
-  higher than those estimates accounted for — worth revisiting the power
-  budget once this is settled, not just this document's wording.
+  **Current state, per `AGENTS.md`'s own documentation — this is settled,
+  not an open question.** `main.c`'s main loop calls `__wfi()` between
+  iterations, with the 1 kHz safety tick remaining active in IRQ context
+  throughout — the CPU wakes roughly 1000 times per second for the
+  device's entire operating life today. `AGENTS.md` reserves further
+  sleep/power-down behavior for future work, **without selecting a
+  specific mechanism** — don't overstate this as "true dormant sleep is
+  planned," since that specific mechanism isn't what's actually
+  committed to. State it as: **current** behavior is
+  continuously-active-with-`__wfi()`; **further sleep/power-down
+  behavior is future work**, mechanism not yet decided. Don't describe
+  the current-vs-future split as open when it's already answered in
+  `AGENTS.md` — just don't over-specify the future part beyond what's
+  actually documented there.
 - **DMA for I²C or ADC sampling.** DMA earns its place for continuous,
   high-throughput data. **Correction**: the LED (`led.c`) is not a DMA
   example — it sends individual frames through the PIO FIFO directly and
   disables the PIO state machine afterward, confirmed from source. **The
-  buzzer's DDS engine (`play-2`/`play-3`) is the actual existing DMA
-  example in this codebase** — it allocates DMA resources to feed the
-  PIO/PWM hardware continuously while a composition plays. This project's
-  I²C traffic is small, infrequent transactions (once per wake cycle);
-  ADC sampling is one reading per 1 ms tick. Neither is a firehose. DMA
-  setup overhead here would likely exceed any benefit — this would be
+  buzzer's DDS engine (canonical names `crips-2`/`crips-3`) is the actual
+  existing DMA example in this codebase** — it allocates DMA resources
+  feeding **PWM registers directly** (`src/buzzer.c` — PWM, not PIO;
+  don't conflate the two DMA-destination types in this codebase). This
+  project's I²C traffic is small and infrequent (occasional sensor reads
+  and one-shot event-timer checks, not continuous streaming); ADC
+  sampling is one reading per 1 ms tick. Neither is a firehose. DMA setup
+  overhead here would likely exceed any benefit — this would be
   over-engineering, not an improvement.
 - **"Prefer interrupts over polling," applied indiscriminately.** True
   for discrete events — the DS3231 wake signal correctly uses a GPIO
