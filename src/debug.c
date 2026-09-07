@@ -42,7 +42,11 @@ typedef struct {
   uint16_t high;
   uint32_t checksum;
   uint32_t reserved;
+  uint8_t padding[FLASH_PAGE_SIZE - 16u];
 } endstop_record_t;
+
+_Static_assert(sizeof(endstop_record_t) == FLASH_PAGE_SIZE,
+               "endstop record must fill one flash page");
 
 typedef enum {
   PENDING_NONE,
@@ -1437,8 +1441,12 @@ static void endstop_restore(void) {
 }
 
 static void endstop_persist(void) {
-  endstop_record_t record = {
-      ENDSTOP_FLASH_MAGIC, cfg.low_endstop_adc, cfg.high_endstop_adc, 0u, 0u};
+  endstop_record_t record;
+  memset(&record, 0xff, sizeof record);
+  record.magic = ENDSTOP_FLASH_MAGIC;
+  record.low = cfg.low_endstop_adc;
+  record.high = cfg.high_endstop_adc;
+  record.reserved = 0u;
   record.checksum = record.magic ^ record.low ^ record.high;
   uint32_t irq_state = save_and_disable_interrupts();
   flash_range_erase(ENDSTOP_FLASH_OFFSET, FLASH_SECTOR_SIZE);
