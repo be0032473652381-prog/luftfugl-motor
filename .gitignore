@@ -4,3 +4,4 @@ build/
 *.bin
 *.dis
 build*/
+test/__pycache__/
