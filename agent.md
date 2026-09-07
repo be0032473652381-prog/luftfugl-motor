@@ -13,14 +13,12 @@ RP2040 firmware controlling an N20 DC gearmotor with a **single continuous
 potentiometer** for absolute position feedback (not reed switches — see
 discrepancy report §1), a TB6612FNG dual H-bridge (channel A for the
 motor, channel B for the buzzer), an INA219 power monitor, an SK6812RGBWW
-addressable LED, a UART1 debug console, and an SCD41 CO₂ sensor. **The
-CO₂ sensor and buzzer are confirmed implemented and working**, not
-pending — `debug.c` shows a full command set for both (`co2`, `ready`,
-`serial`, `asc`, `offset`, `altitude`, `mode`, `sdc41 on/off`, `buzzer
-on/off/play`), directly reusing the offset (0–20°C) and altitude
-(0–3000 m) ranges established in the `sdc41` project. `hardware.md`'s
-Phase 1/2 framing predates this — it needs updating to reflect that this
-work has already happened, not just planned.
+addressable LED plus a secondary discrete LED, a UART1 debug console on
+GP8/GP9, an SCD41 CO₂ sensor, a DS3231 real-time clock, and a VEML7700
+ambient light sensor. All listed peripherals are confirmed implemented
+and working, not pending. Six motor positions exist, not five — a sixth,
+`EVENT_POSITION`, reserved for calibration/warning/error/wait states,
+structurally distinct from the five CO₂-severity stations.
 
 Built with the Raspberry Pi Pico SDK (C). Flashed and debugged over SWD
 using a Raspberry Pi Debug Probe.
@@ -125,19 +123,20 @@ enable` net — this is that GPIO, now confirmed as GP0. Station 5 keeps
 GP0 HIGH continuously for its hazard-blink pattern rather than power-
 cycling per pulse.
 
-### 2.5 Console UART — UART1, not UART0
+### 2.5 Console UART — UART1, on GP8/GP9
 
 | Signal | RP2040 Pin |
 |---|---|
-| TX | GP20 |
-| RX | GP21 |
+| TX | GP8 |
+| RX | GP9 |
 
-**Peripheral is `uart1`** (`uart_init(uart1, ...)`, `UART1_IRQ` in
-`console.c`) — not UART0, and not on GP0/GP1. This placement is
-deliberate: this project has previously hit a real TX/RX coupling bug on
-adjacent pins, and GP20/GP21 avoids repeating it. RX is interrupt-driven
-into a ring buffer; TX is a blocking `uart_putc_raw()` loop (its own
-elapsed time is measured into `tx_spin_us` for diagnostics).
+**Confirmed by direct ohmmeter continuity measurement on physical
+hardware** — settled, not a source-code or schematic reading. A
+previous version of this document specified GP20/GP21; that was wrong.
+**Peripheral remains `uart1`** (`uart_init(uart1, ...)`, `UART1_IRQ` in
+`console.c`, confirmed unchanged) — only the pin numbers were corrected,
+not the underlying hardware UART instance, since GP8/GP9 belong to the
+same `uart1` block per the RP2040's fixed function-select mapping.
 
 115200 baud, 8N1, no flow control, RX pull-up enabled.
 
@@ -146,26 +145,45 @@ elapsed time is measured into `tx_spin_us` for diagnostics).
 SWDIO/SWCLK are dedicated RP2040 package pins, not GPIOs. Standard
 4-pin debug header. No firmware configuration required.
 
-### 2.7 Currently allocated vs. reserved — full picture
+### 2.7 Ambient light sensor — VEML7700, I²C only, no new GPIO
+
+| Signal | RP2040 Pin |
+|---|---|
+| SDA | GP4 (shared I²C0 bus) |
+| SCL | GP5 (shared I²C0 bus) |
+
+I²C address `0x10`, confirmed from Vishay's datasheet — no collision
+with the SCD41 (`0x62`), INA219 (`0x40`), or DS3231/AT24C32
+(`0x68`/`0x57`) already on this bus. **No dedicated GPIO required** —
+this sensor needs no interrupt pin; software shutdown via I²C register
+write (confirmed 0.5 µA typical in shutdown vs. ~45 µA typical while
+measuring) is used instead of hardware power-gating, since the current
+cost doesn't justify spending a scarce GPIO the way the potentiometer's
+supply did.
+
+### 2.8 Currently allocated — full picture
 
 | Pin | Status |
 |---|---|
-| GP0 | LED power enable (TPS22918, active HIGH) |
+| GP0 | LED power — **directly supplies the SK6812, confirmed no TPS22918 in current hardware** (corrects an earlier claim in this document and a schematic reading that assumed a load switch here) |
+| GP1 | SDC41 enable (TPS22918 for the CO₂ sensor's power switch) |
 | GP2, GP3, GP14, GP15 | Motor driver, TB6612 channel A |
-| GP4, GP5 | I²C0 — SCD41 + INA219, confirmed active |
+| GP4, GP5 | I²C0 — SCD41, INA219, DS3231/AT24C32, VEML7700 |
 | GP6, GP7 | Buzzer, TB6612 channel B, BIN1/BIN2 |
+| GP8, GP9 | Console UART (`uart1`), confirmed by ohmmeter |
+| GP10 | CO2-LIMIT_AB (room-mode switch), confirmed |
 | GP16 | Buzzer, TB6612 channel B, PWMB |
-| GP18 | LED data |
-| GP20, GP21 | Console UART (UART1) |
+| GP17 | DS3231-Wake-UP (SQW alarm interrupt for dormant-wake) |
+| GP18 | LED data (D1, SK6812RGBWW) |
+| GP22 | MOTOR_POT_POWER (switched supply to the position potentiometer) |
+| GP25 | Onboard LED (drives D2 via `R11`, 470 Ω) |
 | GP26 | ADC0 — potentiometer wiper |
-| `SDC41 enable` (schematic) | Almost certainly GP0's counterpart for the sensor's own TPS22918 — exact pin not yet confirmed from source, only the LED's enable pin (GP0) has been directly confirmed |
-| `CO2-LIMIT_AB` switch | Per schematic, GPIO number still not confirmed — see `hardware.md` §7 |
 
-Everything not listed above remains genuinely free. Every pin above is
-now confirmed **active**, not reserved-for-later — this table has changed
-twice across this review as more source files came in; treat it as
-current only as of the files actually reviewed, not as a permanent
-ceiling on what's been checked.
+**GP20/GP21's status is not separately confirmed** — the ohmmeter
+verification implicated them in nothing; they are not asserted as free
+here, only that they are no longer console UART.
+
+Everything not listed above remains genuinely free.
 
 ---
 
@@ -250,45 +268,141 @@ tighter `CFG_ARRIVAL_WINDOW`, not the wider `CFG_POS_WINDOW`, and drives
 at full `CFG_DUTY_NORMAL` rather than creep during a correction — both
 consistent with the same "break stiction, then settle precisely" logic.
 
-### 4a.3 Endstops are runtime-adjustable and persisted to flash
+### 4a.3 Persistence — a real, repeated pattern across four subsystems, with a bug that's now fixed
 
-`lowendstop=<adc>` / `highendstop=<adc>` (confirmed in `debug.c`) change
-`cfg.low_endstop_adc`/`cfg.high_endstop_adc` in RAM immediately, then
-`endstop_persist()` writes them to a dedicated flash sector at
-`PICO_FLASH_SIZE_BYTES - FLASH_SECTOR_SIZE`, with a watchdog
-scratch-register copy as a secondary fallback if the flash write is
-interrupted. Restored via `endstop_restore()` at boot, validated against
-a magic number and checksum before trusting either source.
+Flash persistence exists for at least four subsystems, all using a
+broadly similar structure — magic number, payload fields, checksum,
+written via `flash_range_erase()` + `flash_range_program()` with
+interrupts disabled, each to its own dedicated flash offset:
 
-**This raises the priority of the still-open flash-size question (§1)
-from cosmetic to load-bearing.** If `PICO_FLASH_SIZE_BYTES` is wrong,
-this computes the wrong physical address to erase and program —
-confirm the real flash size before this feature is trusted, not after.
+- Endstops (`endstop_persist()`/`endstop_restore()`, `src/debug.c`)
+- Battery settings (`power_monitor_settings_save()`, `power_monitor.c`)
+  — includes warning/critical thresholds and the full buzzer chirp
+  timing
+- CO₂ profile settings (`co2.c`) — includes the active room profile and
+  actual ppm limit values per level, not just fixed compile-time
+  boundaries
+- Event-timer interval (`event_timer.c`) — controls the manually armed,
+  one-shot DS3231 event; it does not set the sensor-sampling cadence,
+  which follows separate scheduling
 
+**A real sizing bug existed and has been fixed.** `endstop_persist()`
+originally passed a 16-byte record directly to `flash_range_program()`,
+which requires writes in multiples of `FLASH_PAGE_SIZE` (256 bytes) —
+confirmed against the RP2040 SDK's own `hardware/flash.h`. The fix pads
+the record to exactly one flash page with a compile-time
+`_Static_assert` enforcing this, matching the pattern the other three
+implementations already used correctly. A regression test
+(`test/test_endstop_persistence.py`) verifies the corrected write size,
+confirms the flash offset is unchanged, and confirms pre-fix 16-byte
+legacy records already in a device's flash remain readable after the
+fix (the padding field was appended after all existing named fields,
+so byte offsets didn't shift).
 
+Confirmed flash offsets, no overlap: `0x3FF000`, `0x3FE000`, `0x3FD000`,
+`0x3FC000` — four distinct 4 KiB sectors. Re-verify before adding a
+fifth persisted subsystem.
 
-Confirmed from `main.c` and `controller.c`'s `ST_BOOT` handling:
+Anything not using this pattern remains RAM-only by default.
 
-1. `console_init()`, `motor_init()`, `encoder_init()`, `led_init()`,
-   `power_monitor_init()`, `controller_init()`, in that order.
-2. `motor_enable()` is called before the 1 kHz timer starts.
-3. Timer starts; boot waits for the first tick to complete.
-4. `watchdog_enable(100, true)` — only after that first tick, not before.
-5. On the first `controller_tick()` in `ST_BOOT`: reads
-   `encoder_confirmed()`. If valid (1–5), enters `ST_IDLE` at that
-   position and reports arrival. **If invalid, sets position to
-   "between" and reports unknown — it does not automatically home.**
+## 5. Boot / Reset Behaviour
 
-**NEEDS DECISION.** A previous version of this document mandated automatic
-reverse-creep homing on an invalid boot reading, specifically to avoid
-leaving the mechanism in an unprotected unknown state. The current code
-does not do this — it waits for an explicit `home` command. Confirm
-whether this is the intended, final behavior, or whether auto-homing
-needs adding back. This is genuinely safety-relevant given there are no
-physical stops.
+**Init order corrected — confirmed from `AGENTS.md` directly, supersedes
+an earlier, incomplete sequence in this document.**
+
+1. **GP22 (position-sensor power) initialized first, unconditionally** —
+   no position sample, motor init, or movement decision is valid before
+   the potentiometer has power and its ADC input has settled.
+2. LED power control, raw UART console, motor, buzzer, debug monitor
+   (debug builds only), ADC position sensing, RGBW LED, INA219, DS3231
+   event timer, SCD41, controller — in that order.
+3. Motor driver is enabled only *after* all of the above subsystems are
+   initialized — later than a previous version of this document
+   described.
+4. `watchdog_enable(100, true)` after the first 1 kHz tick completes.
+
+### 5.1 SCD41 startup coordination — confirmed, not in any earlier version of this document
+
+**When an SCD41 is available, boot does not go straight to normal
+operation.** The startup coordinator requires the mechanism at position
+6 (`EVENT_POS`), requesting a guarded move there if needed, and holds
+the normal motion interface locked during this sequence. It performs
+the 60-second SCD41 stabilization, then collects seven accepted samples
+before normal CO₂ control becomes valid. Only once this completes does
+the resulting CO₂ level select one of positions 1–5 for display.
+
+On the first `controller_tick()` in `ST_BOOT`, position is read via
+`encoder_confirmed()`. **If invalid, position is set to "between" and
+reported unknown — it does not automatically home** outside of the
+SCD41-coordinated Station 6 sequence above.
+
+**NEEDS DECISION, still open**: whether general auto-homing on an
+invalid boot reading (independent of the SCD41 coordination sequence)
+should be added. Confirm whether explicit-`home`-only remains intended
+for cases where §5.1's SCD41 sequence doesn't apply.
 
 `watchdog_caused_reboot()` is checked at the top of `main()`; if true, an
 `ERR: watchdog reset` message is emitted before normal boot continues.
+
+### 5.1 NEW REQUIREMENT — battery voltage validity check, first thing after `power_monitor_init()`
+
+**Not yet implemented — this is a new behavioral requirement, not a
+description of existing code.**
+
+Immediately after `power_monitor_init()` completes (step 1 above, before
+`controller_init()` and before `motor_enable()`), read the battery
+voltage once and classify it as valid or invalid before proceeding.
+
+**Two genuinely open parameters, not invented here**:
+
+- **Lower bound for "valid"**: proposed default is the existing
+  `BATTERY_CRITICAL_MV` (4000 mV) — below that, the system already treats
+  the battery as critical everywhere else (`led.c`'s hazard-blink logic).
+  Reusing the same threshold avoids two different "how low is too low"
+  definitions existing side by side.
+- **Upper bound, if any**: not currently defined anywhere in this
+  project. Confirm whether an overvoltage condition (e.g., wrong battery
+  type, sensor fault) needs its own check, or whether "valid" is simply
+  "at or above `BATTERY_CRITICAL_MV`" with no ceiling.
+- **What "low battery function" actually does**: `led.c` already has
+  passive warning-color behavior layered on top of normal operation
+  (solid warning color below `BATTERY_WARN_MV`, hazard blink below
+  `BATTERY_CRITICAL_MV`). Confirm whether this new boot-time check should
+  trigger that *same* existing behavior — just earlier, and explicitly
+  logged — or whether it needs to genuinely prevent normal startup
+  (motor never enabled, system held in a distinct restricted state until
+  the condition clears). These are meaningfully different outcomes.
+
+**Message format** — two fixed strings, one per outcome:
+
+```
+battery voltage valid - voltage = 4.4
+battery voltage out of valid - voltage = 3.8
+```
+
+Voltage formatted as `X.X` (one decimal place) matching the real range
+this battery chemistry operates in (3.0–4.5 V per `hardware.md`) — not a
+literal two-digit `nn.n` if the value never reaches double digits.
+
+**Where this appears — proposed, not yet confirmed**: two things, not
+one:
+
+1. **A new persistent field on debug page 1**, alongside the existing
+   `GENERAL`/`TICK`/`LED` rows — showing the current validity status at a
+   glance any time page 1 is viewed, not just at the moment of boot
+   (useful if the operator connects the console after boot already
+   happened).
+2. **A one-time timestamped log entry** via the same `result()`/
+   `dbg_log_push()` mechanism already used for other boot/controller
+   events — giving a permanent record of exactly when and what was
+   determined, consistent with how `PASS`/`ARR`/timeout events are
+   already logged.
+
+This is monitor-build-specific for the *display* (page 1 only exists
+under `LUFTFUGL_MONITOR`) — but the underlying voltage check and whatever
+"low battery function" turns out to mean should very likely run in
+production (non-monitor) builds too, just without the debug-page message,
+reusing whatever LED/motor-gating behavior gets decided above.
 
 ---
 
@@ -299,9 +413,93 @@ An unconfirmed/between-positions reading is invalid and never reported as
 a station. `pos` returns `POS:?`.
 
 ### 6.2 Limit enforcement
-Every move target is validated against the current position before
-energizing the motor. At position 1, reverse commands rejected. At
-position 5, forward commands rejected.
+**Confirmed directly from `AGENTS.md`**: position 1 is the low firmware
+limit, **position 6 is the high firmware limit** — not position 5.
+Reverse commands rejected at position 1; forward commands rejected at
+position 6, including from debug code, unless a deliberately guarded
+calibration operation requires it. Recovery direction must not depend
+on unsafe extrapolation or travel history.
+
+**Station 6 (`EVENT_POS` — confirmed canonical name, not
+`EVENT_POSITION`)** is structurally different from stations 1–5:
+reserved for calibration/warning/error/wait states, not a sixth
+CO₂-severity level, with a substantially larger travel angle. It is
+also the confirmed limit boundary itself, not a position reached
+through separate override logic as earlier speculated. Do not
+reintroduce a `POS_ERROR` name — `AGENTS.md` explicitly names this as
+something not to do.
+
+### 6.2a Buzzer — DDS-based tone generation, not simple PWM
+
+**Supersedes any earlier description of a fixed bird-call pattern.** The
+buzzer uses Direct Digital Synthesis: a phase accumulator advances at a
+rate set by the target frequency, a 256-entry sine lookup table supplies
+the waveform amplitude at each phase step, and a 100 kHz PWM carrier
+represents that amplitude, with DMA feeding the PWM hardware
+continuously so the CPU isn't blocked while a composition plays.
+
+**Confirmed piezo resonance**: two points, 2.0 kHz and 4.3 kHz — the
+element is not flat-response, and driving it outside this range costs
+real, substantial volume (confirmed directly by listening test, not
+just theoretical). Practical compositions stay within roughly
+2.3–3.1 kHz for reliable loudness.
+
+**RC filter on the drive lines**: `R4 = R5 = 1.5 Ω`, `C8 = 3.3 µF`,
+confirmed cutoff ~16 kHz — chosen to suppress the 100 kHz PWM carrier's
+own switching ripple without attenuating the synthesized tone itself,
+not to shape audio-band harmonic content the way an earlier, simpler
+PWM-only design would have needed.
+
+**Canonical naming, confirmed complete and final from `AGENTS.md`**:
+five compositions, `crips-1` through `crips-5` — `play`/`play-2`/
+`play-3`/`play-4`/`play-5` are all former names, fully replaced in the
+debug console. C entry points `buzzer_crips_1` through `buzzer_crips_5`
+forward to the existing synthesis functions.
+
+| Command | Former name | Composition |
+|---|---|---|
+| `buzzer crips-1 <count>` | `buzzer play <count>` | Original square-wave station chirp |
+| `buzzer crips-2 <count>` | `buzzer play-2 <count>` | Original composition, clean DDS sine |
+| `buzzer crips-3 <count>` | `buzzer play-3 <count>` | 444 ms; 8/8/12 bursts at 4.3/2.0/4.3 kHz |
+| `buzzer crips-4 <count>` | `buzzer play-4 <count>` | ~5 s; introductions plus 6/7/8 bursts |
+| `buzzer crips-5 <count>` | `buzzer play-5 <count>` | Same notes as crips-4, compact pauses, ~2.75 s |
+
+**`crips-5` is the actual production station-arrival sound**, in both
+debug and release builds — not a test-only composition. On genuine
+arrival: once at Station 2, twice at Station 3, three times at Station
+4, four times at Station 5. Station 1 and position 6 produce no arrival
+sound. **`crips-2` through `crips-4` remain debug-only listening
+modes; `crips-1` remains available for manual comparison.** Count
+range 1–200; `buzzer off` stops any mode.
+
+**Low-battery alert tone**: schematic specifies a fixed 3500 Hz pulse
+for this specific alert, separate from the `crips-1`–`5` bird-call work
+— not yet reconciled against whatever frequency is actually implemented
+for this specific alert; confirm directly rather than assume either
+number is current.
+
+### 6.2b DS3231 event timer — confirmed complete from `AGENTS.md`
+
+**One-shot, never auto-starts.** Remains stopped after power-on, reset,
+or expiry — init restores the saved interval, disables Alarm1, and
+enables the falling-edge interrupt on GP17, but does not arm anything
+automatically.
+
+| Command | Effect |
+|---|---|
+| `ds3231 start` | Arms one event using the currently configured interval |
+| `ds3231 stop` | Disables the active Alarm1 event |
+| `ds3231 timer` | Reports countdown or stopped state |
+| `ds3231 temp` | Reports DS3231 temperature |
+| `ds3231 timeset <15..18000>` | Changes interval in RAM; re-arms immediately if the timer is active |
+| `ds3231 timeset <15..18000> /s` | Same, and saves the interval to flash |
+
+**At expiry**: GP17 interrupt serviced, Alarm1 disabled, GP25 (onboard
+LED) lit for exactly 5 seconds. **The event timer does not re-arm
+itself** — a fresh `ds3231 start` is required. **The buzzer and
+external RGBW LED are explicitly not part of DS3231 expiry behavior** —
+confirmed directly, correcting any assumption that expiry triggers an
+audible or RGBW-visible alert.
 
 ### 6.3 Sampling and confirmation
 
@@ -357,8 +555,11 @@ exist). Out-of-range reports `ERR: at end-stop` (`JOG_ENDSTOP`), not
 "overtravel" — that word doesn't appear anywhere in the console output.
 
 ### 6.7 Non-blocking operation
-No `sleep_ms()` in any control or command path. Confirmed: `controller_tick()`
-is pure arithmetic and state transitions, no blocking calls.
+No `sleep_ms()` in the core control path — confirmed: `controller_tick()`
+is pure arithmetic and state transitions, no blocking calls. **Known,
+acknowledged exception**: `co2.c`'s single-shot CO₂ command currently
+uses `sleep_ms(5000)` — existing technical debt, not a case that
+justifies extending the pattern elsewhere.
 
 ### 6.8 Watchdog
 
@@ -412,9 +613,10 @@ to confirm this table is still current, not assumed.**
 | `help` | Lists `batt`/`load`/`ina` only | Doesn't list `pos`/`move`/etc. |
 | `dbg`, `dbg plain` | Enters debug monitor | `LUFTFUGL_MONITOR` builds only |
 
-### 7.2 Debug monitor — far larger, confirmed directly from `debug.c`
+### 7.2 Debug monitor — eight pages, confirmed directly from `AGENTS.md`
 
-A full fixed-screen UI, six pages, cycled with digit keys `1`–`6`:
+**Eight pages, not six** — a previous version of this document was
+wrong on page count. Cycled with digit keys `1`–`8`:
 
 | Page | Content |
 |---|---|
@@ -424,31 +626,47 @@ A full fixed-screen UI, six pages, cycled with digit keys `1`–`6`:
 | 4 | Battery information |
 | 5 | CO₂ sensor |
 | 6 | Commands (index of every command, single-letter aliases) |
+| 7 | 64-entry rolling data log, newest 20 rows shown — records motor/controller state changes, INA219 voltage (initial reading, battery-state changes, or ≥50 mV hysteresis), battery state, LED power/color, SCD41 state/frames, DS3231 state, buzzer state, command results. Page-local single-key controls: `q`/`Q` pause, `s`/`S` resume, `c`/`C` clear-and-resume. |
+| 8 | VEML7700 zone ranges and live ALS lux, fixed cursor position, refreshed once per second |
 
-`plain` switches to line-oriented output without escape codes — same
-category of choice as `sdc41`'s own plain-vs-fixed-screen distinction,
-already made correctly here rather than needing to be relearned.
+`plain` switches to line-oriented output without escape codes.
+
+**Help architecture is data-driven, not bespoke per-command functions**
+— confirmed current design (`src/debug_help.h`): a `debug_help_document_t`
+per command (purpose, syntax lines, a parameter table, ranked
+interactions, notes) rendered by one shared `debug_help_render()`
+function. **Command recognition remains separate from this** —
+`resolve()` (`src/debug.c`) still searches `help_entries[]` to recognize
+that a typed word is a valid command (exact and prefix matching, not
+typo-correction), independent of whether that command's detailed help
+document exists. A command needs both to be complete: recognized via
+`help_entries[]`, and its detailed help reachable via
+`debug_help_find(name, page)` — plus a separate no-argument index
+(`debug_help_catalog.inc`) for when `help` is typed alone.
 
 Commands confirmed present, well beyond the production set: `jog`,
 `step`, `sel`, `save`, `stations`, `limits`, `lowendstop=`/`highendstop=`
 (§4a.3), `export`, `reset` (full reboot), `reset stations`, `bootsel`
 (USB bootloader), `move`/`pos`, `goto` (raw ADC target), `home`, `stop`,
 `status`, `adc`, `angle`, `led` (`on`/`off`/`auto`/`rgbw on`/`rgbw
-off`/`raw <hex>`), `buzzer` (`on`/`off`/`play 1..10`), `page`,
+off`/`raw <hex>`/`brightness [station|warning|critical|error|sample|
+breathe] [0-100]`), `buzzer` (`on`/`off`/`play-2 <count>`/`play-3
+<count>` — confirmed canonical names, not `play 1..10`), `page`,
 `selftest`, `tick`, `trace`, `pins`, `pwm`, `cfg <SETTING> <value>` /
 `cfg reset`, `sim` (`on`/`off`/`adc`/`travel`), `cal sim`, `cal motor
 [5|50|500]`, `arm`/`disarm`/`drive` (manual pulse, requires `arm`),
-`findmin` (empirically finds the lowest moving duty — this is very
-likely how the current `DUTY_MIN`/etc. values in `config.h` were actually
-derived, strengthening the case that those values are deliberate
-bench measurements, not stale drift — see §6.4), the full CO₂ command
-set (§ Scope), and `help [command]` for any of the above.
+`findmin`, the full CO₂ command set, the ambient-light sensor's I²C
+polling (no dedicated debug command confirmed for direct lux readout —
+check current source before assuming one exists), and `help [command]`
+for any of the above.
 
 **`cfg`'s live validation rules, confirmed exactly**:
 `DUTY_MIN ≤ DUTY_CREEP ≤ DUTY_APPROACH ≤ DUTY_NORMAL`, `POS_WINDOW` must
 stay below a quarter of the smallest station gap, endstops must bracket
-stations 1 and 5. Changes are RAM-only unless the setting is an endstop
-(§4a.3, which persists to flash).
+stations 1 and 5. **Persistence is no longer endstop-only** — see §4a.3
+for the full four-subsystem pattern; most `cfg` settings remain RAM-only,
+but battery thresholds/chirp timing and CO₂ profile limits now also have
+their own dedicated persistence alongside the endstops.
 
 `STATE:` names, confirmed independently in both `console.c` and
 `debug.c`: `BOOT`, `IDLE`, `MOVING`, `APPROACH`, `HOMING`, `FAULT`, and
@@ -544,38 +762,50 @@ Largely still applicable, with reed-switch-specific wording removed:
 
 ## 12. Open Items
 
-Consolidated from this rewrite and `hardware.md`:
+Consolidated from this rewrite, `hardware.md`, and the most recent
+source-verified review:
 
+- **NEW REQUIREMENT — battery voltage validity check at boot (§5.1)**, not
+  yet implemented. Two parameters need your decision: whether an upper
+  voltage bound is needed alongside the proposed `BATTERY_CRITICAL_MV`
+  lower bound, and what "low battery function" concretely does.
 - **NEEDS DECISION**: auto-home on invalid boot position — implement, or
-  confirm explicit-`home`-only is final (§5).
-- **NEEDS DECISION**: `RECOVER` state and direction-aware recovery logic —
-  implement, or confirm homing-only fallback is final (§4).
-- **NEW — `station1_lock`'s trigger source is unconfirmed** (§4a.1). The
-  mechanism's *effect* is fully documented; what actually sets it is in a
-  file not yet reviewed (likely an updated `console.c` or `main.c`).
+  confirm explicit-`home`-only is final (§5). Not yet resolved by
+  anything reviewed since — still genuinely open.
+- **NEEDS DECISION**: `RECOVER` state and direction-aware recovery logic
+  — implement, or confirm homing-only fallback is final (§4). Same
+  status — still open.
+- **`station1_lock`'s trigger source is unconfirmed** (§4a.1) — still
+  not found in any file reviewed so far.
+- **Station 6 (`EVENT_POSITION`) and the position-5 limit logic** (§6.2)
+  — confirmed implemented, but how it interacts with the existing
+  forward/reverse limit enforcement is not confirmed.
+- **`__wfi()` vs. true dormant sleep** — confirmed from `main.c`: the
+  main loop calls `__wfi()` between iterations, with the 1 kHz safety
+  tick remaining active throughout — the CPU wakes roughly 1000 times
+  per second continuously. `AGENTS.md` reserves further sleep/power-down
+  behavior for future work, without having selected a specific
+  mechanism. This is settled as documented fact for the current state;
+  the future mechanism itself remains genuinely undecided.
 - Station-table discrepancy between `config.h` and the schematic — see
-  `hardware.md` §0.
-- ~~Flash size~~ — **resolved**: 4 MB, confirmed directly via SFDP during a
-  real successful flash (§1). `endstop_persist()` (§4a.3) computes a
-  physical flash address from `PICO_FLASH_SIZE_BYTES` — confirm this
-  constant is actually set to `4 * 1024 * 1024` in the board header before
-  trusting that feature, now that the correct value is known.
-- Duty constants and `TIMEOUT_STEP_MS` — the existence of `findmin` and
-  `cal motor` (§7.2) as dedicated empirical-measurement tools makes it
-  more likely current values are deliberate bench results, not stale
-  drift — but still not directly confirmed which specific values came
-  from those tools versus elsewhere.
+  `hardware.md` §0. Still unresolved.
+- Duty constants and `TIMEOUT_STEP_MS` — `findmin`/`cal motor` existing
+  as dedicated empirical-measurement tools makes deliberate bench
+  derivation more likely, but still not directly confirmed.
 - Fix the `LUFTFUGL_DEBUG`/`LUFTFUGL_MONITOR` flag mismatch on `ST_DEBUG`
-  (§6.9) — a real code bug, not a spec question.
+  (§6.9) — status not reconfirmed since originally found; verify before
+  assuming either resolved or still present.
 - N20 stall current still not measured against the 1.2 A limit.
-- `CMakeLists.txt` needs updating for the actual current source file
-  list — now including `co2.c`, `buzzer.c` on top of everything in §10.
-- **`console.c` needs re-fetching** — confirmed stale relative to the
-  pins and mechanisms `controller.c`/`debug.c` now reveal; §7.1 is
-  presented as last-confirmed, not current.
-- I²C0 and buzzer channel B are **no longer open items** — both confirmed
-  active and implemented (§2.2, §2.3), correcting this document's own
-  earlier framing from a prior revision.
+- Battery-alert buzzer frequency (§6.2a) — schematic states 3500 Hz, not
+  reconciled against current implementation.
+- **`CMakeLists.txt`** needs confirming against the actual current
+  source file list, now including `co2.c`, `buzzer.c`, `event_timer.c`,
+  `debug_help.c`, and ambient-light-sensor support on top of §10.
+- **No longer open — resolved and confirmed since the last revision**:
+  flash size (4 MB, confirmed via SFDP), console UART pins (GP8/GP9,
+  confirmed by ohmmeter), the endstop flash-write sizing bug (fixed,
+  with a regression test), I²C0/buzzer-channel-B/CO₂-sensor/DS3231/
+  VEML7700 allocation and implementation (all confirmed active).
 
 ---
 

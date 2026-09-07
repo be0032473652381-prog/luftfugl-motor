@@ -97,17 +97,29 @@ Don't make me repeat these in every prompt — apply them by default:
   clean, report the result explicitly.
 - **Build AND flash, then report the result.** This default is
   deliberately reversed from "never flash" as of an earlier update.
-  **Do not use any specific flash command hardcoded in this file** — a
-  previous version of this line specified `build/luftfugl.elf` at
-  adapter speed 5000, which is wrong: the correct target is
-  `build-debug/luftfugl.elf`, speed 1000, followed by a UART reset step,
-  per `AGENTS.md`'s own complete flash-and-console-reset procedure.
-  **Follow that procedure directly from `AGENTS.md` — don't copy a
-  second version of it here that can drift out of sync again**, which is
-  exactly what happened to the line this replaces. Report the actual
-  flash and reset output, not just that the build succeeded. If a
-  specific task explicitly says not to flash, that overrides this
-  default for that task only.
+  **Confirmed complete procedure, from `AGENTS.md` directly**:
+
+  ```sh
+  openocd -f interface/cmsis-dap.cfg -f target/rp2040.cfg \
+    -c "adapter speed 1000" \
+    -c "program build-debug/luftfugl.elf verify reset exit"
+  ```
+
+  OpenOCD must identify a 4096 KiB flash device. **An SWD reset alone
+  does not reproduce the complete console presentation a power cycle
+  gives** — always follow flashing with this console reset sequence so
+  the debug menu actually appears fresh:
+
+  ```sh
+  sleep 1
+  stty -F /dev/ttyACM0 115200 cs8 -cstopb -parenb -ixon -ixoff
+  printf 'reset\r' > /dev/ttyACM0
+  ```
+
+  Flash without requesting confirmation after every successful build,
+  per `AGENTS.md`. Report the actual flash and reset output, not just
+  that the build succeeded. If a specific task explicitly says not to
+  flash, that overrides this default for that task only.
 - **Report with evidence, not assertion.** "Confirmed via grep: ..." or
   a quoted code block beats "this is now handled correctly." If a claim
   can be shown, show it.

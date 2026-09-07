@@ -371,11 +371,16 @@ scaled by the same zone multiplier, with hysteresis on zone transitions
 to avoid flicker.
 
 ### Power sequencing
-GP0 (LED power enable, TPS22918) goes HIGH only when a non-dark color
-must be shown; GP18 carries SK6812RGBWW data. GRBW wire order, white
-channel held at zero to preserve hue saturation. Station 5 keeps GP0
-continuously HIGH for its hazard-blink pattern rather than power-cycling
-per pulse. The LED is completely unpowered during motion, between
+**GP0 directly supplies the SK6812 — confirmed no TPS22918 in current
+hardware**, correcting an earlier assumption in this document and a
+schematic reading. GP0 goes HIGH before sending a non-zero frame, LOW
+after sending/latching an off frame; GP18 carries SK6812RGBWW data. The
+PIO state machine is enabled only to transmit a changed frame and
+disabled after the latch interval — not left running continuously.
+GRBW wire order, white channel held at zero to preserve hue saturation.
+Station 5 keeps GP0 continuously HIGH for its hazard-blink pattern
+rather than power-cycling per pulse. The LED is completely unpowered
+during motion, between
 stations, and at `EVENT_POSITION`.
 
 ### Caching
@@ -428,10 +433,19 @@ lines: `R4 = R5 = 1.5 Ω`, `C8 = 3.3 µF`, ~16 kHz cutoff — sized to
 suppress the 100 kHz carrier's ripple without attenuating the
 synthesized tone, not to shape audio-band harmonics.
 
-Canonical debug commands: `buzzer play-2 <count>`, `buzzer play-3
-<count>`. `play-3` is a three-part escalating sequence, repeated as one
-unit per `<count>`. Both are test/evaluation commands, not wired into
-the production per-station chirp trigger.
+Canonical naming, confirmed complete from `AGENTS.md`: five
+compositions, `crips-1` through `crips-5`, with C entry points
+`buzzer_crips_1` through `buzzer_crips_5` forwarding to the existing
+synthesis functions. `crips-1` is the original square-wave chirp;
+`crips-2` is the original composition with a clean DDS sine; `crips-3`
+is the 444 ms / 8-8-12-burst / 4.3-2.0-4.3 kHz escalating sequence;
+`crips-4`/`crips-5` are longer (~5 s / ~2.75 s) variants with
+introductions plus multiple bursts. **`crips-5` is the actual
+production station-arrival sound** in both debug and release builds —
+once at Station 2, twice at 3, three times at 4, four times at 5;
+silent at Station 1 and position 6. `crips-2` through `crips-4` remain
+debug-only listening modes; `crips-1` remains available for manual
+comparison.
 
 ---
 
@@ -473,13 +487,31 @@ Anything not using this pattern remains RAM-only by default.
 
 ---
 
-## 14. `event_timer.c` — confirmed behavior, not exhaustively audited
+## 14. `event_timer.c` — confirmed behavior, now with the full command set
 
 DS3231 interface. Persists `event_interval_seconds` via the pattern
 above. **Controls the manually armed, one-shot DS3231 event — it does
 not set the sensor-sampling cadence**, which follows separate
-scheduling. This distinction was a real, confirmed correction during
-this rewrite; don't conflate the two.
+scheduling.
+
+**Confirmed one-shot behavior**: never auto-starts, remains stopped
+after power-on, reset, or expiry. Init restores the saved interval,
+disables Alarm1, enables the GP17 falling-edge interrupt, but arms
+nothing automatically.
+
+| Command | Effect |
+|---|---|
+| `ds3231 start` | Arms one event at the currently configured interval |
+| `ds3231 stop` | Disables the active Alarm1 event |
+| `ds3231 timer` | Reports countdown or stopped state |
+| `ds3231 temp` | Reports DS3231 temperature |
+| `ds3231 timeset <15..18000>` | Changes interval in RAM, re-arms immediately if active |
+| `ds3231 timeset <15..18000> /s` | Same, plus saves to flash |
+
+**At expiry**: GP17 interrupt serviced, Alarm1 disabled, GP25 lit for
+exactly 5 seconds, does not re-arm itself. **The buzzer and external
+RGBW LED are explicitly not part of expiry behavior** — confirmed
+directly, not an omission.
 
 ---
 
