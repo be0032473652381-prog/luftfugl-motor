@@ -145,22 +145,27 @@ Single continuous 4.7 kΩ potentiometer, mechanically coupled to the N20
 motor's output shaft, providing absolute analog angular position
 feedback. Wiper on `ADC0 (GP26)`.
 
-**Station table**:
+**Station table** — confirmed matching `config.h` exactly, resolving the
+discrepancy an earlier revision of this document carried between the
+schematic and firmware:
 
 | Station | ADC | Angle |
 |---|---|---|
 | 1 | 200 | 17.6° |
-| 2 | 525 | 53.7° |
-| 3 | 850 | 89.8° |
-| 4 | 1250 | 126.0° |
+| 2 | 611 | 53.7° |
+| 3 | 1022 | 89.8° |
+| 4 | 1433 | 126.0° |
 | 5 | 1844 | 162.1° |
 | 6 | 3000 | 263.7° |
 
 Tolerance: ±20 ADC (≈1.76°).
 
-**Station 6 is structurally different from stations 1–5** — per the
-schematic's own note, it's an `EVENT_POSITION`, used for calibration,
-warning, error, or wait states, not a sixth CO₂-severity level.
+**Station 6 (`EVENT_POS` — confirmed canonical name from `AGENTS.md`,
+not `EVENT_POSITION`) is structurally different from stations 1–5** —
+reserved for calibration, warning, error, or wait states, not a sixth
+CO₂-severity level. **Confirmed as the actual firmware high limit**
+(`HIGH_ENDSTOP_ADC` is defined as `POS_6_ADC` directly in `config.h`) —
+not station 5, correcting an earlier assumption.
 
 **Position sensing RC filter** — schematic-stated characteristics:
 
