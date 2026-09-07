@@ -986,8 +986,8 @@ static void clear_result_window(void) {
 static void help_display_begin(void) {
   if (plain_mode)
     return;
-  /* Preserve the fixed Page-6 header, command index, and prompt (rows 1-24).
-   * Only the scrolling result window is cleared before detailed help starts. */
+  /* Preserve the header, command index, RTC fields and prompt. Only the
+   * result window below this page's prompt is cleared before help starts. */
   out_head = out_tail = 0u;
   frame_phase = 0u;
   frame_measuring = false;
@@ -1119,13 +1119,12 @@ static void frame_continue(void) {
                command_rows[item - 1u][2], command_rows[item - 1u][3]);
     } else if (ui_page == 6u &&
                item == sizeof command_rows / sizeof command_rows[0] + 1u) {
-      if (ds3231_temperature_valid)
-        snprintf(content, sizeof content, "%s", ds3231_temperature_text);
-      else
-        snprintf(content, sizeof content,
-                 "  Help: help <command>   examples: help DS3231 temp | help DS3231 timer");
+      /* Cached temperature belongs only to the live RTC field. Rendering it
+       * here too duplicated it after redraw and collided with the timer. */
+      snprintf(content, sizeof content,
+               "  Help: help <command>   examples: help DS3231 temp | help DS3231 timer");
     } else if (ui_page == 6u &&
-               item == 22u) {
+               rows[item] == command_row()) {
       const char *shown = page6_holds_last_input && !input_len
                               ? page6_last_input
                               : input;

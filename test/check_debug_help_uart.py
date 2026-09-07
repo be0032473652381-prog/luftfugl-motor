@@ -13,7 +13,7 @@ from pathlib import Path
 import serial
 
 
-PROMPT = re.compile(rb"\x1b\[24;1H Command > ([^\x1b]*)\x1b\[K")
+PROMPT = re.compile(rb"\x1b\[26;1H Command > ([^\x1b]*)\x1b\[K")
 
 
 def run(port):

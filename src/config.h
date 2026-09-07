@@ -348,10 +348,12 @@
 #define DEBUG_EVENT_TOP_ROW 25u
 #define DEBUG_DS3231_TEMP_ROW 22u
 #define DEBUG_DS3231_TIMER_ROW 23u
-#define DEBUG_PAGE6_COMMAND_ROW 24u
-#define DEBUG_PAGE6_EVENT_TOP_ROW 25u
-#define DEBUG_PAGE6_DS3231_TEMP_ROW 22u
-#define DEBUG_PAGE6_DS3231_TIMER_ROW 23u
+/* Page 6 uses rows 3..22 for commands and row 23 for the help hint.
+ * Keep the two RTC fields separate from that index and the input prompt. */
+#define DEBUG_PAGE6_COMMAND_ROW 26u
+#define DEBUG_PAGE6_EVENT_TOP_ROW 27u
+#define DEBUG_PAGE6_DS3231_TEMP_ROW 24u
+#define DEBUG_PAGE6_DS3231_TIMER_ROW 25u
 #define DEBUG_JOG_STEP_DEFAULT 100u
 #define DEBUG_JOG_STEP_1 10u
 #define DEBUG_JOG_STEP_2 25u

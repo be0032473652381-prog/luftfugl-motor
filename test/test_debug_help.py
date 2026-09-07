@@ -13,7 +13,8 @@ SETTINGS = ["DUTY_NORMAL", "DUTY_APPROACH", "DUTY_CREEP", "DUTY_MIN",
             "APPROACH_COUNTS", "POS_WINDOW", "DEBOUNCE_MS", "BRAKE_HOLD_MS"] + [
                 f"POS_{i}_ADC" for i in range(1, 7)] + ["LOW_ENDSTOP_ADC", "HIGH_ENDSTOP_ADC"]
 SAMPLES = [(row[0], 1) for row in BASELINE["table"]] + [
-    (row[0], 5) for row in BASELINE["co2"]] + [(key, 1) for key in SETTINGS]
+    (row[0], 5) for row in BASELINE["co2"]] + [(key, 1) for key in SETTINGS] + [
+    (row[0], 6) for row in BASELINE["table"]]
 HARNESS = r'''
 #include "debug_help.h"
 #include <stdio.h>
@@ -155,8 +156,7 @@ static uint16_t encoder_nominal(position_t p) {
 static unsigned out_free(void) { return DEBUG_OUT_BUFFER - 1u; }
 static void dbg_out_drain(void) {}
 static void dbg_out_push(const char *s) { fputs(s, stdout); }
-static uint8_t event_top_row(void) { return DEBUG_EVENT_TOP_ROW; }
-''' + emitter + ''.join(function(source, signature) for signature in (
+''' + function(source, 'static uint8_t event_top_row(') + emitter + ''.join(function(source, signature) for signature in (
             'static uint16_t angle_tenths(', 'static uint16_t cfg_smallest_gap(',
             'static bool help_live_description(', 'static bool help_show(')) + r'''
 int main(int argc, char **argv) {
@@ -183,8 +183,9 @@ int main(int argc, char **argv) {
             logical = plain_bytes.decode().replace("\r\n", "\n")
             live_rendered[f"{name} (page {page})"] = logical
             output = subprocess.check_output([str(binary), name, str(page), "0"], text=True)
-            screen = [f"preserved row {i}" for i in range(24)] + [""] * 76
-            row, column, saved = 24, 0, (24, 0)
+            prompt_row = 26 if page == 6 else 24
+            screen = [f"preserved row {i}" for i in range(prompt_row)] + [""] * (100 - prompt_row)
+            row, column, saved = prompt_row, 0, (prompt_row, 0)
             for token in re.split(r"(\x1b\[[0-9;]*[A-Za-z])", output):
                 if not token: continue
                 if not token.startswith("\x1b["):
@@ -199,12 +200,12 @@ int main(int argc, char **argv) {
                 elif token == "\x1b[L": screen.insert(row, ""); screen.pop()
                 elif token == "\x1b[K": screen[row] = screen[row][:column]
                 else: raise AssertionError(token)
-            assert screen[24] == "", (name, "missing blank after prompt")
-            assert screen[:24] == [f"preserved row {i}" for i in range(24)]
-            used_rows = max(i + 1 for i, row in enumerate(screen[24:]) if row)
+            assert screen[prompt_row] == "", (name, "missing blank after prompt")
+            assert screen[:prompt_row] == [f"preserved row {i}" for i in range(prompt_row)]
+            used_rows = max(i + 1 for i, row in enumerate(screen[prompt_row:]) if row)
             max_rows = max(max_rows, (used_rows, name))
             # Word content must survive wrapping/insertion without omissions.
-            assert " ".join("\n".join(screen[24:]).split()) == " ".join(logical.split()), name
+            assert " ".join("\n".join(screen[prompt_row:]).split()) == " ".join(logical.split()), name
             print(f"PASS: {name}, page {page}: actual ANSI emitter preserves full text and menu")
         for window in (40, 80):
             snapshot = subprocess.check_output([str(binary), "POS_WINDOW", "1", "1", str(window)], text=True)
@@ -215,7 +216,7 @@ int main(int argc, char **argv) {
     Path("/tmp/debug-help-live-rendered.json").write_text(json.dumps(live_rendered, indent=2) + "\n")
     Path("/tmp/debug-help-rendered.json").write_text(
         json.dumps(rendered, indent=2, ensure_ascii=False) + "\n")
-    print("PASS: 86 commands, 17 Page-5 variants, 16 settings; no missing topics")
+    print("PASS: 86 commands, 17 Page-5 variants, 16 settings; also all 86 references on Page 6")
 
 
 if __name__ == "__main__":
